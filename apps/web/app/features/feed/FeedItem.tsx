@@ -10,6 +10,7 @@ import { ScoreLabel } from "../../components/ui/Score";
 import { MediaThumbs, SourceLine, StarButton } from "./parts";
 import { GroupDevelopments, GroupSources, LatestDevelopment } from "./ReadingGroup";
 import { QuotedLine } from "../item/QuotedPost";
+import { markRead, markUnread } from "../../lib/local-state";
 
 export interface FeedItemProps {
   item: FeedItemSummary;
@@ -19,9 +20,10 @@ export interface FeedItemProps {
   onOpen?: (id: string) => void;
   /** Show category and tags under the text (全部动态, topics, search). */
   showTags?: boolean;
+  compact?: boolean;
 }
 
-export const FeedItem = memo(function FeedItem({ item, group, filters, read = false, onOpen, showTags = false }: FeedItemProps) {
+export const FeedItem = memo(function FeedItem({ item, group, filters, read = false, onOpen, showTags = false, compact = false }: FeedItemProps) {
   const isX = item.channel === "x" && !!item.x;
   const open = () => onOpen?.(item.id);
   const showSources = !!group && (group.additionalSourceCount > 0 || (group.developmentCount <= 1 && group.reportCount > 1));
@@ -51,7 +53,7 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
       </header>
 
       {isX ? (
-        <p className={`mt-2 whitespace-pre-line text-[15px] leading-[1.75] line-clamp-5 lg:line-clamp-4 ${read ? "text-ink-4" : "text-ink"}`}>
+        <p className={`mt-2 whitespace-pre-line text-[15px] leading-[1.75] ${compact ? "line-clamp-2" : "line-clamp-5 lg:line-clamp-4"} ${read ? "text-ink-4" : "text-ink"}`}>
           <IntentLink to={`/items/${item.id}`} onClick={open} className="after:absolute after:inset-0 after:content-['']">
             {item.summary ?? item.title}
           </IntentLink>
@@ -63,12 +65,12 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
               {item.title}
             </IntentLink>
           </h3>
-          {item.summary && <p className="mt-1.5 line-clamp-2 text-[14.5px] leading-[1.75] text-ink-3 lg:mt-2 lg:text-[15px]">{item.summary}</p>}
+          {!compact && item.summary && <p className="mt-1.5 line-clamp-2 text-[14.5px] leading-[1.75] text-ink-3 lg:mt-2 lg:text-[15px]">{item.summary}</p>}
         </>
       )}
 
-      {isX && item.x!.media.length > 0 && <MediaThumbs media={item.x!.media} className="mt-2.5" />}
-      {isX && item.x!.quoted?.text && <QuotedLine quoted={item.x!.quoted} />}
+      {!compact && isX && item.x!.media.length > 0 && <MediaThumbs media={item.x!.media} className="mt-2.5" />}
+      {!compact && isX && item.x!.quoted?.text && <QuotedLine quoted={item.x!.quoted} />}
 
       {(tags.length > 0 || (showTags && item.category)) && (
         <div className="relative z-10 mt-2 hidden flex-wrap gap-x-2.5 gap-y-1 text-[12px] text-ink-4 lg:flex">
@@ -93,7 +95,10 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
         </div>
       )}
 
-      {item.reason && (
+      <button type="button" onClick={() => read ? markUnread(item.id) : markRead(item.id)} className="relative z-10 mt-1 min-h-9 rounded-control px-1 text-[12px] text-ink-3 hover:text-accent">
+        {read ? "已读 · 标为未读" : "标为已读"}
+      </button>
+      {!compact && item.reason && (
         <details className="relative z-10 mt-2 border-t border-line-soft pt-1 text-[13px] text-ink-3">
           <summary className="w-fit cursor-pointer rounded-control py-2 pr-3 font-medium hover:text-accent focus-visible:outline-2 focus-visible:outline-accent">为什么值得看</summary>
           <p className="pb-2 leading-[1.75]">{item.reason}</p>

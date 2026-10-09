@@ -10,7 +10,8 @@ import { IconChevronDown } from "../../components/icons";
 import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
 import { beijingDate, beijingTime, beijingWeekday } from "../../lib/format";
-import { markRead, useReadSet } from "../../lib/local-state";
+import { markRead, useReadSet, useReadingPreferences, setReadingPreferences } from "../../lib/local-state";
+import { ReadingControls } from "./ReadingControls";
 import { isHydrated, isReload, markHydrated, readSnapshot, restoreAnchor, saveSnapshot } from "./restore";
 
 const AUTO_BATCHES = 3;
@@ -112,6 +113,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   const location = useLocation();
   const navigation = useNavigation();
   const readSet = useReadSet();
+  const { unreadOnly, compact } = useReadingPreferences();
   const historyKey = location.key;
 
   // Back navigation (client side): restore synchronously from the snapshot. A full reload restores
@@ -256,13 +258,14 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   const days = useMemo(() => {
     const out: Array<{ day: string; cards: TimelineCard[] }> = [];
     for (const c of state.cards) {
+      if (unreadOnly && readSet.has(c.item.id)) continue;
       const d = beijingDate(c.anchorAt);
       const last = out[out.length - 1];
       if (last && last.day === d) last.cards.push(c);
       else out.push({ day: d, cards: [c] });
     }
     return out;
-  }, [state.cards]);
+  }, [state.cards, unreadOnly, readSet]);
 
   const toggleDay = (day: string) =>
     setState((s) => ({ ...s, collapsed: s.collapsed.includes(day) ? s.collapsed.filter((d) => d !== day) : [...s.collapsed, day] }));
@@ -270,15 +273,20 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   let order = 0;
   return (
     <div className="relative">
+      <ReadingControls />
       {days.length === 0 && (
         <div className="lg:card">
-          <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>
+          {unreadOnly && state.cards.length > 0 ? (
+            <EmptyState title="已加载的内容都读过了" action={<button type="button" onClick={() => setReadingPreferences({ unreadOnly: false })} className="min-h-10 text-accent">显示全部内容</button>}>
+              {state.nextCursor ? "可以继续加载更早的内容。" : "取消未读筛选，可以重新阅读。"}
+            </EmptyState>
+          ) : <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>}
         </div>
       )}
 
       {days.map(({ day, cards }) => {
         const collapsed = state.collapsed.includes(day);
-        const count = state.dayCounts[day] ?? cards.length;
+        const count = unreadOnly ? cards.length : state.dayCounts[day] ?? cards.length;
         return (
           <section key={day} aria-label={day} className="lg:mb-1">
             <DayHeader day={day} today={today} count={count} collapsed={collapsed} onToggle={() => toggleDay(day)} />
@@ -289,7 +297,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
                     const delay = fresh ? Math.min(order++, 10) * 40 : 0;
                     return (
                       <TimelineSlot key={c.key} dataKey={c.key} at={c.anchorAt} fresh={fresh} delay={delay}>
-                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} />
+                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} compact={compact} />
                       </TimelineSlot>
                     );
                   })}
@@ -300,7 +308,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       })}
 
       <div ref={sentinel} aria-hidden="true" />
-      <FeedEnd loading={loadingMore} error={loadError} hasMore={!!state.nextCursor} manual={state.batches >= AUTO_BATCHES} empty={state.cards.length === 0} onMore={loadMore} />
+      <FeedEnd loading={loadingMore} error={loadError} hasMore={!!state.nextCursor} manual={unreadOnly || state.batches >= AUTO_BATCHES} empty={days.length === 0} onMore={loadMore} />
     </div>
   );
 }

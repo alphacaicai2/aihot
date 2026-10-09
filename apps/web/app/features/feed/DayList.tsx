@@ -5,33 +5,41 @@ import { Link } from "react-router";
 import type { FeedItemSummary } from "@aihot/contracts/site";
 import { IconChevronRight } from "../../components/icons";
 import { beijingDate } from "../../lib/format";
-import { markRead, useReadSet } from "../../lib/local-state";
+import { markRead, useReadSet, useReadingPreferences, setReadingPreferences } from "../../lib/local-state";
+import { ReadingControls } from "./ReadingControls";
+import { EmptyState } from "../../components/ui/Page";
 import { DayHeader, TimelineSlot } from "./Timeline";
 import { FeedItem } from "./FeedItem";
 
 export function DayList({ items, todayCount = null, showTags = true, animate = false }: { items: FeedItemSummary[]; todayCount?: number | null; showTags?: boolean; animate?: boolean }) {
   const readSet = useReadSet();
+  const { unreadOnly, compact } = useReadingPreferences();
   const today = beijingDate(Date.now());
   const days = useMemo(() => {
     const out: Array<{ day: string; items: FeedItemSummary[] }> = [];
     for (const it of items) {
+      if (unreadOnly && readSet.has(it.id)) continue;
       const d = beijingDate(it.timelineAt);
       const last = out[out.length - 1];
       if (last && last.day === d) last.items.push(it);
       else out.push({ day: d, items: [it] });
     }
     return out;
-  }, [items]);
+  }, [items, unreadOnly, readSet]);
   let order = 0;
   return (
     <div>
+      <ReadingControls />
+      {unreadOnly && items.length > 0 && days.length === 0 && (
+        <EmptyState title="本页内容都读过了" action={<button type="button" onClick={() => setReadingPreferences({ unreadOnly: false })} className="min-h-10 text-accent">显示全部内容</button>}>可以取消未读筛选，或查看其他页。</EmptyState>
+      )}
       {days.map(({ day, items: list }) => (
         <section key={day} aria-label={day}>
-          <DayHeader day={day} today={today} count={day === today ? todayCount : null} />
+          <DayHeader day={day} today={today} count={unreadOnly ? list.length : day === today ? todayCount : null} />
           <ol className="lg:pt-1">
             {list.map((it) => (
               <TimelineSlot key={it.id} at={it.timelineAt} fresh={animate} delay={animate ? Math.min(order++, 12) * 25 : 0}>
-                <FeedItem item={it} read={readSet.has(it.id)} onOpen={markRead} showTags={showTags} />
+                <FeedItem item={it} read={readSet.has(it.id)} onOpen={markRead} showTags={showTags} compact={compact} />
               </TimelineSlot>
             ))}
           </ol>

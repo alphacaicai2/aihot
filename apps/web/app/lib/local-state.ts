@@ -8,6 +8,7 @@ export const KEYS = {
   theme: "aihot-theme",
   changelogSeen: "aihot-changelog-seen-version",
   feedbackDraft: "aihot-feedback-draft-v1",
+  reading: "aihot-reading-preferences-v1",
 } as const;
 
 export const STARRED_LIMIT = 500;
@@ -87,6 +88,7 @@ const subscribeStarred = subscribeKey(KEYS.starred);
 const subscribeRead = subscribeKey(KEYS.read);
 const subscribeTheme = subscribeKey(KEYS.theme);
 const subscribeChangelog = subscribeKey(KEYS.changelogSeen);
+const subscribeReading = subscribeKey(KEYS.reading);
 
 // Snapshot cache so useSyncExternalStore gets stable references between changes.
 const cache = new Map<string, unknown>();
@@ -188,6 +190,33 @@ export function markRead(id: string) {
   const next = [id, ...ids.filter((v) => v !== id)].slice(0, READ_LIMIT);
   writeRaw(KEYS.read, JSON.stringify(next));
   invalidate(KEYS.read);
+}
+
+export function markUnread(id: string) {
+  writeRaw(KEYS.read, JSON.stringify(getReadIds().filter((value) => value !== id)));
+  invalidate(KEYS.read);
+}
+
+export type ReadingPreferences = { unreadOnly: boolean; compact: boolean };
+const DEFAULT_READING: ReadingPreferences = { unreadOnly: false, compact: false };
+export function getReadingPreferences(): ReadingPreferences {
+  return cached(KEYS.reading, () => {
+    try {
+      const value = JSON.parse(readRaw(KEYS.reading) ?? "null");
+      return { unreadOnly: value?.unreadOnly === true, compact: value?.compact === true };
+    } catch {
+      return DEFAULT_READING;
+    }
+  });
+}
+export function setReadingPreferences(patch: Partial<ReadingPreferences>) {
+  const next = { ...getReadingPreferences(), ...patch };
+  writeRaw(KEYS.reading, JSON.stringify(next));
+  cache.set(KEYS.reading, next);
+  emit(KEYS.reading);
+}
+export function useReadingPreferences(): ReadingPreferences {
+  return useSyncExternalStore(subscribeReading, getReadingPreferences, () => DEFAULT_READING);
 }
 
 // --- theme ---
