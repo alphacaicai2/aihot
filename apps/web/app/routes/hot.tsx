@@ -253,12 +253,12 @@ export default function HotPage() {
         </div>
       ) : (
         <>
-          <section aria-label="热度前三" className="grid gap-3 lg:grid-cols-12 lg:gap-4">
-            <div className="grid lg:col-span-7 lg:row-span-2 xl:col-span-8">
+          <section aria-label="热度前三" className={`grid gap-3 lg:gap-4 ${hot.entries.length >= 3 ? "lg:grid-cols-12" : ""}`}>
+            <div className={`grid ${hot.entries.length >= 3 ? "lg:col-span-7 lg:row-span-2 xl:col-span-8" : ""}`}>
               <Lead e={lead} />
             </div>
             {runners.map((e) => (
-              <div key={e.story.publicId} className="grid lg:col-span-5 xl:col-span-4">
+              <div key={e.story.publicId} className={`grid ${hot.entries.length >= 3 ? "lg:col-span-5 xl:col-span-4" : ""}`}>
                 <Runner e={e} />
               </div>
             ))}

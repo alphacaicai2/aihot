@@ -63,7 +63,7 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
               {item.title}
             </IntentLink>
           </h3>
-          {item.summary && <p className="mt-1.5 line-clamp-2 text-[14.5px] leading-[1.75] text-ink-3 lg:mt-2 lg:line-clamp-3 lg:text-[15px]">{item.summary}</p>}
+          {item.summary && <p className="mt-1.5 line-clamp-2 text-[14.5px] leading-[1.75] text-ink-3 lg:mt-2 lg:text-[15px]">{item.summary}</p>}
         </>
       )}
 
@@ -94,9 +94,10 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
       )}
 
       {item.reason && (
-        <div className="mt-2.5 rounded-control bg-bg-sunk px-3 py-2 dark:bg-bg-muted/60 lg:mt-3 lg:rounded-none lg:border-t lg:border-line-soft lg:bg-transparent lg:px-0 lg:pb-0 lg:pt-3 lg:dark:bg-transparent">
-          <p className="line-clamp-2 text-[13px] leading-[1.65] text-ink-3 lg:line-clamp-none lg:leading-[1.75] lg:text-note">推荐理由：{item.reason}</p>
-        </div>
+        <details className="relative z-10 mt-2 border-t border-line-soft pt-1 text-[13px] text-ink-3">
+          <summary className="w-fit cursor-pointer rounded-control py-2 pr-3 font-medium hover:text-accent focus-visible:outline-2 focus-visible:outline-accent">为什么值得看</summary>
+          <p className="pb-2 leading-[1.75]">{item.reason}</p>
+        </details>
       )}
     </article>
   );

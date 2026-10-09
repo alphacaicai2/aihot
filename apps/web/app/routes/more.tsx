@@ -1,4 +1,4 @@
-import { SITE } from "@aihot/industry/site";
+import { SITE, withSubject } from "@aihot/industry/site";
 import { FEATURES } from "@aihot/industry/features";
 import type { ReactNode } from "react";
 import { Link, useRouteLoaderData } from "react-router";
@@ -6,7 +6,7 @@ import type { loader as rootLoader } from "../root";
 import { useChangelogDot } from "../components/shell/Sidebar";
 import { pageMeta } from "../lib/seo";
 import { ThemeSwitch } from "../components/shell/ThemeSwitch";
-import { IconBookmark, IconChart, IconChevronRight, IconFlame, IconGrid, IconHeart, IconHistory, IconMessage, IconMoon, IconPlug } from "../components/icons";
+import { IconDoc, IconChart, IconChevronRight, IconGrid, IconHeart, IconHistory, IconMessage, IconMoon, IconPlug } from "../components/icons";
 
 /** Shared caches may keep this page for five minutes. */
 export function headers() {
@@ -23,6 +23,7 @@ const GROUPS: Array<{ title: string; rows: Row[] }> = [
   {
     title: "内容",
     rows: [
+      { to: "/daily", label: withSubject("日报"), icon: <IconDoc size={18} /> },
       { to: "/topics", label: "主题索引", icon: <IconGrid size={18} /> },
       ...(FEATURES.leaderboard ? [{ to: "/leaderboard", label: "模型榜", icon: <IconChart size={18} /> }] : []),
       ...(FEATURES.codexResetMonitor ? [{ to: "/codex-reset", label: "Tibo重置监控", icon: <IconHistory size={18} /> }] : []),
@@ -31,10 +32,7 @@ const GROUPS: Array<{ title: string; rows: Row[] }> = [
   },
   {
     title: "偏好",
-    rows: [
-      { to: "/hot", label: "热点榜", icon: <IconFlame size={18} /> },
-      { to: "/starred", label: "收藏", icon: <IconBookmark size={18} /> },
-    ],
+    rows: [],
   },
   {
     title: "关于",

@@ -1,5 +1,5 @@
 import { SITE, withSubject } from "@aihot/industry/site";
-import { data as withHeaders, redirect, useLoaderData } from "react-router";
+import { data as withHeaders, Link, redirect, useLoaderData } from "react-router";
 import type { Route } from "./+types/home";
 import type { TimelineResponse } from "@aihot/contracts/site";
 import { isCategoryKey, isChannelKey } from "@aihot/contracts/taxonomy";
@@ -9,7 +9,7 @@ import { Wordmark } from "../components/Logo";
 import { Timeline } from "../features/feed/Timeline";
 import { HotTopics } from "../features/feed/HotTopics";
 import { CategoryTabs, SearchField, SearchIconLink } from "../features/feed/Filters";
-import { beijingDate, beijingWeekday } from "../lib/format";
+import { beijingDate, beijingWeekday, monthDayTime } from "../lib/format";
 
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
@@ -49,6 +49,9 @@ function TodayLabel() {
 export default function Home() {
   const { data, filters } = useLoaderData<typeof loader>();
   const title = filters.tag ? `#${filters.tag}` : "精选";
+  const todayCount = data.dayCounts[beijingDate(data.generatedAt)] ?? 0;
+  const latest = data.cards[0]?.anchorAt;
+  const scoped = !!(filters.category || filters.tag || filters.channel !== "all");
   return (
     <div className="pb-6">
       {/* Phones: brand bar, today's hot topics, then the feed under "最新精选". */}
@@ -62,6 +65,18 @@ export default function Home() {
           <CategoryTabs base="/" category={filters.category} channel={filters.channel} layoutId="home-cat-desk" className="min-w-0" />
           <SearchField variant="track" keep={{ category: filters.category }} />
         </div>
+      </div>
+
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-panel border border-line-soft bg-bg-sunk/50 px-4 py-3 text-[13px]">
+        <div>
+          <p className="font-medium text-ink-2">
+            {scoped ? "当前筛选 · " : ""}{todayCount > 0 ? `今日精选 ${todayCount} 条` : "今日暂无新精选"}
+          </p>
+          <p className="mt-1 text-ink-3">
+            {latest ? `最近精选动态：${monthDayTime(latest)}` : "暂时没有符合条件的精选内容"}
+          </p>
+        </div>
+        <Link to="/all" className="inline-flex min-h-10 items-center rounded-control px-2 font-medium text-accent hover:underline">查看最新动态 →</Link>
       </div>
 
       {data.hot && <HotTopics entries={data.hot} />}
