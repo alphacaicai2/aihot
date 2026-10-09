@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>FrontierList — 6 AI sources</title></head>
+  <body>
+    <outline type="rss" text="Citrini Research" xmlUrl="https://www.citriniresearch.com/feed" />
+    <outline type="rss" text="Interconnects AI — Nathan Lambert" xmlUrl="https://www.interconnects.ai/feed" />
+    <outline type="rss" text="Mind the Future — Richard Ngo" xmlUrl="https://www.mindthefuture.info/feed" />
+    <outline type="rss" text="Modal Blog" xmlUrl="https://modal.com/blog/atom.xml" />
+    <outline type="rss" text="SemiAnalysis" xmlUrl="https://newsletter.semianalysis.com/feed" />
+    <outline type="rss" text="Thinking Machines — Connectionism" xmlUrl="https://thinkingmachines.ai/blog/index.xml" />
+  </body>
+</opml>
