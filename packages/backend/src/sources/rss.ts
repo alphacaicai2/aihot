@@ -6,6 +6,7 @@ import { sanitizeBody } from "../content/sanitize.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { fetchMiniflux } from "./miniflux.ts";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -103,27 +104,34 @@ interface RssValidator {
   responseUrl: string;
   etag: string | null;
   lastModified: string | null;
+  miniflux?: { pending: { since: number; until: number; afterId: number; baseline: boolean } | null; completedUntil: number | null };
 }
 
 export interface RssRead {
   candidates: Candidate[];
   validator: RssValidator;
   notModified: boolean;
+  warning?: string | null;
 }
 
 export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}): Promise<RssRead> {
+  if (source.config.minifluxFeedId !== undefined) return fetchMiniflux(source);
   const url = String(source.config.feedUrl ?? "");
   if (!url) throw new FetchError("feedUrl missing");
+  const maxBytes = Number(source.config.rssMaxBytes ?? 8 * 1024 * 1024);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 32 * 1024 * 1024) {
+    throw new FetchError("rssMaxBytes must be between 1 and 33554432");
+  }
   // Config changes can alter parsing/filtering even when the upstream bytes did not change.
   const configHash = sha256(stableJson(source.config));
   const previous = !opts.force && source.cursor?.rss?.configHash === configHash ? source.cursor.rss as RssValidator : null;
   const headers: Record<string, string> = { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8" };
   if (previous?.etag) headers["if-none-match"] = previous.etag;
   if (previous?.lastModified) headers["if-modified-since"] = previous.lastModified;
-  let res = await guardedFetch(url, { headers, timeoutMs: 25_000 });
+  let res = await guardedFetch(url, { headers, timeoutMs: 25_000, maxBytes });
   // A redirect may have changed destinations, whose ETag namespace is unrelated to the old one.
   if (res.status === 304 && previous && res.url !== previous.responseUrl) {
-    res = await guardedFetch(url, { headers: { accept: headers.accept! }, timeoutMs: 25_000 });
+    res = await guardedFetch(url, { headers: { accept: headers.accept! }, timeoutMs: 25_000, maxBytes });
   }
   const validator: RssValidator = {
     configHash, responseUrl: res.url,

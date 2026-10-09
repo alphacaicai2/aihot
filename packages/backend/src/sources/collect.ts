@@ -66,7 +66,7 @@ async function store(sourceId: string, candidates: Candidate[], backfill: string
   let revised = 0;
   const seen = new Set<string>();
   for (const c of candidates) {
-    const material = { ...c, sourceId, via: "fetch" as const, backfill };
+    const material = { ...c, sourceId, via: "fetch" as const, backfill: c.backfill ?? backfill };
     // A listing that names one article twice (a featured card and its list entry, a feed repeating an
     // item) stores its first entry only; the later ones would otherwise revise it on every fetch.
     const key = identityKeyFor(material);
@@ -95,6 +95,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
   let created = 0;
   let revised = 0;
   let found = 0;
+  let warning: string | null = null;
   try {
     // A config entry this kind does not implement fails the run, visibly, instead of being ignored.
     const unsupported = unsupportedConfig(source.kind, source.config);
@@ -105,9 +106,10 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     if (source.kind === "rss") {
       const rss = await fetchRss(source, opts);
       candidates = rss.candidates;
+      warning = rss.warning ?? null;
       // The first import has a smaller backfill cap than later runs: allow the next run to read
       // the ordinary window before accepting 304s. Persist validators only after store succeeds.
-      if (!firstImport) nextCursor.rss = rss.validator;
+      if (!firstImport || rss.validator.miniflux) nextCursor.rss = rss.validator;
       else delete nextCursor.rss;
       if (rss.notModified) detail = { notModified: true, httpStatus: 304 };
     }
@@ -184,8 +186,8 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     if (firstImport) nextCursor.initializedAt = new Date().toISOString();
     nextCursor.lastOkAt = new Date().toISOString();
     await sql`
-      UPDATE sources SET last_fetch_at = now(), last_ok_at = now(), fail_count = 0, last_error = NULL,
-        health = 'ok', cursor = ${sql.json(nextCursor as never)}, updated_at = now(),
+      UPDATE sources SET last_fetch_at = now(), last_ok_at = now(), fail_count = 0,
+        health = ${warning ? "degraded" : "ok"}, last_error = ${warning}, cursor = ${sql.json(nextCursor as never)}, updated_at = now(),
         next_fetch_at = now() + make_interval(mins => interval_minutes)
       WHERE id = ${sourceId}`;
     await sql`UPDATE fetch_runs SET status = 'ok', finished_at = now(), found_count = ${found}, new_count = ${created},

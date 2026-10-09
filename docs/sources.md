@@ -17,11 +17,54 @@
 
 ### rss
 
+#### 从已有 Miniflux/RSS 订阅读取
+
+后端配置 `MINIFLUX_ENV_FILE` 指向本机私有 dotenv 文件，其中提供
+`MINIFLUX_BASE_URL` 和 `MINIFLUX_TOKEN`；也可直接使用环境变量。
+不要将该文件、Token 或带凭证的 RSS URL 提交 Git。
+
+```sh
+node --env-file=.env scripts/import-miniflux.ts --dry-run
+node --env-file=.env scripts/import-miniflux.ts
+```
+
+导入器只新增当前启用的订阅，重复执行不覆盖后台已有设置。每个订阅保留自己的名称、
+Miniflux ID 和分类标签，类型仍为 `rss`，配置为
+`{"minifluxFeedId":123,"minifluxLookbackDays":2}`。项目不会修改 Miniflux 的订阅、已读、收藏或抓取设置。
+需要纳入新增订阅时重跑导入器；在 Miniflux 暂停的源会停止读取并在后台给出原因。
+
+默认首轮读取近两天内容并标记基线，之后按上游变更时间增量读取，包含已读和未读。
+单批最多 60 条，通过固定扫描窗口和 ID 分页继续读取；只有本批存储成功后才推进位置。
+已有内容被更新后会正常进入版本检查，重复读取不会重复入库。上游 RSS 失败时仍可读已有内容，
+后台会显示 `degraded` 和上游失败计数，而不是把缓存读取成功当成 RSS 健康。
+
+Miniflux 的 `content` 默认作为订阅摘要保存，不声称是完整正文，也不自动访问原文补抓。
+确认某源确实提供全文后，可在后台配置 `summaryIsBody:true` 再试抓，已有摘要会升级为正文。
+站内全文和全文 RSS 开关仍默认关闭。
+
+普通 RSS 地址继续使用以下原生配置：
+
 ```json
 { "feedUrl": "https://example.com/feed.xml" }
 ```
 
 可选：`summaryIsBody`（订阅里的摘要就是全文）、`allowCategories` / `denyCategories`（按订阅里的分类过滤）。
+读取默认最多 8 MiB；确实提供较大 XML 的源可单独配置 `rssMaxBytes`（字节，最多 32 MiB），不影响其他源。
+
+#### 批量导入 OPML
+
+OPML 保存的是订阅清单，导入后每个订阅成为独立的 `rss` 信源，在后台分别管理：
+
+```sh
+node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dry-run --dedup-miniflux
+node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup-miniflux
+```
+
+`bestblogs` 是导入批次标签，也作为信源 ID 前缀与标签；文件可以包含嵌套文件夹。
+导入器按 RSS 地址去重，重复执行不覆盖后台编辑。`--dedup-miniflux` 会只读 Miniflux 订阅地址，
+识别与本站已有 Miniflux 信源的重复，不修改 Miniflux。不同地址即使名称相同也保留。
+新源默认 T2、参与精选、每小时读取，全文展示关闭；首次最多收近一个月的最新 5 条，之后走原有 RSS 增量判重流程。
+首次抓取安排在导入后约 10 分钟，也可在后台立即抓取。重新导入用于补充新地址，地址修复和启停以后台为准。
 
 ### web_list
 
