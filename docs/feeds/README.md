@@ -2,10 +2,13 @@
 
 `frontierlist.opml` 保存了 2026-10-09 从 FrontierList 筛选并加入本机站点的 6 个公开 RSS/Atom 地址。
 
+`unifuncs-ai.opml` 保存从 U深搜清单筛选的 4 个来源：Import AI、THE DECODER、NVIDIA Technical Blog、Berkeley AI Research Blog。
+
 在新环境中导入：
 
 ```sh
 node --env-file=.env scripts/import-opml.ts docs/feeds/frontierlist.opml frontierlist --dedup-miniflux
+node --env-file=.env scripts/import-opml.ts docs/feeds/unifuncs-ai.opml unifuncs-ai --dedup-miniflux
 ```
 
 `--dedup-miniflux` 需要配置 Miniflux 凭证；未使用 Miniflux 的环境可省略。导入器会跳过已有地址，不覆盖后台设置。

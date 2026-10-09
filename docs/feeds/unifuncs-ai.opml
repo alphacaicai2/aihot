@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>Selected AI research and news sources</title></head>
+  <body>
+    <outline type="rss" text="Berkeley AI Research Blog" xmlUrl="https://bair.berkeley.edu/blog/feed.xml" />
+    <outline type="rss" text="Import AI — Jack Clark" xmlUrl="https://importai.substack.com/feed" />
+    <outline type="rss" text="NVIDIA Technical Blog" xmlUrl="https://developer.nvidia.com/blog/feed" />
+    <outline type="rss" text="THE DECODER" xmlUrl="https://the-decoder.com/feed/" />
+  </body>
+</opml>
