@@ -8,6 +8,7 @@
 //    most one repeat; after that it waits for the admin.
 import { sql, type Db } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
+import { errorDetails } from "../lib/error-details.ts";
 
 export class BudgetExceededError extends Error {
   readonly service: string;
@@ -153,7 +154,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   } catch (error) {
     const status = error instanceof ProviderRejectedError ? "failed" : "unknown";
     // "unknown": the request may have reached the provider (timeout, reset): do not re-send automatically.
-    const message = (error instanceof ProviderRejectedError ? error.message : String(error)).slice(0, 2000);
+    const message = error instanceof ProviderRejectedError ? error.message.slice(0, 2000) : errorDetails(error);
     await sql.begin(async (tx) => {
       await tx`UPDATE receipts SET status = ${status}, error = ${message}, updated_at = now() WHERE id = ${receiptId}`;
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;

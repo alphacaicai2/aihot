@@ -6,12 +6,17 @@ import { config, credential } from "../config.ts";
 import { sql } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
 import { paidRequest, ProviderRejectedError } from "./receipts.ts";
+import { ProxyAgent, fetch as proxyFetch } from "undici";
 
 const own = !!credential("models", "EMBEDDING_API_KEY");
 export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || (own ? "text-embedding-3-small" : "text-embedding-v4");
 /** Requested dimensions, when the provider takes the parameter (0 leaves it to the model). */
 export const EMBEDDING_DIMS = Number(process.env.EMBEDDING_DIMS ?? (own ? 0 : 1024));
 const SERVICE = own ? "embedding" : "dashscope";
+// Explicit opt-in: native fetch does not necessarily honor HTTPS_PROXY. Keep other providers
+// and local model endpoints on their existing route, and reuse one proxy connection pool.
+const proxyUrl = credential("models", "EMBEDDING_PROXY_URL");
+const embeddingProxy = proxyUrl ? new ProxyAgent(proxyUrl) : null;
 
 // Recall reads fresh fact/story titles on every call, so the full text hash also invalidates this
 // cache when either title changes. Keep enough entries for the 4,000-fact recall window, not the
@@ -39,12 +44,16 @@ async function embedBatch(texts: string[], subject: string): Promise<number[][]>
   const receipt = await paidRequest(
     { service: SERVICE, model: EMBEDDING_MODEL, purpose: "embedding", subject, identity: { model: EMBEDDING_MODEL, dims: EMBEDDING_DIMS, texts: texts.map((t) => sha256(t)) }, requestSummary: { count: texts.length } },
     async () => {
-      const res = await fetch(`${base.replace(/\/$/, "")}/embeddings`, {
+      const url = `${base.replace(/\/$/, "")}/embeddings`;
+      const options = {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: EMBEDDING_MODEL, input: texts, ...(EMBEDDING_DIMS > 0 ? { dimensions: EMBEDDING_DIMS } : {}), encoding_format: "float" }),
         signal: AbortSignal.timeout(60_000),
-      });
+      };
+      const res = embeddingProxy
+        ? await proxyFetch(url, { ...options, dispatcher: embeddingProxy })
+        : await fetch(url, options);
       const text = await res.text();
       if (!res.ok) throw new ProviderRejectedError(`embeddings HTTP ${res.status}: ${text.slice(0, 200)}`, res.status, res.status === 429 || res.status >= 500);
       const json = JSON.parse(text) as { data: Array<{ embedding: number[]; index: number }>; usage?: Record<string, unknown> };

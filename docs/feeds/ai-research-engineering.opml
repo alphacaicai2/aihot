@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>AI research, evaluation and engineering</title></head>
+  <body>
+    <outline type="rss" text="Epoch AI" xmlUrl="https://epoch.ai/atom.xml" />
+    <outline type="rss" text="METR" xmlUrl="https://metr.org/feed.xml" />
+    <outline type="rss" text="Ahead of AI — Sebastian Raschka" xmlUrl="https://magazine.sebastianraschka.com/feed" />
+    <outline type="rss" text="Hamel Husain" xmlUrl="https://hamel.dev/index.xml" />
+    <outline type="rss" text="Eugene Yan" xmlUrl="https://eugeneyan.com/rss/" />
+    <outline type="rss" text="Latent.Space" xmlUrl="https://www.latent.space/feed" />
+    <outline type="rss" text="Lilian Weng — Lil’Log" xmlUrl="https://lilianweng.github.io/index.xml" />
+  </body>
+</opml>
