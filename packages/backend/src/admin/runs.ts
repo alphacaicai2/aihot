@@ -192,15 +192,15 @@ export async function confirmZeroCostReceipts(input: { receiptIds: number[]; not
  * processing (one action, not two). Only an unknown receipt is released, once.
  */
 async function release(id: number, error: string, actor: string, note: string, billed: boolean | null,
-  options: { requestId?: string; input?: unknown; version?: string; autoAt?: number } = {}) {
+  options: { requestId?: string; input?: unknown; version?: string; attempts?: number; autoAt?: number } = {}) {
   const subject=`receipt:${id}`,fingerprint=sha256(stableJson(options.input ?? {}));
   return sql.begin(async tx => {
     if(options.requestId){
       const saved=await previousRecoveryCommand<{id:number;status:string;subject:string|null;purpose:string;requeued:boolean}>(tx,actor,"receipt.release",subject,options.requestId,fingerprint);
       if(saved) return saved;
     }
-    const [row]=await tx<{subject:string|null;purpose:string;status:string;updated_at:Date;billing_review:unknown}[]>`
-      SELECT subject,purpose,status,updated_at,billing_review FROM receipts WHERE id=${id} FOR UPDATE`;
+    const [row]=await tx<{subject:string|null;purpose:string;status:string;updated_at:Date;attempts:number;billing_review:unknown}[]>`
+      SELECT subject,purpose,status,updated_at,attempts,billing_review FROM receipts WHERE id=${id} FOR UPDATE`;
     if(!row) return null;
     if(row.status!=="unknown") {
       if(options.autoAt!==undefined) return null;
@@ -211,6 +211,7 @@ async function release(id: number, error: string, actor: string, note: string, b
       throw new Conflict("这条回执已确认计费，原始结果需要保留；计费确认不授权重发");
     }
     if(options.version!==undefined && row.updated_at.toISOString()!==options.version) throw new Conflict("这条回执已发生变化，请刷新后重新核对");
+    if(options.attempts!==undefined && row.attempts!==options.attempts) throw new Conflict("这条回执已经有新的请求尝试，请刷新后重新核对");
     if(options.autoAt!==undefined){
       const route=configuredDefaultFallback();
       const [eligible]=await tx`SELECT 1 FROM receipts r WHERE r.id=${id}
@@ -232,12 +233,12 @@ async function release(id: number, error: string, actor: string, note: string, b
 }
 
 /** Admin, after checking the provider's console: records whether it was billed and releases it. */
-export async function releaseReceipt(id: number, input: { billed: boolean; note: string; version?: string }, actor: string, options: { requestId?: string } = {}) {
+export async function releaseReceipt(id: number, input: { billed: boolean; note: string; version?: string; attempts?: number }, actor: string, options: { requestId?: string } = {}) {
   parse(z.number().int().positive().max(Number.MAX_SAFE_INTEGER),id);
-  input=parse(z.object({billed:z.boolean(),note:Reason,version:Version.optional()}).strict(),input);
+  input=parse(z.object({billed:z.boolean(),note:Reason,version:Version.optional(),attempts:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional()}).strict(),input);
   const requestId=parse(RequestId,options.requestId ?? randomUUID());
   const error = `人工核对：${input.billed ? "供应商已计费但结果未取回" : "供应商未计费"}。${input.note}`;
-  return release(id,error,actor,input.note,input.billed,{requestId,input,version:input.version});
+  return release(id,error,actor,input.note,input.billed,{requestId,input,version:input.version,attempts:input.attempts});
 }
 
 const AUTO_RELEASE_AFTER_MS = 30 * 60_000;

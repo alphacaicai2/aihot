@@ -143,13 +143,24 @@ test('HTTP recovery rejects missing command IDs, invalid billing flags and stale
  try{
   const url=`/api/admin/receipts/${r.id}/release`;
   for(const input of [
-   {headers:{'x-csrf-token':'dev'},payload:{billed:false,note:'test',version:r.version}},
-   {headers,payload:{billed:'false',note:'test',version:r.version}},
-   {headers,payload:{billed:false,note:'test'}},
+   {headers:{'x-csrf-token':'dev'},payload:{billed:false,note:'test',version:r.version,attempts:1}},
+   {headers,payload:{billed:'false',note:'test',version:r.version,attempts:1}},
+   {headers,payload:{billed:false,note:'test',attempts:1}},
+   {headers,payload:{billed:false,note:'test',version:r.version}},
   ]) assert.equal((await app.inject({method:'POST',url,...input})).statusCode,400);
-  assert.equal((await app.inject({method:'POST',url,headers,payload:{billed:false,note:'test',version:'2000-01-01T00:00:00.000Z'}})).statusCode,409);
+  assert.equal((await app.inject({method:'POST',url,headers,payload:{billed:false,note:'test',version:'2000-01-01T00:00:00.000Z',attempts:1}})).statusCode,409);
   assert.deepEqual(await state(id,r.id),before);
-  const payload={billed:false,note:'test',version:r.version};const first=await app.inject({method:'POST',url,headers,payload});assert.equal(first.statusCode,200,first.body);
+  const payload={billed:false,note:'test',version:r.version,attempts:1};const first=await app.inject({method:'POST',url,headers,payload});assert.equal(first.statusCode,200,first.body);
   const second=await app.inject({method:'POST',url,headers,payload});assert.equal(second.statusCode,200,second.body);assert.deepEqual(second.json(),first.json());
  }finally{await app.close();Object.assign(config,previous);}
+});
+test('a later attempt cannot use the old billing decision even with an identical page timestamp',async()=>{
+ const id=await article(),r=await lost(id);
+ await sql.begin(async tx=>{
+  await tx`UPDATE receipts SET attempts=2,updated_at=${r.version}::timestamptz WHERE id=${r.id}`;
+  await tx`INSERT INTO receipt_attempts(receipt_id,attempt,service,model,status,error) VALUES(${r.id},2,${prefix},'test','unknown','later fixture loss')`;
+ });
+ const before=await state(id,r.id);
+ await assert.rejects(releaseReceipt(r.id,{billed:false,note:'test',version:r.version,attempts:1},actor,{requestId:key()}),/新的请求尝试/);
+ assert.deepEqual(await state(id,r.id),before);
 });

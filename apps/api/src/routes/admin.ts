@@ -106,8 +106,9 @@ export function registerAdmin(app: FastifyInstance) {
   // Runs (F20)
   app.get("/api/admin/runs", adminHandler(async () => runsOverview()));
   app.post("/api/admin/receipts/:id/release", adminHandler(async (req, reply, admin) => {
-    const b=body<{billed:boolean;note:string;version:string}>(req);
+    const b=body<{billed:boolean;note:string;version:string;attempts:number}>(req);
     if(typeof b.version!=="string" || !b.version) throw Object.assign(new Error("请刷新回执后重新核对"),{statusCode:400});
+    if(!Number.isSafeInteger(b.attempts) || b.attempts<0) throw Object.assign(new Error("请刷新回执后重新核对请求尝试"),{statusCode:400});
     return orNotFound(req,reply,await releaseReceipt(Number(param(req,"id")),b,actorOf(admin),{requestId:recoveryRequestId(req)}));
   }));
   app.post("/api/admin/receipts/confirm-zero-cost", adminHandler(async (req, _reply, admin) => confirmZeroCostReceipts(body(req) as never, actorOf(admin))));

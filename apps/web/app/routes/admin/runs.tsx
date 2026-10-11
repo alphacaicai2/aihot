@@ -318,7 +318,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         onClose={() => setReceipt(null)}
         onSubmit={async (note) => {
           if(!["true","false"].includes(billed)){toast("请先选择供应商是否计费","error");return false;}
-          return (await run("POST",`/api/admin/receipts/${receipt!.id}/release`,{billed:billed==="true",note,version:new Date(String(receipt!.updated_at)).toISOString()},{label:"release",success:"已放行"}))!==null;
+          return (await run("POST",`/api/admin/receipts/${receipt!.id}/release`,{billed:billed==="true",note,version:new Date(String(receipt!.updated_at)).toISOString(),attempts:Number(receipt!.attempts)},{label:"release",success:"已放行"}))!==null;
         }}
       >
         <Field label="供应商是否计费">
