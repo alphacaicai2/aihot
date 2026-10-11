@@ -206,10 +206,30 @@ test('runs overview counts all unknown receipts and separates recovered history 
   await sql`UPDATE pgboss.job SET state='failed',completed_on=now()-interval '1 minute',output=${sql.json({ message: 'original failure' })} WHERE id=${job}`;
   const success = await enqueue(QUEUES.group, { articleId: id }, { singletonKey: `success:${id}` });
   await sql`UPDATE pgboss.job SET state='completed',completed_on=now() WHERE id=${success}`;
+  const grouped = await article();
+  const settled = await enqueue(QUEUES.group, { articleId: grouped }, { singletonKey: `failure:${grouped}` });
+  await sql`UPDATE pgboss.job SET state='failed',completed_on=now(),output=${sql.json({ message: 'old group failure' })} WHERE id=${settled}`;
+  await sql`UPDATE articles SET grouped_at=now() WHERE id=${grouped}`;
   const view = await runsOverview();
   assert.equal(view.receipts.recovery.unknown, baseline.receipts.recovery.unknown + 45);
   assert.equal(view.receipts.issues.length, 40);
   const group = view.failedJobs.find(x => x.name === QUEUES.group)!;
-  assert.ok(group.recovered >= 1);
+  assert.ok(group.recovered >= 2);
   assert.equal(group.recovered + group.unresolved, group.failed);
+});
+
+test('daily catch-up marks the failed schedule recovered while retaining its original failure', async () => {
+  const [run] = await sql`INSERT INTO job_runs(job,status,started_at,finished_at,error)
+    VALUES ('reports.daily','failed','2040-01-01T01:00:00Z','2040-01-01T01:01:00Z','connect failed') RETURNING id`;
+  try {
+    await sql`INSERT INTO reports(kind,key,window_start,window_end,content,generated_at)
+      VALUES ('daily','2040-01-01','2040-01-01T00:00:00Z','2040-01-01T02:00:00Z','{}','2040-01-01T01:02:00Z')`;
+    const job = (await runsOverview()).jobs.find(x => x.job === 'reports.daily')!;
+    assert.equal(job.status, 'failed');
+    assert.equal(job.error, 'connect failed');
+    assert.equal(job.recovered, true);
+  } finally {
+    await sql`DELETE FROM reports WHERE kind='daily' AND key='2040-01-01'`;
+    await sql`DELETE FROM job_runs WHERE id=${run!.id}`;
+  }
 });

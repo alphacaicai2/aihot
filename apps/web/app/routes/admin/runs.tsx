@@ -58,7 +58,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   for (const q of r.queues) backlog.set(q.name, { ...(backlog.get(q.name) ?? {}), [q.state]: { n: q.n, oldest: q.oldest } });
   const queued = r.queues.filter((q) => q.state !== "active").reduce((a, q) => a + q.n, 0);
   const worker = r.processes.find((p) => p.role === "worker");
-  const failing = r.jobs.filter((j) => j.status === "failed");
+  const failing = r.jobs.filter((j) => j.status === "failed" && !j.recovered);
 
   return (
     <AdminPage title="运行" subtitle={<>任务、队列、信源延迟与需要人工核对的回执和投递。每 20 秒自动刷新 · 最近检查 {bj(r.checkedAt)}</>}>
@@ -69,7 +69,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
           hint={worker ? `${worker.host} · 心跳 ${ago(worker.at)}` : "worker 未上报心跳"}
         />
         <Stat label="队列积压" value={num(queued)} tone={queued > 500 ? "warn" : undefined} hint="排队与等待重试" />
-        <Stat label="失败的定时任务" value={num(failing.length)} tone={failing.length ? "bad" : "ok"} hint="最近一次运行失败" />
+        <Stat label="失败的定时任务" value={num(failing.length)} tone={failing.length ? "bad" : "ok"} hint="最近失败且尚未恢复" />
         <Stat label="待核账回执" value={num(r.receipts.recovery.unknown)} tone={r.receipts.recovery.unknown ? "warn" : "ok"} hint={`其中备用步骤已完成 ${num(r.receipts.recovery.fallback_completed)}`} />
         <Stat label="投递待核实" value={num(r.deliveries.filter((d) => d.status === "unknown").length)} tone={r.deliveries.some((d) => d.status === "unknown") ? "bad" : "ok"} />
       </div>
@@ -100,7 +100,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
             rowKey={(j) => j.job}
             columns={[
               { key: "j", label: "任务", render: (j) => <span className="font-mono text-[12.5px]">{j.job}</span> },
-              { key: "s", label: "上次", render: (j) => <Badge tone={j.status === "ok" ? "ok" : j.status === "failed" ? "bad" : "muted"} title={j.error ?? undefined}>{j.status ?? "运行中"}</Badge> },
+              { key: "s", label: "上次", render: (j) => <Badge tone={j.recovered || j.status === "ok" ? "ok" : j.status === "failed" ? "bad" : "muted"} title={j.error ?? undefined}>{j.recovered ? "已补齐" : j.status ?? "运行中"}</Badge> },
               { key: "at", label: "时间", render: (j) => <Time at={j.started_at} /> },
               { key: "d", label: "耗时", align: "right", render: (j) => duration(j.started_at, j.finished_at) },
               { key: "f", label: "24h 失败", align: "right", render: (j) => (j.failed_24h ? <span className="text-hot">{j.failed_24h}/{j.runs_24h}</span> : `0/${j.runs_24h}`) },

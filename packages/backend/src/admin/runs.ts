@@ -20,7 +20,11 @@ export async function runsOverview() {
         SELECT job, count(*) FILTER (WHERE status = 'failed')::int AS failed_24h, count(*)::int AS runs_24h
         FROM job_runs WHERE started_at > now() - interval '24 hours' GROUP BY job
       )
-      SELECT latest.*, coalesce(counts.failed_24h, 0) AS failed_24h, coalesce(counts.runs_24h, 0) AS runs_24h
+      SELECT latest.*, coalesce(counts.failed_24h, 0) AS failed_24h, coalesce(counts.runs_24h, 0) AS runs_24h,
+        (latest.status = 'failed' AND latest.job = 'reports.daily' AND EXISTS (
+          SELECT 1 FROM reports p WHERE p.kind = 'daily'
+            AND p.key = to_char(latest.started_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')
+            AND p.generated_at > latest.finished_at)) AS recovered
       FROM latest LEFT JOIN counts USING (job) ORDER BY job`,
     sql`SELECT id, job, started_at, finished_at, status, left(error, 300) AS error FROM job_runs ORDER BY started_at DESC LIMIT 80`,
     sql<{ name: string; state: string; n: number; oldest: Date }[]>`
@@ -37,6 +41,9 @@ export async function runsOverview() {
           AND name IN (SELECT DISTINCT name FROM failed) GROUP BY 1, 2
       ), resolved AS (
         SELECT f.*, coalesce(q.at > f.completed_on, false)
+          OR (f.name = 'events.group' AND EXISTS (SELECT 1 FROM articles a
+            WHERE a.id = f.data->>'articleId' AND a.grouped_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM regroup_pending rp WHERE rp.article_id = a.id)))
           OR (f.name = 'events.digest' AND s.id IS NOT NULL AND (s.merged_into IS NOT NULL OR coalesce(s.digest_updated_at > f.completed_on, false)
             OR NOT EXISTS (SELECT 1 FROM facts x JOIN fact_articles fa ON fa.fact_id = x.id
               JOIN publications p ON p.article_id = fa.article_id
