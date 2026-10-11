@@ -233,3 +233,11 @@ test('daily catch-up marks the failed schedule recovered while retaining its ori
     await sql`DELETE FROM job_runs WHERE id=${run!.id}`;
   }
 });
+
+test('budget-delayed articles remain visible even before their first counted processing attempt', async () => {
+  const baseline = (await runsOverview()).retrying.count;
+  const id = await article();
+  await sql`UPDATE articles SET processing_state='new',processing_attempts=0,
+    processing_error='Budget for deepseek exhausted (hour)',processing_retry_at=now()+interval '10 minutes' WHERE id=${id}`;
+  assert.equal((await runsOverview()).retrying.count, baseline + 1);
+});

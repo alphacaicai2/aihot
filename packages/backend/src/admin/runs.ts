@@ -105,7 +105,8 @@ export async function runsOverview() {
   ]);
   // Articles waiting to retry after a passing provider problem (they are not failed).
   const [retrying] = await sql<{ n: number; next: Date | null }[]>`
-    SELECT count(*)::int AS n, min(processing_retry_at) AS next FROM articles WHERE processing_state = 'new' AND processing_attempts > 0`;
+    SELECT count(*)::int AS n, min(processing_retry_at) AS next FROM articles
+    WHERE processing_state = 'new' AND (processing_attempts > 0 OR processing_retry_at IS NOT NULL)`;
   const now = Date.now();
   return {
     checkedAt: new Date(now).toISOString(),
