@@ -290,17 +290,19 @@ export function ReasonDialog({
 }) {
   const [reason, setReason] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
+  const close = useRef(onClose);
+  useEffect(() => { close.current = onClose; }, [onClose]);
   useEffect(() => {
     if (!open) return;
     setReason("");
     const t = setTimeout(() => ref.current?.focus(), 60);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close.current();
     window.addEventListener("keydown", onKey);
     return () => {
       clearTimeout(t);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose]);
+  }, [open]);
   return (
     <AnimatePresence>
       {open && (
@@ -316,7 +318,7 @@ export function ReasonDialog({
             className="relative w-full max-w-lg rounded-sheet bg-raised p-5 shadow-2xl ring-1 ring-line-strong"
             onSubmit={async (e) => {
               e.preventDefault();
-              if (requireReason && !reason.trim()) return;
+              if (busy || (requireReason && !reason.trim())) return;
               const closed = await onSubmit(reason.trim());
               if (closed !== false) onClose();
             }}

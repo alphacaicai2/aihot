@@ -63,7 +63,11 @@ export function registerAdmin(app: FastifyInstance) {
     const requestId = String(req.headers["idempotency-key"] ?? "");
     return orNotFound(req, reply, await rerun(param(req, "id"), b.step, requestId, actorOf(admin)));
   }));
-  app.post("/api/admin/content/:id/detach", adminHandler(async (req, _reply, admin) => detachFromFact(param(req, "id"), String(body(req).reason ?? ""), actorOf(admin))));
+  app.post("/api/admin/content/:id/detach", adminHandler(async (req, reply, admin) => {
+    const b=body<{reason:string;version:string}>(req);
+    if (typeof b.version!=='string' || !/^[0-9a-f]{64}$/.test(b.version)) throw Object.assign(new Error('事件归属版本缺失，请刷新后再操作'),{statusCode:400});
+    return orNotFound(req,reply,await detachFromFact(param(req,'id'),b.reason,actorOf(admin),{version:b.version}));
+  }));
   app.post("/api/admin/stories/merge", adminHandler(async (req, _reply, admin) => {
     const b = body<{ from: number; into: number; reason: string }>(req);
     return mergeStories(Number(b.from), Number(b.into), b.reason, actorOf(admin));

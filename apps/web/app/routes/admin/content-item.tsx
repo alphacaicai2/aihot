@@ -19,6 +19,8 @@ interface Chain {
   override: { fields: Record<string, unknown>; visibility: string | null; reason: string | null; version: number; updated_by: string; updated_at: string } | null;
   ledger: Row[];
   membership: Row[];
+  groupingVersion: string;
+  heatSignals: Row[];
   decisions: Row[];
   deliveries: Row[];
   history: Row[];
@@ -56,6 +58,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
   const [visibility, setVisibility] = useState<string>(p?.visibility ?? "public");
   const [fields, setFields] = useState({ title: "", summary: "", reason: "", category: "", tags: "", selected: "", silent: "" });
   const [mergeInto, setMergeInto] = useState("");
+  const [detachVersion, setDetachVersion] = useState(c.groupingVersion);
   const version = c.override?.version ?? 0;
   const base = `/api/admin/content/${encodeURIComponent(a.id)}`;
   const story = c.membership[0];
@@ -225,7 +228,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                 <span className="text-ink-4">没有进入过精选同步流</span>
               )}
             </Step>
-            <Step title="事件归组" tone={story ? "accent" : "muted"} meta={a.grouped_at ? `归组于 ${bj(a.grouped_at, true)}` : "未归组"}>
+            <Step title="事件归组" tone={story || c.heatSignals.length ? "accent" : "muted"} meta={a.grouped_at ? `归组于 ${bj(a.grouped_at, true)}` : "未归组"}>
               {c.membership.map((m) => (
                 <div key={m.fact_id} className="mb-2">
                   <div>
@@ -236,6 +239,12 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                       事件 <a className="text-accent" href={`/story/${m.story_public_id}`} target="_blank" rel="noreferrer">{m.story_title}</a> <span className="font-mono text-[12px] text-ink-4">#{m.story_id}</span>
                     </div>
                   )}
+                </div>
+              ))}
+              {c.heatSignals.filter(s => !c.membership.some(m => m.story_id === s.story_id)).map(s => (
+                <div key={s.story_id} className="mb-2">
+                  <Badge>热度信号</Badge>{" "}
+                  <a className="text-accent" href={`/story/${s.story_public_id}`} target="_blank" rel="noreferrer">{s.story_title}</a>
                 </div>
               ))}
               {c.decisions.length > 0 && (
@@ -252,7 +261,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
               )}
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => setDialog("group")}>重新归组</Button>
-                {c.membership.length > 0 && <Button size="sm" onClick={() => setDialog("detach")}>移出事件</Button>}
+                {(c.membership.length > 0 || c.heatSignals.length > 0) && <Button size="sm" onClick={() => { setDetachVersion(c.groupingVersion); setDialog("detach"); }}>移出事件</Button>}
                 {story?.story_id && <Button size="sm" onClick={() => setDialog("merge")}>把这个事件并入…</Button>}
               </div>
             </Step>
@@ -431,7 +440,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
         confirmLabel="移出"
         busy={pending === "detach"}
         onClose={() => setDialog(null)}
-        onSubmit={async (reason) => (await run("POST", `${base}/detach`, { reason }, { label: "detach", success: "已移出事件" })) !== null}
+        onSubmit={async (reason) => (await run("POST", `${base}/detach`, { reason, version: detachVersion }, { label: "detach", success: "已移出事件" })) !== null}
       />
       <ReasonDialog
         open={dialog === "merge"}

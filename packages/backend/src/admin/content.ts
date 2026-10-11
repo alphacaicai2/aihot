@@ -8,12 +8,13 @@ import { sql, type Db } from "../db.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
 import { normalizeUrl } from "../lib/url.ts";
-import { publishArticle, publishArticleTx } from "../publication/publish.ts";
+import { publishArticleTx } from "../publication/publish.ts";
 
 import { mergeStoryInto } from "../events/merge.ts";
 import { invalidateStoryDigests } from "../events/digest-invalidation.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
+import { sha256, stableJson } from "../lib/ids.ts";
 
 export async function searchContent(q: string) {
   const term = q.trim();
@@ -31,41 +32,64 @@ export async function searchContent(q: string) {
 }
 
 export async function contentChain(id: string) {
-  const [article] = await sql`
-    SELECT a.id, a.source_id, a.url, a.identity_key, a.title, a.author, a.language, a.published_at, a.published_at_claim, a.discovered_at,
-           a.timeline_at, a.backfill, a.body_status, a.revision, a.processing_state, a.processing_error, a.grouped_at, length(a.body_text) AS body_chars,
-           s.name AS source_name, s.kind AS source_kind, s.tier, s.participation_mode, s.site_fulltext, s.syndicate_fulltext
-    FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${id}`;
-  if (!article) return null;
-  const [discoveries, revisions, analyses, publication, override, ledger, membership, decisions, deliveries, history] = await Promise.all([
-    sql`SELECT source_id, via, discovered_at FROM article_discoveries WHERE article_id = ${id} ORDER BY discovered_at`,
-    sql`SELECT revision, title, content_hash, created_at FROM article_revisions WHERE article_id = ${id} ORDER BY revision DESC LIMIT 10`,
-    sql`
-      SELECT an.id, an.origin, an.model, an.prompt_version, an.input_revision, an.superseded, an.relevance, an.category, an.score, an.selected, an.title_zh, an.reason_zh,
-             an.created_at,
-             (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'status', r.status, 'service', r.service, 'model', r.model,
-                  'cost', coalesce(r.cost, e.amount), 'currency', coalesce(r.currency, CASE WHEN e.amount IS NOT NULL THEN 'USD' END),
-                  'cost_basis', coalesce(r.cost_basis, CASE WHEN e.amount IS NOT NULL THEN 'estimated' END), 'at', r.created_at) ORDER BY r.id), '[]'::jsonb)
-                FROM receipts r LEFT JOIN LATERAL (
-                  SELECT estimate_deepseek_v41_flash(r.usage, r.created_at) AS amount
-                  WHERE r.model IN ('deepseek-v4.1-flash', 'deepseek-flash') AND r.origin = 'live'
-                ) e ON true WHERE r.id = ANY(an.receipt_ids)) AS receipts
-      FROM analyses an WHERE an.article_id = ${id} ORDER BY an.created_at DESC LIMIT 10`,
-    sql`SELECT * FROM publications WHERE article_id = ${id}`,
-    sql`SELECT fields, visibility, reason, version, updated_by, updated_at FROM editorial_overrides WHERE article_id = ${id}`,
-    sql`SELECT seq, op, visible_at, changed_at FROM selected_ledger WHERE article_id = ${id} ORDER BY seq DESC LIMIT 10`,
-    sql`
-      SELECT fa.fact_id, fa.role, fa.manual, f.public_id AS fact_public_id, f.title AS fact_title, st.id AS story_id, st.public_id AS story_public_id, st.title AS story_title
-      FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id LEFT JOIN stories st ON st.id = f.story_id WHERE fa.article_id = ${id}`,
-    sql`SELECT verdict, fact_id, story_id, receipt_id, candidates, created_at FROM grouping_decisions WHERE article_id = ${id} ORDER BY created_at DESC LIMIT 5`,
-    sql`SELECT target_key, dedupe_key, status, attempts, response, created_at, sent_at FROM deliveries WHERE subject_id = ${id} ORDER BY created_at DESC`,
-    sql`SELECT created_at, actor, action, reason, before, after FROM audit_log WHERE subject = ${`content:${id}`} ORDER BY created_at DESC LIMIT 20`,
-  ]);
-  return { article, discoveries, revisions, analyses, publication: publication[0] ?? null, override: override[0] ?? null, ledger, membership, decisions, deliveries, history };
+  return sql.begin("isolation level repeatable read read only", async tx => {
+    const [article] = await tx`
+      SELECT a.id, a.source_id, a.url, a.identity_key, a.title, a.author, a.language, a.published_at, a.published_at_claim, a.discovered_at,
+             a.timeline_at, a.backfill, a.body_status, a.revision, a.processing_state, a.processing_error, a.grouped_at, length(a.body_text) AS body_chars,
+             s.name AS source_name, s.kind AS source_kind, s.tier, s.participation_mode, s.site_fulltext, s.syndicate_fulltext
+      FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${id}`;
+    if (!article) return null;
+    const [discoveries, revisions, analyses, publication, override, ledger, membership, decisions, deliveries, history] = await Promise.all([
+      tx`SELECT source_id, via, discovered_at FROM article_discoveries WHERE article_id = ${id} ORDER BY discovered_at`,
+      tx`SELECT revision, title, content_hash, created_at FROM article_revisions WHERE article_id = ${id} ORDER BY revision DESC LIMIT 10`,
+      tx`
+        SELECT an.id, an.origin, an.model, an.prompt_version, an.input_revision, an.superseded, an.relevance, an.category, an.score, an.selected, an.title_zh, an.reason_zh,
+               an.created_at,
+               (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'status', r.status, 'service', r.service, 'model', r.model,
+                    'cost', coalesce(r.cost, e.amount), 'currency', coalesce(r.currency, CASE WHEN e.amount IS NOT NULL THEN 'USD' END),
+                    'cost_basis', coalesce(r.cost_basis, CASE WHEN e.amount IS NOT NULL THEN 'estimated' END), 'at', r.created_at) ORDER BY r.id), '[]'::jsonb)
+                  FROM receipts r LEFT JOIN LATERAL (
+                    SELECT estimate_deepseek_v41_flash(r.usage, r.created_at) AS amount
+                    WHERE r.model IN ('deepseek-v4.1-flash', 'deepseek-flash') AND r.origin = 'live'
+                  ) e ON true WHERE r.id = ANY(an.receipt_ids)) AS receipts
+        FROM analyses an WHERE an.article_id = ${id} ORDER BY an.created_at DESC LIMIT 10`,
+      tx`SELECT * FROM publications WHERE article_id = ${id}`,
+      tx`SELECT fields, visibility, reason, version, updated_by, updated_at FROM editorial_overrides WHERE article_id = ${id}`,
+      tx`SELECT seq, op, visible_at, changed_at FROM selected_ledger WHERE article_id = ${id} ORDER BY seq DESC LIMIT 10`,
+      tx`
+        SELECT fa.fact_id, fa.role, fa.manual, f.public_id AS fact_public_id, f.title AS fact_title, st.id AS story_id, st.public_id AS story_public_id, st.title AS story_title
+        FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id LEFT JOIN stories st ON st.id = f.story_id WHERE fa.article_id = ${id}`,
+      tx`SELECT verdict, fact_id, story_id, receipt_id, candidates, created_at FROM grouping_decisions WHERE article_id = ${id} ORDER BY created_at DESC LIMIT 5`,
+      tx`SELECT target_key, dedupe_key, status, attempts, response, created_at, sent_at FROM deliveries WHERE subject_id = ${id} ORDER BY created_at DESC`,
+      tx`SELECT created_at, actor, action, reason, before, after FROM audit_log WHERE subject = ${`content:${id}`} ORDER BY created_at DESC LIMIT 20`,
+    ]);
+    const groupingVersion = await membershipVersion(id,tx);
+    const heatSignals = await tx`SELECT ss.story_id,ss.kind,s.public_id AS story_public_id,s.title AS story_title
+      FROM story_signals ss JOIN stories s ON s.id=ss.story_id WHERE ss.article_id=${id} ORDER BY ss.story_id`;
+    return { groupingVersion, heatSignals, article, discoveries, revisions, analyses, publication: publication[0] ?? null, override: override[0] ?? null, ledger, membership, decisions, deliveries, history };
+  });
 }
 
 
 const STALE = "这条内容的人工设置已被修改，请刷新后再操作";
+
+/** The exact grouping decision shown to an editor, including heat-only membership and pending work. */
+async function membershipVersion(id: string, db: Db): Promise<string> {
+  const [article, members, signals, manual, pending] = await Promise.all([
+    db`SELECT revision,processing_generation,grouped_at FROM articles WHERE id=${id}`,
+    db`SELECT fa.fact_id,fa.role,fa.manual,f.story_id,s.merged_into FROM fact_articles fa
+      JOIN facts f ON f.id=fa.fact_id LEFT JOIN stories s ON s.id=f.story_id WHERE fa.article_id=${id} ORDER BY fa.fact_id`,
+    db`SELECT story_id,kind FROM story_signals WHERE article_id=${id} ORDER BY story_id`,
+    db`SELECT reason,actor,created_at FROM grouping_overrides WHERE article_id=${id}`,
+    db`SELECT requested_at FROM regroup_pending WHERE article_id=${id}`,
+  ]);
+  return sha256(stableJson({article,members,signals,manual,pending}));
+}
+
+const factPeers = (db: Db, id: string) => db<{ article_id: string }[]>`SELECT ${id}::text AS article_id
+  UNION SELECT other.article_id FROM fact_articles own JOIN fact_articles other ON other.fact_id=own.fact_id
+  WHERE own.article_id=${id} ORDER BY article_id`;
+class FactPeersChanged extends Error {}
 
 async function overrideRow(id: string, db: Db) {
   const [o] = await db<{ fields: Record<string, unknown>; visibility: string | null; version: number }[]>`SELECT fields, visibility, version FROM editorial_overrides WHERE article_id = ${id}`;
@@ -190,30 +214,43 @@ export async function rerun(id: string, step: "extract" | "analyze" | "group", r
  * grouping, retries and later revisions do not re-attach it; an explicit regroup does). Its heat
  * evidence leaves the old story, whose digest is rewritten.
  */
-export async function detachFromFact(id: string, reason: string, actor: string) {
-  const { facts, stories } = await sql.begin(async (tx) => {
-    // The grouping job writes under the same lock and reads this decision again before it does.
-    await tx`SELECT 1 FROM articles WHERE id = ${id} FOR UPDATE`;
-    const removed = await tx<{ fact_id: number }[]>`DELETE FROM fact_articles WHERE article_id = ${id} RETURNING fact_id`;
-    const factIds = removed.map((r) => r.fact_id);
-    const storyRows = factIds.length ? await tx<{ story_id: number }[]>`SELECT DISTINCT story_id FROM facts WHERE id = ANY(${factIds}) AND story_id IS NOT NULL` : [];
-    const storyIds = storyRows.map((r) => r.story_id);
-    if (storyIds.length) await tx`DELETE FROM story_signals WHERE article_id = ${id} AND story_id = ANY(${storyIds})`;
-    await tx`INSERT INTO grouping_overrides (article_id, reason, actor) VALUES (${id}, ${reason}, ${actor})
-             ON CONFLICT (article_id) DO UPDATE SET reason = EXCLUDED.reason, actor = EXCLUDED.actor, created_at = now()`;
-    await tx`UPDATE articles SET grouped_at = now() WHERE id = ${id}`;
-    await invalidateStoryDigests(tx,storyIds,id,factIds);
-    return { facts: factIds, stories: storyIds };
-  });
-  await publishArticle(id);
-  // The fact's other reports may take a new reading-group anchor.
-  if (facts.length) {
-    const others = await sql<{ article_id: string }[]>`SELECT DISTINCT article_id FROM fact_articles WHERE fact_id = ANY(${facts})`;
-    for (const o of others) await publishArticle(o.article_id);
+export async function detachFromFact(id: string, reason: string, actor: string, options: { version?: string } = {}) {
+  if (typeof reason !== 'string' || !reason.trim()) throw Object.assign(new Error('reason is required'),{statusCode:400});
+  for (let attempt=0;attempt<4;attempt++) {
+    try { return await sql.begin(async tx => {
+      const peers=await factPeers(tx,id),ids=peers.map(p=>p.article_id);
+      // Republish the other reports under the same article → story → fact → publication lock order as a merge.
+      const locked=await tx<{id:string}[]>`SELECT id FROM articles WHERE id=ANY(${ids}) ORDER BY id FOR UPDATE`;
+      if (!locked.some(a=>a.id===id)) return null;
+      await tx`SELECT pg_advisory_xact_lock_shared(hashtext('report_candidates'))`;
+      const affected=await tx<{id:number}[]>`SELECT s.id FROM stories s WHERE s.id IN (
+        SELECT f.story_id FROM fact_articles fa JOIN facts f ON f.id=fa.fact_id WHERE fa.article_id=ANY(${ids})) OR s.id IN (
+        SELECT p.story_id FROM publications p WHERE p.article_id=ANY(${ids})) OR s.id IN (
+        SELECT ss.story_id FROM story_signals ss WHERE ss.article_id=${id}) ORDER BY s.id FOR UPDATE`;
+      if (stableJson(peers)!==stableJson(await factPeers(tx,id))) throw new FactPeersChanged();
+      if (options.version!==undefined && options.version!==await membershipVersion(id,tx)) throw new Conflict('事件归属已改变，请刷新后再操作');
+      await tx`SELECT f.id FROM facts f WHERE EXISTS(SELECT 1 FROM fact_articles fa WHERE fa.fact_id=f.id AND fa.article_id=${id}) ORDER BY f.id FOR UPDATE`;
+      await tx`SELECT article_id FROM publications WHERE article_id=ANY(${ids}) ORDER BY article_id FOR UPDATE`;
+      await tx`SELECT id FROM sources WHERE id IN (SELECT source_id FROM articles WHERE id=ANY(${ids})) ORDER BY id FOR SHARE`;
+      const removed = await tx<{ fact_id: number }[]>`DELETE FROM fact_articles WHERE article_id = ${id} RETURNING fact_id`;
+      const factIds = removed.map((r) => r.fact_id);
+      const storyRows = factIds.length ? await tx<{ story_id: number }[]>`SELECT DISTINCT story_id FROM facts WHERE id = ANY(${factIds}) AND story_id IS NOT NULL` : [];
+      const signals=await tx<{story_id:number}[]>`DELETE FROM story_signals WHERE article_id=${id} RETURNING story_id`;
+      const storyIds = [...new Set([...storyRows.map(r=>r.story_id),...signals.map(r=>r.story_id)])].sort((a,b)=>a-b);
+      await tx`INSERT INTO grouping_overrides (article_id, reason, actor) VALUES (${id}, ${reason}, ${actor})
+               ON CONFLICT (article_id) DO UPDATE SET reason = EXCLUDED.reason, actor = EXCLUDED.actor, created_at = now()`;
+      await tx`DELETE FROM regroup_pending WHERE article_id=${id}`;
+      await tx`UPDATE articles SET grouped_at = clock_timestamp() WHERE id = ${id}`;
+      await invalidateStoryDigests(tx,storyIds,id,factIds);
+      await publishArticleTx(tx,id);
+      // The detached projection must leave before the remaining reports choose their new anchor.
+      for (const other of ids) if (other!==id) await publishArticleTx(tx,other);
+      if (storyIds.length || affected.length) await enqueue('cron.hot.rank',{}, {singletonKey:`publication:${id}`},tx);
+      await audit(actor,'content.detach',`content:${id}`,reason,{facts:factIds,stories:storyIds},null,undefined,tx);
+      return {detached:factIds.length};
+    }); } catch(error) { if (!(error instanceof FactPeersChanged)) throw error; }
   }
-  for (const storyId of stories) await enqueue(QUEUES.digest, { storyId }, { singletonKey: `story:${storyId}` });
-  await audit(actor, "content.detach", `content:${id}`, reason, { facts, stories }, null);
-  return { detached: facts.length };
+  throw new Conflict('事件报道已改变，请刷新后再操作');
 }
 
 /** Merges one story into another: facts move, the old public id keeps working as an alias. */
