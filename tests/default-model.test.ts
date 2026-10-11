@@ -1,11 +1,12 @@
 // The open-source default: one OpenAI-compatible model (LLM_BASE_URL, LLM_API_KEY, LLM_MODEL) runs every
 // step of the analysis, with no per-step configuration.
-import { stub, tag } from "./setup.ts";
+import { stub, tag, Reply } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle } from "@aihot/backend/editorial/analyze";
+import { analyzeArticle, loadAnalyzeInput, runAnalysis } from "@aihot/backend/editorial/analyze";
+import { ProviderRejectedError } from "@aihot/backend/providers/receipts";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 
 // Nothing chosen per step: every capability falls back to the `default` model.
@@ -14,11 +15,14 @@ for (const name of Object.keys(process.env)) if (/_MODEL$/.test(name) && name !=
 const T = tag();
 const SOURCE = `test-default-model-${T}`;
 const seen: Array<{ model: string; system: string; reasoning?: unknown; response_format?: unknown }> = [];
+let failSecondScore = false;
+let scores = 0;
 const provider = await stub((_hit, req) => {
   const body = JSON.parse(req.body) as { model: string; messages: Array<{ role: string; content: unknown }>; reasoning?: unknown; response_format?: unknown };
   const system = body.messages[0]!.role === "system" ? String(body.messages[0]!.content) : "";
   const user = String(body.messages.at(-1)!.content);
   seen.push({ model: body.model, system, reasoning: body.reasoning, response_format: body.response_format });
+  if (failSecondScore && system.includes("事件注意力评分器") && ++scores === 2) return new Reply(503, { error: "temporary outage" });
   const content =
     system.includes("宽召回") ? { label: "PASS", reason: "测试" }
     : system.includes("事件注意力评分器") ? { attentionScore: 80 }
@@ -82,5 +86,38 @@ test("OpenRouter can run only the prefilter while the other steps keep the defau
     delete process.env.PREFILTER_MODEL;
     delete process.env.OPENROUTER_BASE_URL;
     delete process.env.OPENROUTER_API_KEY;
+  }
+});
+
+test("only the failed score uses fallback; complete steps are reused and benchmarks keep their chosen model", async () => {
+  const official = await stub(() => ({ choices: [{ message: { content: '{"attentionScore":82}' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+  Object.assign(process.env, { LLM_FALLBACK_MODEL: 'deepseek-flash', DEEPSEEK_BASE_URL: official.url, DEEPSEEK_API_KEY: 'test-key' });
+  const create = async (suffix: string) => (await upsertMaterial({
+    sourceId: SOURCE, url: `https://example.com/${T}/${suffix}`, title: `AI product ${suffix} ${T}`,
+    bodyText: `A company launched an AI product with pricing. ${suffix} ${T} `.repeat(8), bodyStatus: 'ok', via: 'fetch', publishedAt: new Date(),
+  } as never)).articleId;
+  try {
+    failSecondScore = true;
+    scores = 0;
+    const start = seen.length;
+    const id = await create('fallback');
+    const first = await analyzeArticle(id);
+    assert.equal(first!.output!.score, 81);
+    assert.equal(first!.output!.scoreModel, 'default+deepseek-flash');
+    assert.equal(first!.output!.selected, true);
+    assert.equal(seen.length - start, 5);
+    assert.equal(official.hits(), 1);
+    const recovered = await analyzeArticle(id);
+    assert.equal(recovered!.reused, true);
+    assert.equal(seen.length - start, 5, 'prefilter, the first score, structure and writing are all reused');
+    assert.equal(official.hits(), 1, 'the failed score reuses its fallback receipt');
+    scores = 0;
+    const benchmark = await loadAnalyzeInput(await create('benchmark'));
+    await assert.rejects(runAnalysis(benchmark!, { stages: 'selection' }), ProviderRejectedError);
+    assert.equal(official.hits(), 1, 'SelectBench must not substitute another model');
+  } finally {
+    failSecondScore = false;
+    for (const name of ['LLM_FALLBACK_MODEL', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_API_KEY']) delete process.env[name];
+    await official.close();
   }
 });

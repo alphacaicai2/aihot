@@ -181,7 +181,7 @@ export function waitsForPage(a: AnalyzeInputArticle): boolean {
   return a.bodyStatus === "pending" && !a.bodyText && !a.xPost && pageFetchable(a.url, a.source.kind);
 }
 
-type StepOpts = { attemptTag?: string; scoreModel?: string };
+type StepOpts = { attemptTag?: string; scoreModel?: string; fallback?: boolean };
 export class AnalysisInterruptedError extends Error {}
 
 function checkAnalysisRunning() {
@@ -197,6 +197,7 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Ana
   const res = await chatJson({
     model,
     purpose: "prefilter_article",
+    fallback: opts.fallback,
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.prefilter,
     system: PREFILTER_SYSTEM,
@@ -217,6 +218,7 @@ async function runScores(a: AnalyzeInputArticle, threshold: number, opts: StepOp
   const input = buildScoreInput(a);
   const values: number[] = [];
   const receiptIds: number[] = [];
+  const models: string[] = [];
   let reused = true;
   // One after the other: the second call reuses the provider's cached prompt.
   for (let i = 0; i < SCORE_CALLS; i++) {
@@ -224,12 +226,14 @@ async function runScores(a: AnalyzeInputArticle, threshold: number, opts: StepOp
     try {
       const res = await chatJson({
         model, purpose: "score_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.score, system: SCORE_SYSTEM, user: input,
+        fallback: opts.fallback,
         schema: ScoreSchema, temperature: call.temperature, maxTokens: call.maxTokens, timeoutMs: call.timeoutMs,
         // Each call is its own paid request; an explicit re-evaluation gets new ones.
         attemptTag: tagged(opts.attemptTag, `score-${i + 1}`),
       });
       values.push(res.data.attentionScore);
       receiptIds.push(res.receiptId);
+      models.push(res.model);
       reused &&= res.reused;
     } catch (error) {
       // The model's content filter declines the material (Zhipu 1301): not scored, so not selected.
@@ -237,7 +241,7 @@ async function runScores(a: AnalyzeInputArticle, threshold: number, opts: StepOp
       throw error;
     }
   }
-  return { model, threshold, values, receiptIds, reused };
+  return { model: [...new Set(models)].join("+") || model, threshold, values, receiptIds, reused };
 }
 
 async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["structure"]>> {
@@ -246,6 +250,7 @@ async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
   const res = await chatJson({
     model,
     purpose: "structure_article",
+    fallback: opts.fallback,
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.structure,
     system: STRUCTURE_SYSTEM,
@@ -267,6 +272,7 @@ async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts): Promise<An
     checkAnalysisRunning();
     return chatJson({
       model, purpose: "understand_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.understand, system: UNDERSTAND_SYSTEM,
+      fallback: opts.fallback,
       user: image ? [{ type: "text", text }, image] : text, schema: UnderstandSchema, temperature: 0.2, maxTokens: 16_384,
       timeoutMs: 180_000, attemptTag: tagged(opts.attemptTag, "understand"),
     });
@@ -311,6 +317,7 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
   const res = await chatJson({
     model,
     purpose: "summarize_article",
+    fallback: opts.fallback,
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.summarize,
     system: "",
@@ -337,6 +344,7 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
  * `stages: "selection"` stops after the scores (SelectBench).
  */
 export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts & { stages?: "selection" | "all" } = {}): Promise<AnalysisRun> {
+  if (opts.stages === "selection") opts = { ...opts, fallback: false };
   checkAnalysisRunning();
   const prefilter = await runPrefilter(a, opts);
   // UNKNOWN is let through (its material is as complete as it will get); BLOCK stops here.
