@@ -40,6 +40,7 @@ const STATE_LABEL: Record<string, string> = { created: "排队", retry: "等待�
 export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const refresh = useFetcher<typeof loader>();
   const r = refresh.data ?? loaderData;
+  const checkedAt = Date.parse(r.checkedAt);
   const { run, pending } = useAdminAction();
   const [receipt, setReceipt] = useState<Row | null>(null);
   const [billed, setBilled] = useState("false");
@@ -66,7 +67,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         <Stat
           label="worker"
           value={<span className="inline-flex items-center gap-2 text-[18px]"><Dot tone={worker?.alive ? "ok" : "bad"} />{worker ? (worker.alive ? "运行中" : "心跳中断") : "无心跳"}</span>}
-          hint={worker ? `${worker.host} · 心跳 ${ago(worker.at)}` : "worker 未上报心跳"}
+          hint={worker ? `${worker.host} · 心跳 ${ago(worker.at, checkedAt)}` : "worker 未上报心跳"}
         />
         <Stat label="队列积压" value={num(queued)} tone={queued > 500 ? "warn" : undefined} hint="排队与等待重试" />
         <Stat label="失败的定时任务" value={num(failing.length)} tone={failing.length ? "bad" : "ok"} hint="最近失败且尚未恢复" />
@@ -199,7 +200,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
           title="处理失败（30 天，按错误归类）"
           right={
             <span className="flex items-center gap-3">
-              {r.retrying.count > 0 && <span>等待重试 {num(r.retrying.count)} 条 · {retryTime(r.retrying.next)}</span>}
+              {r.retrying.count > 0 && <span>等待重试 {num(r.retrying.count)} 条 · {retryTime(r.retrying.next, checkedAt)}</span>}
               {r.errors.length > 0 && <Button size="sm" onClick={() => setRequeue("")}>全部重新处理</Button>}
             </span>
           }
