@@ -11,6 +11,9 @@ import { AdminPage, Badge, Button, Card, DataTable, Dot, Empty, Field, Json, Rea
 type Row = Record<string, any>;
 interface Runs {
   checkedAt: string;
+  backup: { enabled: boolean; offsiteConfigured: boolean;
+    lastLocal: { at:string;id:string } | null; lastOffsite: { at:string;id:string } | null;
+    lastAttempt: { at:string;status:string;stage?:string;error?:string } | null };
   processes: Array<{ role: string; pid: number; host: string; release: string; startedAt: string; at: string; alive: boolean }>;
   jobs: Row[];
   timeline: Row[];
@@ -76,6 +79,15 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-2">
+        <Card title="自动备份">
+          <div className="space-y-2 text-[13px] text-ink-2">
+            <p>任务：{r.backup.enabled ? "每日 04:10" : "尚未启用"} · 异地存储：{r.backup.offsiteConfigured ? "已配置" : "尚未配置"}</p>
+            <p>本地最近成功：{bj(r.backup.lastLocal?.at)} · 异地最近成功：{bj(r.backup.lastOffsite?.at)}</p>
+            {r.backup.lastAttempt && <p>最近尝试：{bj(r.backup.lastAttempt.at)} · {r.backup.lastAttempt.status === 'completed' ? '已完成' : r.backup.lastAttempt.status === 'running' ? '执行中' : '失败'}</p>}
+            {r.backup.lastAttempt?.error && <p className="break-all text-hot">{r.backup.lastAttempt.error}</p>}
+            {!r.backup.offsiteConfigured && <p className="text-ink-3">本地副本可用于回滚；整台服务器丢失时，需要异地副本才能恢复。</p>}
+          </div>
+        </Card>
         <Card title="队列" pad={false}>
           <DataTable
             dense

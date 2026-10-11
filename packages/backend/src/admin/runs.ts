@@ -7,6 +7,7 @@ import { failureGroupSql, requeueFailed } from "../jobs/content.ts";
 import { recoverReceiptWork } from "../jobs/receipt-recovery.ts";
 import { configuredDefaultFallback } from "../providers/llm.ts";
 import { pendingBillingReview } from "../providers/billing-review.ts";
+import { backupOverview } from "../operations/backup.ts";
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
 
@@ -112,6 +113,7 @@ export async function runsOverview() {
     WHERE processing_state = 'new' AND (processing_attempts > 0 OR processing_retry_at IS NOT NULL)`;
   const now = Date.now();
   return {
+    backup: await backupOverview(),
     checkedAt: new Date(now).toISOString(),
     processes: heartbeats.map((h) => ({
       role: h.key.slice("heartbeat.".length),

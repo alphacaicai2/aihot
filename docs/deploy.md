@@ -54,7 +54,22 @@ docker compose up -d --build
 
 ### 备份
 
-在 `.env` 里配置 `DB_BACKUP_STORE_*`（任何 S3 兼容的对象存储），每天 04:10 自动备份到那里。也可以手动导出：
+在 `.env` 里配置 `DB_BACKUP_STORE_*`（S3 兼容的对象存储），每天 04:10 自动备份到那里。还没有异地目的地时，可以先设置 `BACKUP_LOCAL_ENABLED=true` 开启每日本地备份；后台会继续提示异地存储尚未配置。本地副本和数据库在同一台服务器，无法抵御整台服务器丢失。
+
+每次备份是 `/data/backups/backup-<时间>-<唯一编号>/` 下的一个完整目录，包含 `database.dump`、`uploads.tar.gz` 和 `manifest.json`。目录仅运行用户可访问，文件权限为 600；保留最近三个完整本地目录。原有旧格式备份保留。数据库导出与所有业务表的行数、内容指纹使用同一个 PostgreSQL 快照，在线写入不会造成清单和导出内容错位。对象存储仍使用 `daily/`、`weekly/`、`monthly/` 前缀，各目录的清单最后上传。
+
+后台“运行 → 自动备份”分别显示本地、异地的最近成功时间和最近失败原因。异地上传失败仍保留完整本地目录，不会覆盖上一次异地成功记录。密码通过子进程环境传递，不出现在 `pg_dump` 参数中。
+
+恢复演练只接受本应用的可信备份，并且目标必须是独立、空的 `_test` 或 `_ci` 数据库。先创建空库，再执行（容器镜像已包含 PostgreSQL 客户端）：
+
+```bash
+RESTORE_DATABASE_URL=postgres://用户@隔离数据库:5432/restore_test \
+  node scripts/restore-check.ts /backup/manifest.json
+```
+
+工具会先核对文件大小和 SHA-256，再实际恢复数据库、比对每张表的完整内容指纹，检查自增序列不会复用已有 ID，并解包附件到一个新的隔离目录。它不启动 worker 或任何采集、模型、推送任务，不覆盖已有对象，也不恢复到生产数据库。成功输出包含恢复的表数、行数、序列数、附件目录和耗时；演练结束后清理自己创建的测试库与附件目录。`pg_restore --list` 只验证归档目录可读取，完整恢复必须通过上述演练。[PostgreSQL 17 文档](https://www.postgresql.org/docs/17/app-pgrestore.html)
+
+也可以手动导出：
 
 ```bash
 docker compose exec -T db pg_dump -U aihot aihot | gzip > myhot-$(date +%F).sql.gz

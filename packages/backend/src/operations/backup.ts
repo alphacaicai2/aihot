@@ -1,14 +1,15 @@
-// Database and file backups: a verified custom-format dump plus the uploaded files, sent
+// Database and file backups: a custom-format dump plus uploaded files and a content manifest, sent
 // to the existing object store (Tencent COS through its S3-compatible API, AWS Signature V4) under
 // daily/ (Sundays also weekly/, the 1st also monthly/). A few local copies are kept.
 import { execFile } from "node:child_process";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { config, credential } from "../config.ts";
 import { sql } from "../db.ts";
+import { databaseSnapshot, fileSha256, postgresConnection, readBackupManifest, type BackupManifest } from "./backup-manifest.ts";
 
 const run = promisify(execFile);
 const KEEP_LOCAL = 3;
@@ -24,6 +25,10 @@ interface Store {
 /** Backups run where the object store is configured (production); development never uploads. */
 export function backupConfigured(): boolean {
   return store() !== null;
+}
+
+export function backupEnabled(): boolean {
+  return backupConfigured() || process.env.BACKUP_LOCAL_ENABLED === "true";
 }
 
 function store(): Store | null {
@@ -61,12 +66,6 @@ export function signV4(opts: {
   return { ...headers, authorization: `AWS4-HMAC-SHA256 Credential=${opts.accessKey}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}` };
 }
 
-async function fileSha256(file: string): Promise<string> {
-  const h = createHash("sha256");
-  for await (const chunk of createReadStream(file)) h.update(chunk as Buffer);
-  return h.digest("hex");
-}
-
 async function upload(s: Store, key: string, file: string, sha: string, size: number) {
   const url = new URL(`${s.endpoint}/${key}`);
   const headers = signV4({ method: "PUT", url, region: s.region, accessKey: s.secretId, secretKey: s.secretKey, payloadHash: sha, headers: { "content-length": String(size), "content-type": "application/octet-stream" } });
@@ -74,54 +73,124 @@ async function upload(s: Store, key: string, file: string, sha: string, size: nu
   if (!res.ok) throw new Error(`backup upload ${key}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
 }
 
+export interface BackupSummary {
+  at: string;
+  id: string;
+  uploaded: boolean;
+  manifest: string;
+  objects: Array<{ key: string; bytes: number; sha256: string }>;
+}
+export interface BackupAttempt { at: string; id: string; status: "running" | "completed" | "failed"; stage?: string; error?: string }
+
+async function save(key: string, value: object) {
+  await sql`INSERT INTO settings (key,value,updated_by) VALUES (${key},${sql.json(value as never)},'backup')
+    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`;
+}
+
+export async function backupOverview() {
+  const rows = await sql<{ key: string; value: BackupSummary | BackupAttempt }[]>`
+    SELECT key,value FROM settings WHERE key IN ('backup.last','backup.last-local','backup.last-offsite','backup.last-attempt')`;
+  const get = (key: string) => rows.find(r => r.key === key)?.value ?? null;
+  return { enabled: backupEnabled(), offsiteConfigured: backupConfigured(),
+    lastLocal: get('backup.last-local') as BackupSummary | null,
+    lastOffsite: (get('backup.last-offsite') ?? ((get('backup.last') as BackupSummary | null)?.uploaded ? get('backup.last') : null)) as BackupSummary | null,
+    lastAttempt: get('backup.last-attempt') as BackupAttempt | null };
+}
+
+async function pruneLocal(dir: string) {
+  const complete: string[] = [];
+  for (const name of (await readdir(dir)).filter(n => /^backup-[0-9]{14}-[a-f0-9-]{36}$/.test(n)).sort().reverse()) {
+    if (await readBackupManifest(path.join(dir,name,'manifest.json')).then(() => true, () => false)) complete.push(name);
+  }
+  for (const name of complete.slice(KEEP_LOCAL)) await rm(path.join(dir,name), { recursive: true });
+}
+
 export async function runBackup(now = new Date()) {
   const s = store();
-  const dir = path.join(config.dataDir, "backups");
-  await mkdir(dir, { recursive: true });
-  const stamp = now.toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const dump = path.join(dir, `aihot-${stamp}.dump`);
-  await run("pg_dump", ["--format=custom", "--compress=6", "--no-owner", "--file", dump, config.databaseUrl], { maxBuffer: 16 * 1024 * 1024 });
-  // Verify before shipping: the archive must list cleanly.
-  await run("pg_restore", ["--list", dump], { maxBuffer: 64 * 1024 * 1024 });
-  const files = path.join(dir, `aihot-files-${stamp}.tar.gz`);
-  // An empty archive only when there is nothing to keep. A failure to read or pack existing files is
-  // tried once more and otherwise reported: the database dump still ships, but the run fails.
-  const kept: string[] = [];
-  // Feedback screenshots waiting to be forwarded are not kept: the privacy notice keeps only Feishu image keys.
-  for (const d of ["uploads"]) if (await stat(path.join(config.dataDir, d)).then((i) => i.isDirectory(), () => false)) kept.push(d);
-  let filesError: string | null = null;
-  if (!kept.length) await run("tar", ["-czf", files, "-T", "/dev/null"]);
-  else {
-    const pack = () => run("tar", ["-czf", files, "-C", config.dataDir, ...kept]);
-    await pack().catch(() => pack()).catch((error: unknown) => {
-      filesError = String(error instanceof Error ? error.message : error).slice(0, 300);
+  const lock = await sql.reserve();
+  const held = await lock<{ acquired: boolean }[]>`SELECT pg_try_advisory_lock(hashtext('ops.backup')) AS acquired`
+    .catch(error=>{lock.release();throw error;});
+  if (!held[0]!.acquired) { lock.release(); return { skipped: "already running" }; }
+  const dir = path.join(config.dataDir,"backups");
+  const id = `backup-${now.toISOString().replace(/[-:T]/g,'').slice(0,14)}-${randomUUID()}`;
+  const staging = path.join(dir,`.partial-${randomUUID()}`);
+  const destination = path.join(dir,id);
+  let stage = "database";
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir,0o700);
+    await mkdir(staging, { mode: 0o700 });
+    await save('backup.last-attempt',{ at: now.toISOString(),id,status:'running' });
+    const connection = postgresConnection(config.databaseUrl);
+    const dump = path.join(staging,'database.dump');
+    const database = await sql.begin('isolation level repeatable read read only', async tx => {
+      const [snapshot] = await tx<{ id: string }[]>`SELECT pg_export_snapshot() AS id`;
+      const contents = await databaseSnapshot(tx);
+      await run('pg_dump',['--format=custom','--compress=6','--no-owner','--no-acl','--no-password',
+        '--lock-wait-timeout=30s','--snapshot',snapshot!.id,'--file',dump,connection.url],
+        { env: connection.env, timeout: 30*60_000, maxBuffer: 16*1024*1024 });
+      return contents;
     });
-  }
-  const out: Array<{ key: string; bytes: number; sha256: string }> = [];
-  const bj = new Date(now.getTime() + 8 * 3600_000);
-  const prefixes = ["daily"];
-  if (bj.getUTCDay() === 0) prefixes.push("weekly");
-  if (bj.getUTCDate() === 1) prefixes.push("monthly");
-  for (const file of filesError ? [dump] : [dump, files]) {
-    const size = (await stat(file)).size;
-    const sha = await fileSha256(file);
-    for (const p of prefixes) {
-      // One prefix per retention class (daily/, weekly/, monthly/): a store's lifecycle rules can expire
-      // each on its own schedule.
-      const key = `${p}/${path.basename(file)}`;
-      if (s) await upload(s, key, file, sha, size);
-      out.push({ key: s ? key : `local-only:${path.basename(file)}`, bytes: size, sha256: sha });
+    await run('pg_restore',['--list',dump],{ timeout: 60_000,maxBuffer: 64*1024*1024 });
+    stage = "files";
+    const files = path.join(staging,'uploads.tar.gz');
+    const uploads = await stat(path.join(config.dataDir,'uploads')).then(i=> {
+      if (!i.isDirectory()) throw new Error('uploads must be a directory');
+      return true;
+    },error=> {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    });
+    const pack = () => run('tar',uploads ? ['-czf',files,'-C',config.dataDir,'uploads'] : ['-czf',files,'-T','/dev/null'],{ timeout: 15*60_000 });
+    await pack().catch(()=>pack());
+    await run('tar',['-tzf',files],{ timeout: 60_000,maxBuffer: 64*1024*1024 });
+    const objects = [];
+    for (const file of [dump,files]) {
+      await chmod(file,0o600);
+      objects.push({ file: path.basename(file),bytes: (await stat(file)).size,sha256: await fileSha256(file) });
+    }
+    const manifest: BackupManifest = { version: 1,id,at: now.toISOString(),database,objects };
+    await writeFile(path.join(staging,'manifest.json'),JSON.stringify(manifest,null,2),{ mode: 0o600 });
+    await rename(staging,destination);
+    const summary: BackupSummary = { at: now.toISOString(),id,uploaded: false,manifest: path.join(destination,'manifest.json'),
+      objects: objects.map(o=>({ key: `local-only:${id}/${o.file}`,bytes:o.bytes,sha256:o.sha256 })) };
+    await save('backup.last-local',summary);
+    await pruneLocal(dir);
+    stage = "upload";
+    if (s) {
+      const bj = new Date(now.getTime()+8*3600_000);
+      const prefixes = ['daily',...(bj.getUTCDay() === 0 ? ['weekly'] : []),...(bj.getUTCDate() === 1 ? ['monthly'] : [])];
+      summary.objects = [];
+      for (const file of ['database.dump','uploads.tar.gz','manifest.json']) {
+        const full = path.join(destination,file);
+        const bytes = (await stat(full)).size;
+        const sha256 = await fileSha256(full);
+        for (const prefix of prefixes) {
+          const key = `${prefix}/${id}/${file}`;
+          await upload(s,key,full,sha256,bytes);
+          summary.objects.push({ key,bytes,sha256 });
+        }
+      }
+      summary.uploaded = true;
+      await save('backup.last-offsite',summary);
+    }
+    await save('backup.last',summary);
+    if (!s && !backupEnabled()) throw new Error('backup made locally but automatic backups are not enabled');
+    await save('backup.last-attempt',{ at: now.toISOString(),id,status:'completed' });
+    return summary;
+  } catch (error) {
+    let message = String(error instanceof Error ? error.message : error);
+    let password = '';
+    try {password=postgresConnection(config.databaseUrl).env.PGPASSWORD;} catch { /* Keep connection parsing failures safe too. */ }
+    const secrets = [config.databaseUrl,password,s?.secretId,s?.secretKey].filter(Boolean) as string[];
+    for (const secret of secrets) message=message.split(secret).join('[redacted]');
+    await save('backup.last-attempt',{ at: now.toISOString(),id,status:'failed',stage,error:message.slice(0,500) });
+    throw new Error(`backup ${stage} failed: ${message.slice(0,500)}`);
+  } finally {
+    try { await rm(staging,{ recursive: true,force: true }); }
+    finally {
+      try { await lock`SELECT pg_advisory_unlock(hashtext('ops.backup'))`; }
+      finally { lock.release(); }
     }
   }
-  // Local copies: keep the newest few of each kind.
-  for (const kind of ["aihot-2", "aihot-files-"]) {
-    const list = (await readdir(dir)).filter((f) => f.startsWith(kind)).sort().reverse();
-    for (const f of list.slice(KEEP_LOCAL)) await rm(path.join(dir, f), { force: true });
-  }
-  const summary = { at: now.toISOString(), uploaded: !!s && !filesError, objects: out, ...(filesError ? { filesError } : {}) };
-  await sql`INSERT INTO settings (key, value, updated_by) VALUES ('backup.last', ${sql.json(summary as never)}, 'backup')
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
-  if (!s) throw new Error("backup made locally but not uploaded: object store credentials are not configured");
-  if (filesError) throw new Error(`database backed up, but the file archive failed: ${filesError}`);
-  return summary;
 }

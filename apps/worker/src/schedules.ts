@@ -22,7 +22,7 @@ import { checkAlerts, sendDigest } from "@aihot/backend/operations/alerts";
 import { autoReleaseUnknownReceipts } from "@aihot/backend/admin/runs";
 import { recoverFallbackWork } from "@aihot/backend/jobs/receipt-recovery";
 import { forwardPendingFeedback } from "@aihot/backend/operations/feedback";
-import { backupConfigured, runBackup } from "@aihot/backend/operations/backup";
+import { backupEnabled, runBackup } from "@aihot/backend/operations/backup";
 import { sourceHealthWeekly } from "@aihot/backend/operations/reports";
 import { markStalePendingReceipts } from "@aihot/backend/providers/receipts";
 import { markStaleDeliveries } from "@aihot/backend/notify/deliver";
@@ -60,8 +60,8 @@ export const SCHEDULES: Scheduled[] = [
   { name: "sources.icons", cron: "40 4 * * *", missed: "once", run: () => refreshSourceIcons() },
   // IndexNow for new indexable pages (off unless INDEXNOW_SUBMIT_ENABLED).
   { name: "seo.indexnow", cron: "50 5 * * *", missed: "once", run: () => submitIndexNow() },
-  // Work a stopped process left half way becomes visible, and unknown paid requests get their one
-  // automatic release, before the alerts look.
+  // A stopped process's unfinished work becomes visible and safe recovery runs before the alerts.
+  // Default-model unknown requests retain their original receipt and use independent fallback work.
   {
     name: "ops.recover",
     cron: "*/10 * * * *",
@@ -73,7 +73,7 @@ export const SCHEDULES: Scheduled[] = [
   { name: "ops.digest", cron: "0 9 * * *", missed: "once", run: () => sendDigest() },
   // Feedback that did not reach the internal Feishu chat when it was sent (off with FEISHU_INTERNAL_ENABLED).
   { name: "feedback.forward", cron: "*/10 * * * *", run: () => forwardPendingFeedback() },
-  ...(backupConfigured() ? [{ name: "ops.backup", cron: "10 4 * * *", missed: "once" as const, run: () => runBackup() }] : []),
+  ...(backupEnabled() ? [{ name: "ops.backup", cron: "10 4 * * *", missed: "once" as const, run: () => runBackup() }] : []),
   { name: "reports.source-health", cron: "0 9 * * 1", missed: "once", run: () => sourceHealthWeekly() },
   // Four upstream checks a day; a new run is published only when the evidence changed. With collection
   // off only the computation runs, over the snapshots already stored.

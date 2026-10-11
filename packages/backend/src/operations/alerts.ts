@@ -7,7 +7,8 @@
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { beijingDay, beijingStamp, duration, formatAlert, formatRecovery, sendAlert, type Finding, type Level } from "../notify/feishu.ts";
-import { backupConfigured } from "./backup.ts";
+import { backupOverview } from "./backup.ts";
+import { isProduction } from "../config.ts";
 import { pendingBillingReview } from "../providers/billing-review.ts";
 
 const REPEAT_MS: Record<Exclude<Level, "digest">, number> = { now: 3600_000, today: 24 * 3600_000 };
@@ -135,23 +136,23 @@ export async function collectFindings(now = Date.now()): Promise<Finding[]> {
     });
   }
 
-  if (backupConfigured()) {
-    const [b] = await sql<{ value: { at: string; uploaded: boolean; filesError?: string } }[]>`SELECT value FROM settings WHERE key = 'backup.last'`;
-    const age = b ? now - Date.parse(b.value.at) : Infinity;
-    const state = b?.value.filesError ? `数据库已上传，附件打包失败：${b.value.filesError}` : b?.value.uploaded === false ? "未上传" : "";
-    if (b?.value.uploaded && age > 50 * 3600_000) {
-      out.push({
-        key: "backup.failed",
-        level: "today",
-        title: "数据库备份连续两天没成功",
-        impact: "平时没有影响；万一服务器出事，最多会丢两天的数据",
-        heals: "不会",
-        action: "转给 AI 处理",
-        detail: `最近一次成功 ${beijingStamp(b.value.at)}；看 ops.backup 的运行记录`,
-        since: new Date(b.value.at),
-      });
-    } else if (!b || !b.value.uploaded || age > 30 * 3600_000) {
-      out.push({ key: "backup.stale", level: "digest", title: "数据库备份超过一天没成功", detail: b ? `最近一次 ${beijingStamp(b.value.at)}${state ? `（${state}）` : ""}；看 ops.backup` : "还没有成功的备份记录" });
+  const backup = await backupOverview();
+  if (isProduction && !backup.offsiteConfigured) {
+    out.push({ key:"backup.offsite",level:"today",title:"应用尚未配置自动异地备份",
+      impact:backup.enabled ? "本地备份可用于回滚；整台服务器丢失时，这些副本也可能一起丢失" : "应用没有自动备份任务，服务器丢失后无法依靠应用备份恢复",
+      heals:"不会",action:"选择已有的异地存储并配置备份",detail:"DB_BACKUP_STORE_* 未配置完整；本地自动备份由 BACKUP_LOCAL_ENABLED 控制" });
+  }
+  if (backup.enabled) {
+    const last = backup.offsiteConfigured ? backup.lastOffsite : backup.lastLocal;
+    const age = last ? now-Date.parse(last.at) : Infinity;
+    if (backup.lastAttempt?.status==='failed' || (last && age>50*3600_000)) {
+      out.push({ key:"backup.failed",level:"today",title:"自动备份未完成",
+        impact:last ? `最近成功的${backup.offsiteConfigured ? '异地' : '本地'}备份是 ${beijingStamp(last.at)}，之后的数据尚未受该备份保护` : "还没有完整成功的自动备份",
+        heals:"下次定时任务会再尝试",action:"转给 AI 检查备份失败原因",
+        detail:backup.lastAttempt?.error ?? "成功备份超过 50 小时；看 ops.backup 的运行记录" });
+    } else if (!last || age>30*3600_000) {
+      out.push({ key:"backup.stale",level:"digest",title:"自动备份尚未成功或超过一天未更新",
+        detail:last ? `最近成功 ${beijingStamp(last.at)}；看 ops.backup` : "每日 04:10 执行；还没有完整成功的记录" });
     }
   }
 
