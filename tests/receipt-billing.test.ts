@@ -5,6 +5,7 @@ import { sql, closeDb } from '@aihot/backend/db';
 import { paidRequest, ReceiptUnknownError } from '@aihot/backend/providers/receipts';
 import { autoReleaseUnknownReceipts, confirmZeroCostReceipts, runsOverview } from '@aihot/backend/admin/runs';
 import { getBoss, stopBoss } from '@aihot/backend/jobs/queue';
+import { collectFindings } from '@aihot/backend/operations/alerts';
 
 before(async () => { await getBoss(); });
 after(async () => { await stopBoss(); await closeDb(); });
@@ -31,6 +32,9 @@ test('zero billing confirmation preserves unknown outcome, errors, provider data
   const before = await snapshots(a.id);
   const [jobsBefore] = await sql`SELECT count(*)::int n FROM pgboss.job`;
   const viewBefore = await runsOverview();
+  const beforeFinding = (await collectFindings()).find(f => f.key === 'receipts.unknown');
+  assert.equal(beforeFinding?.title, `${viewBefore.receipts.recovery.billing_unreviewed} 个响应结果未知的付费请求尚待核账`);
+  assert.ok(!beforeFinding?.title.includes('自动重试'));
   const done = await confirmZeroCostReceipts({ receiptIds: [a.id,b.id,a.id], note }, 'test:billing');
   assert.deepEqual(done, { requested: 2, confirmed: 2, alreadyConfirmed: 0, released: false, requeued: false });
   assert.deepEqual(await snapshots(a.id), before);
@@ -49,6 +53,13 @@ test('zero billing confirmation preserves unknown outcome, errors, provider data
   assert.equal(view.receipts.recovery.billing_unreviewed, viewBefore.receipts.recovery.billing_unreviewed - 2);
   assert.equal(view.receipts.recovery.billing_confirmed_zero, viewBefore.receipts.recovery.billing_confirmed_zero + 2);
   assert.ok(!view.receipts.issues.some(r => r.id === a.id || r.id === b.id));
+  const afterFinding = (await collectFindings()).find(f => f.key === 'receipts.unknown');
+  if (view.receipts.recovery.billing_unreviewed > 0) {
+    assert.equal(afterFinding?.title, `${view.receipts.recovery.billing_unreviewed} 个响应结果未知的付费请求尚待核账`);
+  } else {
+    assert.equal(afterFinding, undefined, 'confirmed unknown outcomes do not generate another billing follow-up');
+  }
+  assert.deepEqual(await snapshots(a.id), before, 'collecting alerts is read-only');
 });
 
 test('concurrent confirmations record one review and one audit without overwriting its evidence', async () => {

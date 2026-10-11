@@ -8,6 +8,7 @@ import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { beijingDay, beijingStamp, duration, formatAlert, formatRecovery, sendAlert, type Finding, type Level } from "../notify/feishu.ts";
 import { backupConfigured } from "./backup.ts";
+import { pendingBillingReview } from "../providers/billing-review.ts";
 
 const REPEAT_MS: Record<Exclude<Level, "digest">, number> = { now: 3600_000, today: 24 * 3600_000 };
 
@@ -41,7 +42,8 @@ export async function collectFindings(now = Date.now()): Promise<Finding[]> {
       });
     }
   }
-  if (settled && collecting() && modelsOn()) {
+  // Model work also processes externally ingested articles when the built-in collector is off.
+  if (settled && modelsOn()) {
     const [p] = await sql<{ waiting: number; oldest: Date | null; failed: number }[]>`
       SELECT count(*) FILTER (WHERE processing_state = 'new' AND discovered_at < now() - interval '2 hours')::int AS waiting,
              min(discovered_at) FILTER (WHERE processing_state = 'new') AS oldest,
@@ -155,11 +157,11 @@ export async function collectFindings(now = Date.now()): Promise<Finding[]> {
 
   // ---- Follow-ups for the daily digest ------------------------------------------------------------
   const [r] = await sql<{ receipts: number; services: string | null; deliveries: number }[]>`
-    SELECT (SELECT count(*)::int FROM receipts WHERE status = 'unknown') AS receipts,
-           (SELECT string_agg(DISTINCT service || '/' || purpose, '、') FROM receipts WHERE status = 'unknown') AS services,
+    SELECT (SELECT count(*)::int FROM receipts WHERE ${pendingBillingReview()}) AS receipts,
+           (SELECT string_agg(DISTINCT service || '/' || purpose, '、') FROM receipts WHERE ${pendingBillingReview()}) AS services,
            (SELECT count(*)::int FROM deliveries WHERE status = 'unknown') AS deliveries`;
   if (r!.receipts > 0) {
-    out.push({ key: "receipts.unknown", level: "digest", title: `${r!.receipts} 个付费请求自动重试过一次，结果仍未知`, detail: `${r!.services}；后台“运行”页核对后放行` });
+    out.push({ key: "receipts.unknown", level: "digest", title: `${r!.receipts} 个响应结果未知的付费请求尚待核账`, detail: `${r!.services}；先核对上游账单，计费确认不代表响应成功，也不会自动放行或重发请求` });
   }
   if (r!.deliveries > 0) out.push({ key: "deliveries.unknown", level: "digest", title: `${r!.deliveries} 条飞书内容群推送不确定是否送达`, detail: "后台“运行”页核对群里有没有，再标记或重发" });
 

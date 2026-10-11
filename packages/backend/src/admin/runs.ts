@@ -6,6 +6,7 @@ import { Conflict } from "./sources.ts";
 import { failureGroupSql, requeueFailed } from "../jobs/content.ts";
 import { recoverReceiptWork } from "../jobs/receipt-recovery.ts";
 import { configuredDefaultFallback } from "../providers/llm.ts";
+import { pendingBillingReview } from "../providers/billing-review.ts";
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
 
@@ -73,7 +74,7 @@ export async function runsOverview() {
       FROM receipts r LEFT JOIN LATERAL (SELECT * FROM model_fallback_routes f
         WHERE f.primary_receipt_id = r.id OR f.fallback_receipt_id = r.id ORDER BY f.created_at DESC LIMIT 1) f ON true
       LEFT JOIN receipts b ON b.id = f.fallback_receipt_id
-      WHERE (r.status = 'unknown' AND r.billing_review IS NULL) OR (r.status = 'failed' AND r.updated_at > now() - interval '3 days') OR (r.status = 'pending' AND r.updated_at < now() - interval '15 minutes')
+      WHERE (${pendingBillingReview("r")}) OR (r.status = 'failed' AND r.updated_at > now() - interval '3 days') OR (r.status = 'pending' AND r.updated_at < now() - interval '15 minutes')
       ORDER BY r.status = 'unknown' DESC, r.updated_at DESC LIMIT 40`,
     sql`
       SELECT id, target_key, subject_kind, subject_id, status, attempts, left(response, 240) AS response, created_at, updated_at FROM deliveries
@@ -88,7 +89,7 @@ export async function runsOverview() {
       SELECT value FROM settings WHERE key = 'leaderboard.fetch'`,
     sql<{ unknown: number; billing_unreviewed: number; billing_confirmed_zero: number; fallback_completed: number; fallback_received: number; fallback_pending: number; fallback_failed: number; fallback_unknown: number; fallback_not_sent: number; no_fallback: number; failed_articles: number }[]>`
       SELECT count(*)::int AS unknown,
-        count(*) FILTER (WHERE r.billing_review IS NULL)::int AS billing_unreviewed,
+        count(*) FILTER (WHERE ${pendingBillingReview("r")})::int AS billing_unreviewed,
         count(*) FILTER (WHERE r.billing_review @> '{"billed":true,"amount":0}')::int AS billing_confirmed_zero,
         count(*) FILTER (WHERE b.status = 'completed')::int AS fallback_completed,
         count(*) FILTER (WHERE b.status = 'received')::int AS fallback_received,

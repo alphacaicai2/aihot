@@ -23,6 +23,11 @@ export function ago(iso: string | Date | null | undefined, now = Date.now()): st
   return future ? `${text}后` : `${text}前`;
 }
 
+export function retryTime(iso: string | null, now = Date.now()): string {
+  if (!iso || !Number.isFinite(Date.parse(iso))) return "等待调度";
+  return Date.parse(iso) <= now ? "已到重试时间，等待调度" : `下次重试 ${ago(iso, now)}`;
+}
+
 export function num(n: number | string | null | undefined, digits = 0): string {
   if (n === null || n === undefined || n === "") return "—";
   const v = Number(n);

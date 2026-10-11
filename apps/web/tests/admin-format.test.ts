@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { money } from "../app/features/admin/format.ts";
+import { money, retryTime } from "../app/features/admin/format.ts";
 
 test("fees keep their currency and small actual charges remain visible", () => {
   assert.equal(money(0.0000247255, "USD"), "$0.0000247255");
@@ -10,4 +10,13 @@ test("fees keep their currency and small actual charges remain visible", () => {
   assert.equal(money(12.345, "CNY"), "¥12.35");
   assert.equal(money(null, "USD"), "—");
   assert.equal(money("invalid", "USD"), "—");
+});
+
+test("retry times distinguish a future retry from work already due for scheduling", () => {
+  const now = Date.parse("2026-10-12T00:00:00Z");
+  assert.equal(retryTime("2026-10-12T00:05:00Z", now), "下次重试 5 分钟后");
+  assert.equal(retryTime("2026-10-11T23:55:00Z", now), "已到重试时间，等待调度");
+  assert.equal(retryTime("2026-10-12T00:00:00Z", now), "已到重试时间，等待调度");
+  assert.equal(retryTime(null, now), "等待调度");
+  assert.equal(retryTime("invalid", now), "等待调度");
 });

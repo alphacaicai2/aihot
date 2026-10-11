@@ -14,6 +14,7 @@ import { confirmZeroCostReceipts, releaseReceipt, requeueFailedArticles, resolve
 import { listBudgets, listTargets, replaceContactQr, setTargetEnabled, updateBudget } from "@aihot/backend/admin/settings";
 import { createSource, fetchNow, listSources, previewSource, sourceDetail, updateSource } from "@aihot/backend/admin/sources";
 import { sql } from "@aihot/backend/db";
+import { pendingBillingReview } from "@aihot/backend/providers/billing-review";
 import { loadContact } from "@aihot/backend/site/contact";
 import { sendProblem } from "../http/respond.ts";
 import { adminHandler } from "./admin-auth.ts";
@@ -141,7 +142,7 @@ export function registerAdmin(app: FastifyInstance) {
     const [c] = await sql<Record<string, number>[]>`
       SELECT (SELECT count(*)::int FROM feedback WHERE status = 'new') AS feedback,
              (SELECT count(*)::int FROM sources WHERE enabled AND health = 'failing') AS sources,
-             (SELECT count(*)::int FROM receipts WHERE status = 'unknown' AND billing_review IS NULL) + (SELECT count(*)::int FROM deliveries WHERE status = 'unknown') AS runs,
+             (SELECT count(*)::int FROM receipts WHERE ${pendingBillingReview()}) + (SELECT count(*)::int FROM deliveries WHERE status = 'unknown') AS runs,
              (SELECT count(*)::int FROM monitor_posts WHERE (recognition->>'needsReview')::boolean IS TRUE AND (recognition->>'reviewed')::boolean IS NOT TRUE AND processed_at > now() - interval '7 days')
                + (SELECT count(*)::int FROM monitor_posts WHERE processed_at IS NULL AND collected_at < now() - interval '20 minutes') AS monitor`;
     return c;

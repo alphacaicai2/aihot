@@ -7,7 +7,7 @@ import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { checkAlerts } from "@aihot/backend/operations/alerts";
+import { checkAlerts, collectFindings } from "@aihot/backend/operations/alerts";
 
 const T = tag();
 const SOURCE = `test-alerts-${T}`;
@@ -33,6 +33,19 @@ after(async () => {
   for (const s of saved) await sql`INSERT INTO settings (key, value, updated_by) VALUES (${s.key}, ${sql.json(s.value as never)}, 'test') ON CONFLICT (key) DO NOTHING`;
   await stopBoss();
   await closeDb();
+});
+
+test("processing and report alerts remain active for external ingestion with the collector off", async () => {
+  process.env.COLLECT_ENABLED = "false";
+  process.env.MODEL_CALLS_ENABLED = "true";
+  const now = Date.parse("2099-01-01T02:00:00Z"); // Beijing 10:00, no report for this day.
+  const found = await collectFindings(now);
+  assert.ok(found.some(f => f.key === "content.process"));
+  assert.ok(found.some(f => f.key === "report.daily"));
+  assert.ok(!found.some(f => f.key === "content.collect"));
+  process.env.MODEL_CALLS_ENABLED = "false";
+  const paused = await collectFindings(now);
+  assert.ok(!paused.some(f => f.key === "content.process" || f.key === "report.daily"));
 });
 
 test("an outage is announced once, repeated hourly, and closed with one recovery", async () => {
