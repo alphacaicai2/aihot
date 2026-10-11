@@ -10,7 +10,7 @@ import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
 import { contentChain, detachFromFact, mergeStories, overrideFields, rerun, searchContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { banSource, eraseFeedback, feedbackScreenshot, listFeedback, unbanSource, updateFeedback } from "@aihot/backend/admin/feedback";
 import { listMonitorEvents, listMonitorPosts, relinkPost, resolveMonitorPost, reviewReceipt, setWithdrawn, updateMonitorEvent } from "@aihot/backend/admin/monitor";
-import { releaseReceipt, requeueFailedArticles, resolveDelivery, runsOverview } from "@aihot/backend/admin/runs";
+import { confirmZeroCostReceipts, releaseReceipt, requeueFailedArticles, resolveDelivery, runsOverview } from "@aihot/backend/admin/runs";
 import { listBudgets, listTargets, replaceContactQr, setTargetEnabled, updateBudget } from "@aihot/backend/admin/settings";
 import { createSource, fetchNow, listSources, previewSource, sourceDetail, updateSource } from "@aihot/backend/admin/sources";
 import { sql } from "@aihot/backend/db";
@@ -92,6 +92,7 @@ export function registerAdmin(app: FastifyInstance) {
   // Runs (F20)
   app.get("/api/admin/runs", adminHandler(async () => runsOverview()));
   app.post("/api/admin/receipts/:id/release", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await releaseReceipt(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
+  app.post("/api/admin/receipts/confirm-zero-cost", adminHandler(async (req, _reply, admin) => confirmZeroCostReceipts(body(req) as never, actorOf(admin))));
   app.post("/api/admin/deliveries/:id/resolve", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await resolveDelivery(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/processing/requeue", adminHandler(async (req, _reply, admin) => requeueFailedArticles(body(req) as never, actorOf(admin))));
 
@@ -140,7 +141,7 @@ export function registerAdmin(app: FastifyInstance) {
     const [c] = await sql<Record<string, number>[]>`
       SELECT (SELECT count(*)::int FROM feedback WHERE status = 'new') AS feedback,
              (SELECT count(*)::int FROM sources WHERE enabled AND health = 'failing') AS sources,
-             (SELECT count(*)::int FROM receipts WHERE status = 'unknown') + (SELECT count(*)::int FROM deliveries WHERE status = 'unknown') AS runs,
+             (SELECT count(*)::int FROM receipts WHERE status = 'unknown' AND billing_review IS NULL) + (SELECT count(*)::int FROM deliveries WHERE status = 'unknown') AS runs,
              (SELECT count(*)::int FROM monitor_posts WHERE (recognition->>'needsReview')::boolean IS TRUE AND (recognition->>'reviewed')::boolean IS NOT TRUE AND processed_at > now() - interval '7 days')
                + (SELECT count(*)::int FROM monitor_posts WHERE processed_at IS NULL AND collected_at < now() - interval '20 minutes') AS monitor`;
     return c;

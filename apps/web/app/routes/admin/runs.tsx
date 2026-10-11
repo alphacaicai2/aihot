@@ -18,7 +18,7 @@ interface Runs {
   failedJobs: Row[];
   lagging: Row[];
   receipts: { counts: Record<string, number>; issues: Row[]; recovery: {
-    unknown: number; fallback_completed: number; fallback_received: number; fallback_pending: number;
+    unknown: number; billing_unreviewed: number; billing_confirmed_zero: number; fallback_completed: number; fallback_received: number; fallback_pending: number;
     fallback_failed: number; fallback_unknown: number; fallback_not_sent: number; no_fallback: number; failed_articles: number;
   } };
   deliveries: Row[];
@@ -70,7 +70,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         />
         <Stat label="队列积压" value={num(queued)} tone={queued > 500 ? "warn" : undefined} hint="排队与等待重试" />
         <Stat label="失败的定时任务" value={num(failing.length)} tone={failing.length ? "bad" : "ok"} hint="最近失败且尚未恢复" />
-        <Stat label="待核账回执" value={num(r.receipts.recovery.unknown)} tone={r.receipts.recovery.unknown ? "warn" : "ok"} hint={`其中备用步骤已完成 ${num(r.receipts.recovery.fallback_completed)}`} />
+        <Stat label="待核账回执" value={num(r.receipts.recovery.billing_unreviewed)} tone={r.receipts.recovery.billing_unreviewed ? "warn" : "ok"} hint={`已确认零费用 ${num(r.receipts.recovery.billing_confirmed_zero)}`} />
         <Stat label="投递待核实" value={num(r.deliveries.filter((d) => d.status === "unknown").length)} tone={r.deliveries.some((d) => d.status === "unknown") ? "bad" : "ok"} />
       </div>
 
@@ -129,7 +129,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       )}
 
       <Card className="mt-5" title="未知回执的备用处理状态">
-        <p className="mb-3 text-[12px] text-ink-3">备用调用完成后，原回执仍保留未知用于核账。步骤完成不代表整篇文章已完成。</p>
+        <p className="mb-3 text-[12px] text-ink-3">原请求的响应结果仍未知 {num(r.receipts.recovery.unknown)} 条，其中已确认计费金额为 0 的 {num(r.receipts.recovery.billing_confirmed_zero)} 条，尚待核账 {num(r.receipts.recovery.billing_unreviewed)} 条。计费确认与响应结果分别记录；备用步骤完成不代表整篇文章已完成。</p>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Stat label="备用步骤已完成" value={num(r.receipts.recovery.fallback_completed)} />
           <Stat label="备用响应已保存" value={num(r.receipts.recovery.fallback_received)} />
@@ -143,7 +143,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       </Card>
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
-        <Card title="需要核对的付费回执" right={<span>{Object.entries(r.receipts.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>} pad={false}>
+        <Card title="需要核对的付费回执" right={<span>{Object.entries(r.receipts.counts).map(([k, v]) => `${k} ${v}`).join(" · ")} · 已确认零费用 {num(r.receipts.recovery.billing_confirmed_zero)}</span>} pad={false}>
           <DataTable
             dense
             rows={r.receipts.issues}

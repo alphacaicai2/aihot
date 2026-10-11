@@ -73,7 +73,7 @@ export async function runsOverview() {
       FROM receipts r LEFT JOIN LATERAL (SELECT * FROM model_fallback_routes f
         WHERE f.primary_receipt_id = r.id OR f.fallback_receipt_id = r.id ORDER BY f.created_at DESC LIMIT 1) f ON true
       LEFT JOIN receipts b ON b.id = f.fallback_receipt_id
-      WHERE r.status = 'unknown' OR (r.status = 'failed' AND r.updated_at > now() - interval '3 days') OR (r.status = 'pending' AND r.updated_at < now() - interval '15 minutes')
+      WHERE (r.status = 'unknown' AND r.billing_review IS NULL) OR (r.status = 'failed' AND r.updated_at > now() - interval '3 days') OR (r.status = 'pending' AND r.updated_at < now() - interval '15 minutes')
       ORDER BY r.status = 'unknown' DESC, r.updated_at DESC LIMIT 40`,
     sql`
       SELECT id, target_key, subject_kind, subject_id, status, attempts, left(response, 240) AS response, created_at, updated_at FROM deliveries
@@ -86,8 +86,10 @@ export async function runsOverview() {
     sql`SELECT client, kind, status, left(error, 200) AS error, summary, created_at FROM ingest_events ORDER BY created_at DESC LIMIT 20`,
     sql<{ value: { at: string; sources: Record<string, { ok: boolean; at: string; lastOkAt: string | null; changed?: boolean; rows?: number; error?: string }> } }[]>`
       SELECT value FROM settings WHERE key = 'leaderboard.fetch'`,
-    sql<{ unknown: number; fallback_completed: number; fallback_received: number; fallback_pending: number; fallback_failed: number; fallback_unknown: number; fallback_not_sent: number; no_fallback: number; failed_articles: number }[]>`
+    sql<{ unknown: number; billing_unreviewed: number; billing_confirmed_zero: number; fallback_completed: number; fallback_received: number; fallback_pending: number; fallback_failed: number; fallback_unknown: number; fallback_not_sent: number; no_fallback: number; failed_articles: number }[]>`
       SELECT count(*)::int AS unknown,
+        count(*) FILTER (WHERE r.billing_review IS NULL)::int AS billing_unreviewed,
+        count(*) FILTER (WHERE r.billing_review @> '{"billed":true,"amount":0}')::int AS billing_confirmed_zero,
         count(*) FILTER (WHERE b.status = 'completed')::int AS fallback_completed,
         count(*) FILTER (WHERE b.status = 'received')::int AS fallback_received,
         count(*) FILTER (WHERE b.status = 'pending')::int AS fallback_pending,
@@ -132,6 +134,34 @@ export async function runsOverview() {
   };
 }
 
+/** Confirm zero billing without releasing/retrying an unknown response or changing provider data. */
+export async function confirmZeroCostReceipts(input: { receiptIds: number[]; note: string }, actor: string) {
+  if (!Array.isArray(input.receiptIds) || !input.receiptIds.length || input.receiptIds.length > 5000
+    || input.receiptIds.some(id => !Number.isSafeInteger(id) || id <= 0)
+    || typeof input.note !== 'string' || !input.note.trim() || !actor.trim()) {
+    throw Object.assign(new Error("receiptIds (1–5000 positive integers), note and actor are required"), { statusCode: 400 });
+  }
+  const ids = [...new Set(input.receiptIds)].sort((a, b) => a - b);
+  return sql.begin(async tx => {
+    const rows = await tx<{ id: number; status: string; billing_review: { billed: boolean; amount: number } | null }[]>`
+      SELECT id,status,billing_review FROM receipts WHERE id IN ${tx(ids)} ORDER BY id FOR UPDATE`;
+    if (rows.length !== ids.length || rows.some(r => r.status !== 'unknown')) {
+      throw new Conflict("只能确认指定的结果未知回执；回执缺失或状态已变化");
+    }
+    if (rows.some(r => r.billing_review && (r.billing_review.billed !== true || r.billing_review.amount !== 0))) {
+      throw new Conflict("已有不同的计费确认，不能覆盖");
+    }
+    const review = { billed: true, amount: 0, source: 'operator', actor, note: input.note.trim(), at: new Date().toISOString() };
+    const changed = await tx`UPDATE receipts SET billing_review=${tx.json(review)}
+      WHERE id IN ${tx(ids)} AND billing_review IS NULL RETURNING id`;
+    if (changed.length) await tx`INSERT INTO audit_log(actor,action,subject,reason,before,after)
+      VALUES (${actor},'receipt.billing-confirm-zero','receipts',${input.note.trim()},
+        ${tx.json({ receiptIds: changed.map(r => r.id), status: 'unknown', billingReviewed: false })},
+        ${tx.json({ status: 'unknown', billed: true, amount: 0, source: 'operator', confirmed: changed.length, released: false, requeued: false })})`;
+    return { requested: ids.length, confirmed: changed.length, alreadyConfirmed: ids.length - changed.length, released: false, requeued: false };
+  });
+}
+
 /**
  * A receipt whose outcome is unknown is not re-sent by the request that lost it. Releasing it marks it
  * failed, so the next attempt calls again; an article that stopped on it goes straight back to
@@ -173,6 +203,7 @@ export async function autoReleaseUnknownReceipts(now = Date.now()) {
   const rows = await sql<{ id: number }[]>`
     SELECT r.id FROM receipts r
     WHERE r.status = 'unknown' AND r.updated_at < ${new Date(now - AUTO_RELEASE_AFTER_MS)}
+      AND r.billing_review IS NULL
       AND NOT EXISTS (SELECT 1 FROM receipt_attempts a WHERE a.receipt_id = r.id
         AND (a.released_at IS NOT NULL OR a.error LIKE ${AUTO_RELEASE_NOTE + "%"}))
       AND NOT EXISTS (SELECT 1 FROM model_fallback_routes f WHERE f.primary_receipt_id = r.id OR f.fallback_receipt_id = r.id)
