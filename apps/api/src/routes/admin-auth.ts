@@ -10,6 +10,7 @@ import {
   loginRedirect,
   parseCookies,
   passwordLogin,
+  reservePasswordAttempt,
   safeReturn,
   SESSION_COOKIE,
   SESSION_DAYS,
@@ -22,22 +23,12 @@ import { sendProblem } from "../http/respond.ts";
 /** Cookies are Secure whenever the site is served over HTTPS. */
 const secure = () => config.siteUrl.startsWith("https://");
 
-/**
- * Password attempts: at most 10 per client address and 50 in all per 15 minutes. The overall cap holds
- * even when a client forges its address; with a 12+ character password that is far too slow to guess.
- */
-const attempts = new Map<string, number[]>();
-function over(key: string, limit: number, now: number): boolean {
-  const recent = (attempts.get(key) ?? []).filter((t) => now - t < 15 * 60_000);
-  recent.push(now);
-  attempts.set(key, recent);
-  return recent.length > limit;
-}
-function tooManyAttempts(ip: string): boolean {
-  const now = Date.now();
-  if (attempts.size > 5000) attempts.clear();
-  const perClient = over(`ip:${ip}`, 10, now);
-  return over("all", 50, now) || perClient;
+/** Browser auth forms must originate at the configured site; CLI requests may omit browser headers. */
+function sameSiteRequest(req:FastifyRequest):boolean {
+  if(req.headers['sec-fetch-site']==='cross-site')return false;
+  const source=req.headers.origin ?? req.headers.referer;
+  if(!source)return true;
+  try{return new URL(source).origin===new URL(config.siteUrl).origin;}catch{return false;}
 }
 
 const loginPage = (returnTo: string, error?: string) => `/admin/login?${new URLSearchParams({ return: safeReturn(returnTo), ...(error ? { error } : {}) })}`;
@@ -84,14 +75,16 @@ export function registerAdminAuth(app: FastifyInstance) {
     const b = (req.body ?? {}) as Record<string, string>;
     const returnTo = String(b.return ?? "/admin");
     reply.header("Cache-Control", "no-store");
-    if (tooManyAttempts(String(req.ip))) return reply.redirect(loginPage(returnTo, "too-many"), 303);
+    if(!sameSiteRequest(req))return sendProblem(req,reply,{status:403,code:'forbidden',detail:'Sign in from this site.'});
+    if (!(await reservePasswordAttempt(String(req.ip)))) return reply.redirect(loginPage(returnTo, "too-many"), 303);
     try {
-      const { token, returnTo: target } = await passwordLogin(String(b.password ?? ""), returnTo, req.headers["user-agent"]);
+      const { token, returnTo: target } = await passwordLogin(String(b.password ?? ""), returnTo, req.headers["user-agent"],req.headers.cookie);
       reply.header("Set-Cookie", cookie(SESSION_COOKIE, token, SESSION_DAYS * 86400, secure()));
       return reply.redirect(target, 303);
     } catch (error) {
       if (!(error instanceof LoginRejected)) req.log.error({ err: error }, "admin login failed");
-      return reply.redirect(loginPage(returnTo, error instanceof LoginRejected && /ADMIN_PASSWORD/.test(error.message) ? "unset" : "wrong"), 303);
+      if(!(error instanceof LoginRejected))return reply.redirect(loginPage(returnTo,'unavailable'),303);
+      return reply.redirect(loginPage(returnTo, /ADMIN_PASSWORD/.test(error.message) ? "unset" : "wrong"), 303);
     }
   });
 
@@ -99,7 +92,7 @@ export function registerAdminAuth(app: FastifyInstance) {
   app.get("/api/auth/feishu", async (req, reply) => {
     const returnTo = String((req.query as Record<string, string>).return ?? "/admin");
     if (!feishuLoginConfigured()) return reply.redirect(loginPage(returnTo), 302);
-    const { url, stateCookie } = loginRedirect(returnTo);
+    const { url, stateCookie } = await loginRedirect(returnTo);
     reply.header("Set-Cookie", cookie(STATE_COOKIE, stateCookie, 600, secure())).header("Cache-Control", "no-store");
     return reply.redirect(url, 302);
   });
@@ -107,9 +100,9 @@ export function registerAdminAuth(app: FastifyInstance) {
   // The callback registered in the Feishu open platform: the state cookie comes back here.
   app.get("/api/auth/callback", async (req, reply) => {
     const q = req.query as Record<string, string>;
-    reply.header("Cache-Control", "no-store");
+    reply.header("Cache-Control", "no-store").header('Set-Cookie',cookie(STATE_COOKIE,'',0,secure()));
     try {
-      const { token, returnTo } = await completeLogin(String(q.code ?? ""), String(q.state ?? ""), parseCookies(req.headers.cookie)[STATE_COOKIE], req.headers["user-agent"]);
+      const { token, returnTo } = await completeLogin(String(q.code ?? ""), String(q.state ?? ""), parseCookies(req.headers.cookie)[STATE_COOKIE], req.headers["user-agent"],req.headers.cookie);
       reply.header("Set-Cookie", [cookie(SESSION_COOKIE, token, SESSION_DAYS * 86400, secure()), cookie(STATE_COOKIE, "", 0, secure())]);
       return reply.redirect(returnTo, 302);
     } catch (error) {
@@ -128,6 +121,10 @@ export function registerAdminAuth(app: FastifyInstance) {
   });
 
   app.post("/api/auth/logout", async (req, reply) => {
+    reply.header('Cache-Control','no-store');
+    const principal=await sessionPrincipal(req.headers.cookie);
+    const csrf=req.headers['x-csrf-token'] ?? (req.body as Record<string,unknown>|undefined)?.csrf;
+    if(!sameSiteRequest(req) || (principal && csrf!==principal.csrf))return sendProblem(req,reply,{status:403,code:'forbidden',detail:'Missing or stale CSRF token.'});
     await endSession(req.headers.cookie);
     reply.header("Set-Cookie", cookie(SESSION_COOKIE, "", 0, secure())).header("Cache-Control", "no-store");
     return reply.redirect("/", 303);

@@ -11,6 +11,7 @@ const ERRORS: Record<string, string> = {
   wrong: "密码不对，再试一次。",
   unset: "还没有设置管理员密码：在 .env 里设置 ADMIN_PASSWORD（至少 12 位），重启后再登录。",
   "too-many": "尝试次数太多，请 15 分钟后再试。",
+  unavailable: "暂时无法登录，请稍后再试。",
 };
 
 export async function loader({ request }: Route.LoaderArgs) {
