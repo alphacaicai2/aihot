@@ -1,12 +1,17 @@
 // Event jobs: serial grouping, debounced digests.
 import type { PgBoss } from "pg-boss";
-import { groupArticle } from "../events/group.ts";
+import { groupArticle, consolidate } from "../events/group.ts";
 import { composeStoryDigest } from "../events/digest.ts";
 import { BudgetExceededError, ReceiptBusyError } from "../providers/receipts.ts";
 import { settleNonEditorial } from "./content.ts";
 import { ensureQueue, enqueue, QUEUES } from "./queue.ts";
 
 export async function registerEventJobs(boss: PgBoss) {
+  await ensureQueue(QUEUES.consolidate);
+  await boss.work<{ storyIds: number[] }>(QUEUES.consolidate, { localConcurrency: 1, pollingIntervalSeconds: 5 }, async ([job]) => {
+    if (!job) return;
+    return consolidate(job.data.storyIds);
+  });
   await ensureQueue(QUEUES.group);
   // Serial on purpose: two reports of the same new fact must not both create it.
   await boss.work<{ articleId: string; signalOnly?:boolean;force?:boolean;revision?:number;generation?:number }>(QUEUES.group, { localConcurrency: 1, pollingIntervalSeconds: 0.5 }, async ([job]) => {

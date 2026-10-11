@@ -23,9 +23,11 @@ import { BudgetExceededError, ReceiptBusyError, completeReceipt } from "../provi
 import { embeddingsAvailable, ensureEmbeddings } from "../providers/embeddings.ts";
 import { isHistorical, STALE_ON_DISCOVERY_MS } from "../content/materials.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
+import { queueConsolidation } from "../jobs/consolidation.ts";
 import { publishArticleTx } from "../publication/publish.ts";
 import { invalidateStoryDigests } from "./digest-invalidation.ts";
 import { mergeStoryInto } from "./merge.ts";
+import { trusted, rootFactOf, storyEvidence, type StoryRoot, type StoryEvidence } from "./grouping-evidence.ts";
 import {
   BATCH_SYSTEM, BatchSchema, PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, SIGNAL_SYSTEM, STORY_REVIEW_MIN_CONFIDENCE, SignalSchema, TIE_MIN_CONFIDENCE,
   batchUser, firmlyTied, lexicalSimilarity, looksLikeRoundup, pairUser, reportText, sameOccurrence, signalTarget, storyForDevelopment, verdictsByFact,
@@ -86,22 +88,6 @@ export function participantKey(source: { id: string; signal_group_id: string | n
 // ---------------------------------------------------------------------------
 // Recall
 // ---------------------------------------------------------------------------
-
-/** A membership is evidence unless its report waits for a regroup; a manual one always is. */
-const trusted = (alias: string) =>
-  sql`(${sql(alias)}.manual OR NOT EXISTS (SELECT 1 FROM regroup_pending rp WHERE rp.article_id = ${sql(alias)}.article_id))`;
-
-/**
- * The fact that started a story: the one whose earliest trusted report came first. Fact ids do not
- * follow time once stories merge or come from an import, and an emptied fact starts nothing.
- */
-const rootFactOf = (story: ReturnType<typeof sql> | number) => sql`(
-  SELECT y.id FROM facts y
-  JOIN fact_articles z ON z.fact_id = y.id AND z.role IN ('primary', 'report') AND ${trusted("z")}
-  JOIN publications q ON q.article_id = z.article_id AND q.visibility='public' AND q.eligible
-  WHERE y.story_id = ${story}
-  ORDER BY coalesce(q.published_at, q.discovered_at), y.id
-  LIMIT 1)`;
 
 /** Reports of the recall window that belong to a live fact; those waiting for a regroup only when asked for (the warm-up). */
 async function recallPool(withWaiting = false): Promise<PoolRow[]> {
@@ -388,7 +374,7 @@ async function redirectEmptiedStories(articleId: string, left: number[], storyId
       AND NOT EXISTS (SELECT 1 FROM facts f JOIN fact_articles fa ON fa.fact_id = f.id WHERE f.story_id = st.id AND fa.role IN ('primary', 'report'))`;
   const redirected: number[] = [];
   for (const { id } of emptied) {
-    if (await mergeStoryInto(Number(id), storyId, `报道已全部移走，旧地址跳到报道所在事件（最后一篇 ${articleId}）`, "grouping")) redirected.push(Number(id));
+    if (await mergeStoryInto(Number(id), storyId, `报道已全部移走，旧地址跳到报道所在事件（最后一篇 ${articleId}）`, "grouping", { requireEmptyFrom: true })) redirected.push(Number(id));
   }
   return redirected;
 }
@@ -419,42 +405,6 @@ async function relatedPosts(a: ArticleRow, db: Db = sql): Promise<{ sameUrl: Poo
 // Consolidation
 // ---------------------------------------------------------------------------
 
-interface StoryRoot {
-  storyId: number;
-  at: Date;
-  /** The story started as a multi-topic digest: never merged. */
-  roundup: boolean;
-  report: ReportView;
-}
-
-/** A story's root (rootFactOf), when it started, and the report that stands for it. */
-async function storyRoot(storyId: number): Promise<StoryRoot | null> {
-  const [row] = await sql<{
-    subject: string | null; action: string | null; object: string | null; occurred_at: Date | null;
-    title: string; summary: string | null; source: string; first_party: boolean; at: Date; started_at: Date; roundup: boolean;
-  }[]>`
-    SELECT f.subject, f.action, f.object, f.occurred_at, p.title, p.summary, s.name AS source, p.first_party,
-           coalesce(p.published_at, p.discovered_at) AS at,
-           (SELECT min(coalesce(q.published_at, q.discovered_at)) FROM fact_articles z JOIN publications q ON q.article_id = z.article_id AND q.visibility='public' AND q.eligible
-            WHERE z.fact_id = f.id AND z.role IN ('primary', 'report') AND ${trusted("z")}) AS started_at,
-           EXISTS (SELECT 1 FROM grouping_decisions d WHERE d.article_id = fa.article_id AND d.verdict = 'roundup') AS roundup
-    FROM facts f
-    JOIN fact_articles fa ON fa.fact_id = f.id AND fa.role IN ('primary', 'report') AND ${trusted("fa")}
-    JOIN publications p ON p.article_id = fa.article_id AND p.visibility='public' AND p.eligible
-    JOIN sources s ON s.id = p.source_id
-    WHERE f.id = ${rootFactOf(storyId)}
-    ORDER BY (fa.role = 'primary') DESC, p.timeline_at ASC
-    LIMIT 1`;
-  if (!row) return null;
-  return {
-    storyId, at: row.started_at, roundup: row.roundup,
-    report: {
-      title: row.title, source: row.source, firstParty: row.first_party, at: row.at, summary: row.summary,
-      frame: { subject: row.subject, action: row.action, object: row.object, occurredAt: row.occurred_at ? row.occurred_at.toISOString().slice(0, 10) : null },
-    },
-  };
-}
-
 async function judgeStories(capability: "group" | "groupReview", a: StoryRoot, b: StoryRoot): Promise<{ relation: Relation; confidence: number; difference: string; receiptId: number }> {
   const res = await chatJson({
     model: await modelFor(capability), purpose: capability === "group" ? "group_story" : "group_story_review", subject: `story:${a.storyId}:${b.storyId}`,
@@ -463,10 +413,10 @@ async function judgeStories(capability: "group" | "groupReview", a: StoryRoot, b
   return { relation: res.data.relation, confidence: res.data.confidence, difference: res.data.difference, receiptId: res.receiptId };
 }
 
-async function liveStory(id: number): Promise<number | null> {
+async function liveStory(id: number, db: Db = sql): Promise<number | null> {
   let current = id;
   for (let hops = 0; hops < 20; hops++) {
-    const [st] = await sql<{ merged_into: number | null }[]>`SELECT merged_into FROM stories WHERE id = ${current}`;
+    const [st] = await db<{ merged_into: number | null }[]>`SELECT merged_into FROM stories WHERE id = ${current}`;
     if (!st) return null;
     if (st.merged_into === null) return current;
     current = Number(st.merged_into);
@@ -479,6 +429,7 @@ export interface Consolidation {
   into: number;
   /** Both models see one story (in a dry run: would merge). */
   merge: boolean;
+  stale?: boolean;
   first: Relation;
   second: Relation | null;
   fromTitle: string;
@@ -493,33 +444,53 @@ export interface Consolidation {
  * to two different events (a comparison, a roundup) cannot fuse them on its own.
  */
 export async function consolidate(storyIds: number[], opts: { dryRun?: boolean } = {}): Promise<Consolidation[]> {
-  const live = new Set<number>();
-  for (const id of storyIds) {
-    const s = await liveStory(id);
-    if (s !== null) live.add(s);
-  }
-  if (live.size < 2) return [];
-  const roots = (await Promise.all([...live].map(storyRoot))).filter((r): r is StoryRoot => !!r && !r.roundup);
+  const roots = await sql.begin("isolation level repeatable read read only", async tx => {
+    const live = new Set<number>();
+    for (const id of storyIds) {
+      const current = await liveStory(id, tx);
+      if (current !== null) live.add(current);
+    }
+    const inputs = await Promise.all([...live].map(id => storyEvidence(id, tx)));
+    return inputs.filter((input): input is StoryEvidence => !!input && !input.root.roundup && input.story.origin !== "manual");
+  });
   if (roots.length < 2) return [];
-  roots.sort((x, y) => x.at.getTime() - y.at.getTime() || x.storyId - y.storyId);
-  const [anchor, ...others] = roots as [StoryRoot, ...StoryRoot[]];
+  const oldestFirst = (x: StoryEvidence, y: StoryEvidence) => x.root.at.getTime() - y.root.at.getTime() || x.story.id - y.story.id;
+  roots.sort(oldestFirst);
+  let anchorId = roots[0]!.story.id;
   const out: Consolidation[] = [];
-  for (const other of others) {
-    const base = { from: other.storyId, into: anchor.storyId, fromTitle: other.report.title, intoTitle: anchor.report.title };
-    const first = await judgeStories("group", anchor, other);
-    await completeReceipt(sql, first.receiptId);
-    if (!firmlyTied(first.relation, first.confidence)) {
-      out.push({ ...base, merge: false, first: first.relation, second: null, difference: first.difference });
+  for (const original of roots.slice(1)) {
+    // A preceding merge changes the survivor's membership/version. Read each pair afresh.
+    const pair = await sql.begin("isolation level repeatable read read only", async tx => {
+      const a = await liveStory(anchorId, tx), b = await liveStory(original.story.id, tx);
+      if (a === null || b === null || a === b) return null;
+      const left = await storyEvidence(a, tx), right = await storyEvidence(b, tx);
+      if (!left || !right || left.root.roundup || right.root.roundup || left.story.origin === "manual" || right.story.origin === "manual") return null;
+      return [left, right].sort(oldestFirst);
+    });
+    if (!pair) continue;
+    const anchor = pair[0]!, other = pair[1]!;
+    anchorId = anchor.story.id;
+    const base = { from: other.story.id, into: anchorId, fromTitle: other.root.report.title, intoTitle: anchor.root.report.title };
+    const expected = { from: other, into: anchor };
+    const first = await judgeStories("group", anchor.root, other.root);
+    const current = await sql.begin("isolation level repeatable read read only", async tx => ({
+      from: await storyEvidence(base.from, tx), into: await storyEvidence(base.into, tx),
+    }));
+    if (stableJson(current) !== stableJson(expected)) {
+      out.push({ ...base, merge: false, stale: true, first: first.relation, second: null, difference: first.difference });
+      if (!opts.dryRun) await queueConsolidation([base.from, base.into]);
       continue;
     }
-    // The review model reads the pair the other way round.
-    const second = await judgeStories("groupReview", other, anchor);
-    await completeReceipt(sql, second.receiptId);
-    const merge = firmlyTied(second.relation, second.confidence, STORY_REVIEW_MIN_CONFIDENCE);
-    if (merge && !opts.dryRun) {
-      await mergeStoryInto(other.storyId, anchor.storyId, `同一事件（${first.relation}，复核 ${second.relation}）：${other.report.title}｜${anchor.report.title}`, "grouping");
-    }
-    out.push({ ...base, merge, first: first.relation, second: second.relation, difference: first.difference || second.difference });
+    let second: Awaited<ReturnType<typeof judgeStories>> | null = null;
+    if (firmlyTied(first.relation, first.confidence)) second = await judgeStories("groupReview", other.root, anchor.root);
+    const agrees = !!second && firmlyTied(second.relation, second.confidence, STORY_REVIEW_MIN_CONFIDENCE);
+    const written = await mergeStoryInto(base.from, base.into,
+      `同一事件（${first.relation}，复核 ${second?.relation ?? "未通过"}）：${base.fromTitle}｜${base.intoTitle}`, "grouping", {
+        expected, receiptIds: [first.receiptId, ...(second ? [second.receiptId] : [])], dryRun: !!opts.dryRun || !agrees,
+      });
+    out.push({ ...base, merge: !!written && agrees, ...(!written ? { stale: true } : {}), first: first.relation,
+      second: second?.relation ?? null, difference: first.difference || second?.difference || "" });
+    if (!written && !opts.dryRun) await queueConsolidation([base.from, base.into]);
   }
   return out;
 }
@@ -811,6 +782,7 @@ export async function groupArticle(articleId: string, opts: GroupOptions = {}): 
       result.consolidated = await consolidate([...tied]);
       result.storyId = (await liveStory(result.storyId!)) ?? result.storyId!;
     } catch (error) {
+      await queueConsolidation([...tied]);
       result.consolidationError = String(error).slice(0, 300);
     }
   }
