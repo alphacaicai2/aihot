@@ -1,7 +1,7 @@
 // Source administration (F18): list, detail, preview (fetch without storing), edit, create with
 // duplicate checks, pause/resume and manual collection. Every change is audited.
 import { z } from "zod";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { republishKey } from "../jobs/publication.ts";
 import { normalizeUrl } from "../lib/url.ts";
@@ -115,7 +115,7 @@ export async function updateSource(id: string, input: { patch: unknown; version:
       health = CASE WHEN ${patch.enabled ?? null}::boolean IS FALSE THEN 'paused' WHEN ${patch.enabled ?? null}::boolean IS TRUE AND health = 'paused' THEN 'unknown' ELSE health END,
       next_fetch_at = CASE WHEN ${patch.enabled ?? null}::boolean IS TRUE THEN now() ELSE next_fetch_at END
       WHERE id = ${id} RETURNING *`;
-    await audit(actor, "source.update", `source:${id}`, input.reason ?? null, Object.fromEntries(keys.map((k) => [k, before[k]])), patch);
+    await audit(actor, "source.update", `source:${id}`, input.reason ?? null, Object.fromEntries(keys.map((k) => [k, before[k]])), patch, undefined, tx);
     // What public exits show for this source's articles is derived from these fields: re-derive them
     // all (in the worker) so a revoked licence or an isolated source stops on every exit.
     if (keys.some((k) => PUBLICATION_FIELDS.includes(k) && JSON.stringify(before[k]) !== JSON.stringify(patch[k]))) {
@@ -162,35 +162,42 @@ export function sourceIdentity(kind: string, config: Record<string, unknown>): s
   }
 }
 
-export async function findDuplicateSource(kind: string, config: Record<string, unknown>) {
+export async function findDuplicateSource(kind: string, config: Record<string, unknown>, db: Db = sql) {
   const identity = sourceIdentity(kind, config);
   if (!identity) return null;
-  const rows = await sql<{ id: string; kind: string; config: Record<string, unknown>; name: string }[]>`SELECT id, kind, config, name FROM sources WHERE kind = ${kind}`;
+  const rows = await db<{ id: string; kind: string; config: Record<string, unknown>; name: string }[]>`SELECT id, kind, config, name FROM sources WHERE kind = ${kind}`;
   return rows.find((r) => sourceIdentity(r.kind, r.config) === identity) ?? null;
 }
 
 export async function createSource(input: unknown, actor: string) {
   const s = CreateSchema.parse(input);
   assertSupportedConfig(s.kind, s.config);
-  const dup = await findDuplicateSource(s.kind, s.config);
-  if (dup) return { created: false as const, duplicate: dup };
-  const [row] = await sql`
-    INSERT INTO sources (id, name, kind, config, tier, participation_mode, interval_minutes, first_party, tags, site_fulltext, syndicate_fulltext, next_fetch_at)
-    VALUES (${s.id}, ${s.name}, ${s.kind}, ${sql.json(s.config as never)}, ${s.tier}, ${s.participation_mode}, ${s.interval_minutes}, ${s.first_party}, ${s.tags},
-            ${s.site_fulltext}, ${s.syndicate_fulltext}, now())
-    ON CONFLICT (id) DO NOTHING RETURNING *`;
-  if (!row) throw new Conflict(`信源 ID ${s.id} 已存在`);
-  await audit(actor, "source.create", `source:${s.id}`, null, null, s);
-  return { created: true as const, source: row };
+  return sql.begin(async (tx) => {
+    const identity = sourceIdentity(s.kind, s.config);
+    // Serialize the identity check across API processes; different IDs may name the same feed.
+    if (identity) await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`source.create:${s.kind}:${identity}`}, 0))`;
+    const dup = await findDuplicateSource(s.kind, s.config, tx);
+    if (dup) return { created: false as const, duplicate: dup };
+    const [row] = await tx`
+      INSERT INTO sources (id, name, kind, config, tier, participation_mode, interval_minutes, first_party, tags, site_fulltext, syndicate_fulltext, next_fetch_at)
+      VALUES (${s.id}, ${s.name}, ${s.kind}, ${tx.json(s.config as never)}, ${s.tier}, ${s.participation_mode}, ${s.interval_minutes}, ${s.first_party}, ${s.tags},
+              ${s.site_fulltext}, ${s.syndicate_fulltext}, now())
+      ON CONFLICT (id) DO NOTHING RETURNING *`;
+    if (!row) throw new Conflict(`信源 ID ${s.id} 已存在`);
+    await audit(actor, "source.create", `source:${s.id}`, null, null, s, undefined, tx);
+    return { created: true as const, source: row };
+  });
 }
 
 export async function fetchNow(id: string, actor: string) {
-  const [s] = await sql<{ id: string; kind: string }[]>`SELECT id, kind FROM sources WHERE id = ${id}`;
-  if (!s) return null;
-  const jobId =
-    s.kind === "mp_account"
-      ? await enqueue(QUEUES.mpCheck, { sourceId: id, reason: "manual" }, { singletonKey: `mp:${id}` })
-      : await enqueue(QUEUES.fetchSource, { sourceId: id, force: true }, { singletonKey: `manual:${id}` });
-  await audit(actor, "source.fetch", `source:${id}`, null, null, { jobId });
-  return { jobId };
+  return sql.begin(async (tx) => {
+    const [s] = await tx<{ id: string; kind: string }[]>`SELECT id, kind FROM sources WHERE id = ${id} FOR SHARE`;
+    if (!s) return null;
+    const jobId =
+      s.kind === "mp_account"
+        ? await enqueue(QUEUES.mpCheck, { sourceId: id, reason: "manual" }, { singletonKey: `mp:${id}` }, tx)
+        : await enqueue(QUEUES.fetchSource, { sourceId: id, force: true }, { singletonKey: `manual:${id}` }, tx);
+    await audit(actor, "source.fetch", `source:${id}`, null, null, { jobId }, undefined, tx);
+    return { jobId };
+  });
 }
