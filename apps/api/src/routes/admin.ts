@@ -76,7 +76,11 @@ export function registerAdmin(app: FastifyInstance) {
   // Feedback
   app.get("/api/admin/feedback", adminHandler(async (req) => listFeedback({ status: q(req).status, q: q(req).q, page: page(req) })));
   app.patch("/api/admin/feedback/:id", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await updateFeedback(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
-  app.post("/api/admin/feedback/:id/erase", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await eraseFeedback(Number(param(req, "id")), String(body(req).reason ?? ""), actorOf(admin)))));
+  app.post("/api/admin/feedback/:id/erase", adminHandler(async (req, reply, admin) => {
+    const b=body<{ reason: string; version: string }>(req);
+    if(typeof b.version!=="string" || !b.version) throw Object.assign(new Error("请刷新反馈后再删除资料"),{statusCode:400});
+    return orNotFound(req,reply,await eraseFeedback(Number(param(req,"id")),b.reason,actorOf(admin),{version:b.version}));
+  }));
   app.get("/api/admin/feedback/:id/screenshot", adminHandler(async (req, reply) => {
     const file = await feedbackScreenshot(Number(param(req, "id")));
     const data = file ? await readFile(file).catch(() => null) : null;

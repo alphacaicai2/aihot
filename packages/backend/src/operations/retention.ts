@@ -3,6 +3,7 @@ import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.ts";
 import { sql } from "../db.ts";
+import { cleanupFeedbackFiles } from "./feedback-files.ts";
 
 /** Derived caches (proxied images, share cards and posters) are rebuilt on demand; drop ones older than a month. */
 async function pruneCache(dir: string, maxAgeMs: number, now: number): Promise<number> {
@@ -27,6 +28,7 @@ async function pruneCache(dir: string, maxAgeMs: number, now: number): Promise<n
 }
 
 export async function dailyRetention(now = new Date()) {
+  await cleanupFeedbackFiles();
   const leases = await sql`DELETE FROM delivery_leases WHERE expires_at < ${now}`;
   // Scheduled-task history: 30 days (failures 90) is enough for the runs view.
   const runs = await sql`DELETE FROM job_runs WHERE started_at < ${new Date(now.getTime() - 30 * 86400_000)} AND (status IS DISTINCT FROM 'failed' OR started_at < ${new Date(now.getTime() - 90 * 86400_000)})`;

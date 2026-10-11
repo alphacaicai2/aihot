@@ -4,6 +4,7 @@ import { Form, useSearchParams } from "react-router";
 import type { Route } from "./+types/feedback";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
+import { toast } from "../../features/admin/toast";
 import { bj } from "../../features/admin/format";
 import { FEEDBACK_STATUS } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, Empty, FilterChips, Input, Pager, ReasonDialog, Select, Textarea, Time } from "../../features/admin/ui";
@@ -22,6 +23,8 @@ interface Feedback {
   forward_error: string | null;
   created_at: string;
   updated_at: string;
+  erased_at: string | null;
+  cleanup_pending: boolean;
   banned: boolean;
   from_source: number;
 }
@@ -45,6 +48,7 @@ function FeedbackCard({ f }: { f: Feedback }) {
   const { run, pending } = useAdminAction();
   const [note, setNote] = useState(f.note ?? "");
   const [dialog, setDialog] = useState<null | "ban" | "erase">(null);
+  const [eraseVersion, setEraseVersion] = useState<string | null>(null);
   const base = `/api/admin/feedback/${f.id}`;
   const version = new Date(f.updated_at).toISOString();
   return (
@@ -57,7 +61,9 @@ function FeedbackCard({ f }: { f: Feedback }) {
         {f.page_url && <a className="max-w-[320px] truncate hover:text-accent" href={f.page_url} target="_blank" rel="noreferrer">{f.page_url}</a>}
         {f.from_source > 1 && <Badge tone="info" title="同一来源（IP 与浏览器家族的不可逆标识）">同来源 {f.from_source} 条</Badge>}
         {f.banned && <Badge tone="bad">来源已封禁</Badge>}
-        {!f.forwarded_at && f.status === "new" && (
+        {f.erased_at && <Badge>本站资料已删除</Badge>}
+        {f.cleanup_pending && <Badge tone="warn">截图清理待完成</Badge>}
+        {!f.erased_at && !f.forwarded_at && f.status === "new" && (
           <Badge tone="warn" title={f.forward_error && f.forward_error !== "pending" ? `还没有转发到内部飞书群：${f.forward_error}` : "还没有转发到内部飞书群"}>未转发</Badge>
         )}
       </div>
@@ -84,7 +90,7 @@ function FeedbackCard({ f }: { f: Feedback }) {
             保存备注
           </Button>
           <Button tone="ghost" onClick={() => setDialog(f.banned ? null : "ban")} disabled={f.banned} title="拒绝这个来源的后续反馈">封禁来源</Button>
-          <Button tone="ghost" onClick={() => setDialog("erase")} title="按隐私说明删除提交者的资料">删除资料</Button>
+          {(!f.erased_at || f.cleanup_pending) && <Button tone="ghost" onClick={() => { setEraseVersion(version); setDialog("erase"); }} title="删除本站保存的提交者资料">{f.erased_at ? "重试截图清理" : "删除资料"}</Button>}
         </div>
       </div>
       <ReasonDialog
@@ -98,12 +104,17 @@ function FeedbackCard({ f }: { f: Feedback }) {
       />
       <ReasonDialog
         open={dialog === "erase"}
-        title="删除提交者资料"
-        description="删除正文、邮箱、页面地址和截图，只保留处理记录。不可恢复。"
+        title={f.erased_at ? "重试截图清理" : "删除提交者资料"}
+        description={f.erased_at ? "正文与联系方式已删除，本次只重试清理本站截图。" : `删除本站保存的正文、邮箱、页面地址和截图，只保留处理记录。不可恢复。${f.forwarded_at ? "已转发的副本需在内部群中另行处理。" : ""}`}
         danger
-        confirmLabel="删除"
+        confirmLabel={f.erased_at ? "重试清理" : "删除"}
         onClose={() => setDialog(null)}
-        onSubmit={async (reason) => (await run("POST", `${base}/erase`, { reason }, { label: "erase", success: "资料已删除" })) !== null}
+        onSubmit={async (reason) => {
+          const result = await run<{ erased: boolean; cleanupPending: boolean }>("POST", `${base}/erase`, { reason, version: eraseVersion }, { label: "erase" });
+          if (!result) return false;
+          toast(result.cleanupPending ? "本站资料已删除，截图清理待完成" : "本站资料已删除", result.cleanupPending ? "info" : "ok");
+          return true;
+        }}
       />
     </article>
   );

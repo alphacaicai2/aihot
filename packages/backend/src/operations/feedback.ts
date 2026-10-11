@@ -1,13 +1,14 @@
 // Feedback: content, optional email, page URL, one optional screenshot. The screenshot
 // goes to the internal Feishu chat and only its image key is stored. Abuse control uses an unreadable
 // source identifier (HMAC of client IP + UA family), per-source bans and a per-minute limit.
-import { createHmac } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHmac, randomUUID } from "node:crypto";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { config, credential } from "../config.ts";
 import { sql } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
 import { feishuInternalEnabled, forwardFeedbackToFeishu } from "../notify/feishu.ts";
+import { cleanupFeedbackFiles } from "./feedback-files.ts";
 
 export class FeedbackRejected extends Error {
   readonly status: number;
@@ -63,16 +64,27 @@ export async function submitFeedback(input: FeedbackInput): Promise<{ id: number
     if (!/^image\/(png|jpeg|webp|gif)$/.test(input.screenshot.mime)) throw new FeedbackRejected(400, "invalid_request", "截图需要是 PNG、JPG、WebP 或 GIF。");
     if (input.screenshot.data.length > 8 * 1024 * 1024) throw new FeedbackRejected(400, "invalid_request", "截图最大 8MB。");
     // Stored locally only until it is forwarded (notify/feishu.ts); the database keeps only an identifier.
-    const name = `${sha256(input.screenshot.data).slice(0, 24)}.${input.screenshot.mime.split("/")[1]}`;
+    // Each submission owns its file, even when readers attach identical screenshots.
+    const name = `${sha256(input.screenshot.data)}-${randomUUID()}.${input.screenshot.mime.split("/")[1]}`;
     const dir = path.join(config.dataDir, "feedback-screenshots");
     await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, name), input.screenshot.data);
+    await writeFile(path.join(dir, name), input.screenshot.data, { flag: "wx" });
     screenshotKey = `local:${name}`;
   }
-  const [row] = await sql<{ id: number }[]>`
-    INSERT INTO feedback (content, email, page_url, screenshot_key, source_hash, forward_error)
-    VALUES (${content}, ${email}, ${pageUrl}, ${screenshotKey}, ${source}, 'pending') RETURNING id`;
-  const id = row!.id;
+  let id: number;
+  try {
+    id = await sql.begin(async tx => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`feedback-source:${source}`},0))`;
+      const [banned] = await tx`SELECT 1 FROM feedback_bans WHERE source_hash=${source}`;
+      if (banned) throw new FeedbackRejected(403, "forbidden", "暂时无法提交反馈。");
+      const [row] = await tx<{ id: number }[]>`INSERT INTO feedback (content,email,page_url,screenshot_key,source_hash,forward_error)
+        VALUES(${content},${email},${pageUrl},${screenshotKey},${source},'pending') RETURNING id`;
+      return row!.id;
+    });
+  } catch (error) {
+    if (screenshotKey) await unlink(path.join(config.dataDir,"feedback-screenshots",screenshotKey.slice(6))).catch(()=>{});
+    throw error;
+  }
   void forwardFeedbackToFeishu(id).catch(() => {});
   return { id };
 }
@@ -82,9 +94,10 @@ export async function submitFeedback(input: FeedbackInput): Promise<{ id: number
  * failing) is tried again for a week. Newer than a few minutes is still being sent by its submission.
  */
 export async function forwardPendingFeedback(): Promise<{ sent: number; failed: number }> {
+  await cleanupFeedbackFiles();
   if (!feishuInternalEnabled()) return { sent: 0, failed: 0 };
   const rows = await sql<{ id: number }[]>`
-    SELECT id FROM feedback WHERE forwarded_at IS NULL AND forward_error IS NOT NULL
+    SELECT id FROM feedback WHERE forwarded_at IS NULL AND forward_error IS NOT NULL AND erased_at IS NULL
       AND created_at < now() - interval '5 minutes' AND created_at > now() - interval '7 days'
     ORDER BY id LIMIT 20`;
   let sent = 0;
