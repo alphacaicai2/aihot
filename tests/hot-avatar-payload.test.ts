@@ -2,6 +2,7 @@ import { tag } from './setup.ts';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, test } from 'node:test';
+import { publishArticle } from '@aihot/backend/publication/publish';
 import { closeDb, sql } from '@aihot/backend/db';
 import { loadHotStrip, rankingExtras, type HotEntry } from '@aihot/backend/events/hot-read';
 import { proxiedImage } from '@aihot/backend/media/imgproxy';
@@ -28,6 +29,7 @@ const storyIds: number[] = [];
 after(async () => {
   if (rankingId !== undefined) await sql`DELETE FROM hot_rankings WHERE id=${rankingId}`;
   if (storyIds.length) await sql`DELETE FROM story_signals WHERE story_id=ANY(${storyIds}::bigint[])`;
+  if (storyIds.length) await sql`DELETE FROM facts WHERE story_id=ANY(${storyIds}::bigint[])`;
   if (storyIds.length) await sql`DELETE FROM stories WHERE id=ANY(${storyIds}::bigint[])`;
   await sql`DELETE FROM articles WHERE source_id LIKE ${t+'%'}`;
   await sql`DELETE FROM sources WHERE id LIKE ${t+'%'}`;
@@ -40,17 +42,22 @@ test('faces are 精选组 sources by tier (T1, T1.5, T2), at most 6; 氛围组 o
       VALUES (${sourceId(i)},${name(i)},'rss',${person.tier},${person.kind === 'editorial' ? 'editorial' : 'hot_signal'},${imageUrl(i)},'2100-01-01')`;
     await sql`INSERT INTO articles (id,source_id,identity_key,url,title,discovered_at,timeline_at)
       VALUES(${sourceId(i)},${sourceId(i)},${sourceId(i)},${'https://example.org/'+sourceId(i)},${name(i)},now(),now())`;
+    await sql`INSERT INTO analyses(article_id,input_revision,origin,relevance,title_zh,summary_zh,selected)
+      VALUES(${sourceId(i)},1,'rule','pass',${name(i)},'当前公开报道',false)`;
+    await publishArticle(sourceId(i));
   }
   const entries: HotEntry[] = [];
   const at = new Date('2099-01-01T00:00:00Z');
   for (let i=0;i<3;i++) {
     const [story] = await sql<{id:number;public_id:string}[]>`INSERT INTO stories(public_id,title) VALUES(${randomUUID()},${t}) RETURNING id,public_id`;
     storyIds.push(story!.id);
+    const [fact]=await sql<{id:number}[]>`INSERT INTO facts(public_id,story_id,title) VALUES(${`${t}-${i}`},${story!.id},${t}) RETURNING id`;
+    for(const [p,person] of inputs.entries())if(person.kind==='editorial')await sql`INSERT INTO fact_articles(fact_id,article_id,role) VALUES(${fact!.id},${sourceId(p)},'report')`;
     for (const [p, person] of inputs.entries()) await sql`INSERT INTO story_signals(story_id,article_id,participant_key,source_id,kind,observed_at)
       VALUES(${story!.id},${sourceId(p)},${sourceId(p)},${sourceId(p)},${person.kind},${at})`;
     entries.push({ rank:i+1,storyId:story!.id,storyPublicId:story!.public_id,title:t,heat:10,trend:'flat',trendPct:0,badges:[],
-      participantCount:12,sourceCount:8,signalCount:2,reportCount:5,sourceNames:inputs.map((_,n)=>name(n)),latestAt:at.toISOString(),firstReportAt:at.toISOString(),
-      representativeItemId:null,representativeUrl:null,representativeSource:null,participants:inputs.map((p,n)=>({name:name(n),kind:p.kind,tier:p.tier})) });
+      participantCount:10,sourceCount:8,signalCount:2,reportCount:8,sourceNames:inputs.flatMap((p,n)=>p.kind==='editorial'?[name(n)]:[]),latestAt:at.toISOString(),firstReportAt:at.toISOString(),
+      representativeItemId:sourceId(1),representativeUrl:'https://example.org/'+sourceId(1),representativeSource:name(1),participants:inputs.map((p,n)=>({name:name(n),kind:p.kind,tier:p.tier})) });
   }
   const [saved] = await sql<{id:number}[]>`INSERT INTO hot_rankings(computed_at,rule_version,entries,published)
     VALUES(${at},'test',${sql.json(entries as never)},true) RETURNING id`;

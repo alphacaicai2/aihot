@@ -670,6 +670,11 @@ export async function groupArticle(articleId: string, opts: GroupOptions = {}): 
   if(manual)return commitGrouping(input,opts,async ()=>({verdict:'manual',factId:manual.factId}));
   const reset=!!opts.force || a.regroup_pending;
   let left:number[]=[];
+  if(a.participation_mode==='isolated' || override?.visibility==='withdrawn' || publication?.visibility==='withdrawn')return commitGrouping(input,opts,async tx=>{
+    if(reset)await resetAutomatic(tx,articleId);
+    await markGrouped(tx,articleId);
+    return {verdict:'skipped'};
+  });
   if(isHistorical(a))return commitGrouping(input,opts,async tx=>{
     if(reset)await resetAutomatic(tx,articleId);
     await markGrouped(tx,articleId);

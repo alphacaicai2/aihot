@@ -92,7 +92,7 @@ test("shards keep to the query length and account limits, per participation mode
 
 test("one search reads a shard; each account gets its own posts, run and watermark", async () => {
   const before = queries.length;
-  const res = await collectXShard(`editorial:test-${T}`, IDS);
+  const res = await collectXShard(`editorial:test-${T}`, [...IDS].reverse());
   assert.equal(res.status, "ok");
   const asked = queries.slice(before);
   assert.equal(asked.length, 2, "one search for three accounts (two pages of posts)");

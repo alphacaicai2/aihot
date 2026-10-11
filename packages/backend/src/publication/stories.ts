@@ -186,23 +186,18 @@ async function sparklines(storyIds: number[], at: Date): Promise<Map<number, Arr
   return out;
 }
 
-// Pictures for a ranking change only with the ranking, so they are read once per ranking.
+// A licence or withdrawal can change pictures without changing the ranking. Coalesce concurrent reads only.
 type HotCoverMap = Map<number, { url: string; width: number | null; height: number | null }>;
-let coversCache: { rankingId: number; covers: HotCoverMap } | null = null;
 const coversPending = new Map<number, Promise<HotCoverMap>>();
 
 /** A picture per story from its public full-text reports, the representative first, wide enough for a card. */
 async function hotCovers(rankingId: number, entries: Array<{ storyId: number; representativeItemId: string | null }>, at: Date) {
-  if (coversCache?.rankingId === rankingId) return coversCache.covers;
   const pending = coversPending.get(rankingId);
   if (pending) return pending;
   const load = queryHotCovers(entries, at);
   coversPending.set(rankingId, load);
-  try {
-    const covers = await load;
-    coversCache = { rankingId, covers };
-    return covers;
-  } finally { coversPending.delete(rankingId); }
+  try { return await load; }
+  finally { coversPending.delete(rankingId); }
 }
 
 async function queryHotCovers(entries: Array<{ storyId: number; representativeItemId: string | null }>, at: Date) {

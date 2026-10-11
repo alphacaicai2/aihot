@@ -1,6 +1,7 @@
 // Reading the latest published hot ranking. The web shows heat values; machine exits only ranks.
 import type { HotParticipant, HotStripEntry } from "@aihot/contracts/site";
 import { sql } from "../db.ts";
+import { visibleHeatSignals } from "./heat-evidence.ts";
 import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 
 export interface HotEntry {
@@ -25,6 +26,8 @@ export interface HotEntry {
   representativeSource: string | null;
   /** 精选组 first by tier, then 氛围组; tier is absent on rankings from before 2026-09-29. */
   participants: Array<{ name: string; kind: "editorial" | "signal"; tier?: string }>;
+  /** Internal snapshot witnesses; public response builders expose only the fields above. */
+  evidence?: { reportIds:string[]; signals:Array<{articleId:string;sourceId:string;participantKey:string;kind:string;at:string;name:string;tier:string}> };
 }
 
 /** Faces are the 精选组 sources, T1 before T1.5 before T2; the rest (and 氛围组) count in "+N". */
@@ -54,19 +57,58 @@ async function queryLatestHotRanking(): Promise<HotRanking | null> {
   const [row] = await sql<{ id: number; computed_at: Date; rule_version: string; entries: HotEntry[]; evidence: Record<string, unknown> | null }[]>`
     SELECT id, computed_at, rule_version, entries, evidence FROM hot_rankings WHERE published ORDER BY computed_at DESC LIMIT 1`;
   if (!row) return null;
-  return { id: row.id, computedAt: row.computed_at.toISOString(), ruleVersion: row.rule_version, entries: row.entries, coverage: row.evidence };
+  // The snapshot is historical evidence, not permission to keep exposing a withdrawn report,
+  // isolated/renamed source, merged event or obsolete event title until the next scheduled ranking.
+  const ids = row.entries.map(e => e.storyId);
+  const [stories, people] = await Promise.all([
+    sql<{ id:number; title:string; merged_into:number|null; report_ids:string[]; representative_id:string|null; representative_url:string|null; representative_source:string|null }[]>`
+      SELECT s.id,s.title,s.merged_into,
+        (SELECT coalesce(array_agg(DISTINCT p.article_id),ARRAY[]::text[]) FROM facts f JOIN fact_articles fa ON fa.fact_id=f.id
+          JOIN publications p ON p.article_id=fa.article_id JOIN sources src ON src.id=p.source_id
+          WHERE f.story_id=s.id AND p.visibility='public' AND p.eligible AND src.participation_mode='editorial'
+            AND (NOT p.selected OR p.visible_after<=${row.computed_at})) AS report_ids,
+        p.article_id AS representative_id,p.url AS representative_url,src.name AS representative_source
+      FROM stories s LEFT JOIN publications p ON p.article_id IN (
+        SELECT e->>'representativeItemId' FROM jsonb_array_elements(${sql.json(row.entries as never)}) e
+        WHERE (e->>'storyId')::bigint=s.id) AND p.visibility='public' AND p.eligible
+        AND (NOT p.selected OR p.visible_after<=${row.computed_at})
+      LEFT JOIN sources src ON src.id=p.source_id AND src.participation_mode='editorial'
+      WHERE s.id=ANY(${ids}::bigint[])`,
+    sql<{ story_id:number; article_id:string;source_id:string;participant_key:string;observed_at:Date;name:string; kind:'editorial'|'signal'; tier:string }[]>`
+      SELECT ss.story_id,ss.article_id,ss.source_id,ss.participant_key,ss.observed_at,ss.name,ss.kind,ss.tier
+      FROM ${visibleHeatSignals(row.computed_at)} ss
+      WHERE ss.story_id=ANY(${ids}::bigint[]) AND ss.observed_at>${row.computed_at}::timestamptz-interval '48 hours'
+        AND ss.observed_at<=${row.computed_at}
+      ORDER BY ss.story_id,ss.participant_key,(ss.kind='editorial'),ss.observed_at`,
+  ]);
+  const byStory = new Map(stories.map(s => [s.id,s]));
+  const entries = row.entries.filter(e => {
+    const s = byStory.get(e.storyId), signals = people.filter(p => p.story_id===e.storyId);
+    const participants = [...new Map(signals.map(p => [p.participant_key,p])).values()];
+    if (!s || s.merged_into!==null || !s.report_ids.length) return false;
+    if (e.representativeItemId && (s.representative_id!==e.representativeItemId || !s.representative_source
+      || s.representative_source!==e.representativeSource || s.representative_url!==e.representativeUrl)) return false;
+    if (e.evidence) return e.evidence.reportIds.every(id => s.report_ids.includes(id))
+      && e.evidence.signals.every(old => signals.some(p => p.article_id===old.articleId && p.source_id===old.sourceId
+        && p.participant_key===old.participantKey && p.kind===old.kind && p.observed_at.toISOString()===old.at
+        && p.name===old.name && p.tier===old.tier));
+    // Rankings predating witnesses use the conservative aggregate checks until recomputed.
+    const editorial = participants.filter(p => p.kind==='editorial');
+    return s.report_ids.length===e.reportCount && participants.length===e.participantCount && editorial.length===e.sourceCount && participants.length-editorial.length===e.signalCount
+      && e.sourceNames.every(name => editorial.some(p => p.name===name))
+      && e.participants.every(old => participants.some(p => p.name===old.name && p.kind===old.kind && (!old.tier || p.tier===old.tier)));
+  }).map((e,i) => ({...e,title:byStory.get(e.storyId)!.title,rank:i+1}));
+  return { id: row.id, computedAt: row.computed_at.toISOString(), ruleVersion: row.rule_version, entries, coverage: row.evidence };
 }
 
-// Faces and words change only with the ranking, so they are read once per ranking.
+// Coalesce concurrent reads only; edits can change faces and words without a new ranking.
 interface Extras {
   faces: Map<string, string | null>;
   texts: Map<number, { summary: string | null; latest: string | null }>;
 }
-let extrasCache: { rankingId: number; extras: Extras } | null = null;
 const extrasPending = new Map<number, Promise<Extras>>();
 
 async function readExtras(ranking: HotRanking): Promise<Extras> {
-  if (extrasCache?.rankingId === ranking.id) return extrasCache.extras;
   const pending = extrasPending.get(ranking.id);
   if (pending) return pending;
   const load = queryExtras(ranking);
@@ -81,7 +123,7 @@ async function queryExtras(ranking: HotRanking): Promise<Extras> {
     // A participant's face: the source's icon, else the avatar on that account's latest post in the story.
     sql<{ name: string; icon_url: string | null; avatar: string | null }[]>`
       SELECT DISTINCT ON (s.id) s.name, s.icon_url, a.x_post->>'avatarUrl' AS avatar
-      FROM story_signals ss JOIN sources s ON s.id = ss.source_id
+      FROM ${visibleHeatSignals(new Date(ranking.computedAt))} ss JOIN sources s ON s.id = ss.source_id
       LEFT JOIN articles a ON a.id = ss.article_id AND a.x_post ? 'avatarUrl'
       WHERE ss.story_id = ANY(${ids}::bigint[])
       ORDER BY s.id, (a.id IS NULL), a.discovered_at DESC`,
@@ -92,7 +134,6 @@ async function queryExtras(ranking: HotRanking): Promise<Extras> {
     faces: new Map(faces.map((f) => [f.name, f.icon_url ?? f.avatar])),
     texts: new Map(texts.map((t) => [Number(t.id), { summary: t.digest ?? t.summary, latest: t.latest }])),
   };
-  extrasCache = { rankingId: ranking.id, extras };
   return extras;
 }
 
