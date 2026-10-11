@@ -26,6 +26,11 @@ const param = (req: FastifyRequest, name: string) => (req.params as Record<strin
 const notFound = (req: FastifyRequest, reply: FastifyReply) => sendProblem(req, reply, { status: 404, code: "not_found", detail: "Not found." });
 const orNotFound = <T>(req: FastifyRequest, reply: FastifyReply, value: T | null) => (value === null || value === undefined ? notFound(req, reply) : value);
 const page = (req: FastifyRequest) => Math.max(1, Number(q(req).page) || 1);
+const recoveryRequestId = (req: FastifyRequest) => {
+  const id=req.headers['idempotency-key'];
+  if(typeof id!=="string" || !/^[\w-]{8,80}$/.test(id)) throw Object.assign(new Error("请刷新页面后重新提交恢复操作"),{statusCode:400});
+  return id;
+};
 
 function decodeImage(dataUrl: unknown): Buffer {
   const m = /^data:image\/(png|jpeg|webp);base64,(.+)$/s.exec(String(dataUrl ?? ""));
@@ -100,10 +105,14 @@ export function registerAdmin(app: FastifyInstance) {
 
   // Runs (F20)
   app.get("/api/admin/runs", adminHandler(async () => runsOverview()));
-  app.post("/api/admin/receipts/:id/release", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await releaseReceipt(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
+  app.post("/api/admin/receipts/:id/release", adminHandler(async (req, reply, admin) => {
+    const b=body<{billed:boolean;note:string;version:string}>(req);
+    if(typeof b.version!=="string" || !b.version) throw Object.assign(new Error("请刷新回执后重新核对"),{statusCode:400});
+    return orNotFound(req,reply,await releaseReceipt(Number(param(req,"id")),b,actorOf(admin),{requestId:recoveryRequestId(req)}));
+  }));
   app.post("/api/admin/receipts/confirm-zero-cost", adminHandler(async (req, _reply, admin) => confirmZeroCostReceipts(body(req) as never, actorOf(admin))));
   app.post("/api/admin/deliveries/:id/resolve", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await resolveDelivery(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
-  app.post("/api/admin/processing/requeue", adminHandler(async (req, _reply, admin) => requeueFailedArticles(body(req) as never, actorOf(admin))));
+  app.post("/api/admin/processing/requeue", adminHandler(async (req, _reply, admin) => requeueFailedArticles(body(req) as never,actorOf(admin),{requestId:recoveryRequestId(req)})));
 
   // Reset monitor corrections (F12)
   app.get("/api/admin/monitor/events", adminHandler(async (req) => listMonitorEvents({ withdrawn: q(req).withdrawn === "1" })));

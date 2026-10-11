@@ -1,5 +1,5 @@
 // Resume business work, preserving both the original uncertain call and its durable fallback route.
-import { sql } from "../db.ts";
+import { sql, type Tx } from "../db.ts";
 import { storyDigestNeedsUpdate } from "../events/digest.ts";
 import { configuredDefaultFallback } from "../providers/llm.ts";
 import { queueProcessing } from "./content.ts";
@@ -11,8 +11,9 @@ const ANALYSIS_TAGS: Record<string, RegExp> = {
 };
 const GROUP_PURPOSES = new Set(["group_article", "group_review", "group_signal"]);
 
-export async function recoverReceiptWork(id: number): Promise<{ state: string; requeued: boolean }> {
-  const [target] = await sql<{ purpose: string; subject: string; logical_key: string }[]>`
+export async function recoverReceiptWork(id: number, db?: Tx): Promise<{ state: string; requeued: boolean }> {
+  const read = db ?? sql;
+  const [target] = await read<{ purpose: string; subject: string; logical_key: string }[]>`
     SELECT purpose, subject, logical_key FROM receipts WHERE id = ${id}`;
   if (!target) return { state: "missing", requeued: false };
   const tag = /:[a-f0-9]{64}:(.+)$/.exec(target.logical_key)?.[1];
@@ -26,7 +27,7 @@ export async function recoverReceiptWork(id: number): Promise<{ state: string; r
     : target.purpose === "story_digest" && story ? QUEUES.digest : null;
   if (!queue) return { state: "unsupported", requeued: false };
   await ensureQueue(queue);
-  return sql.begin(async (tx) => {
+  const run = async (tx: Tx) => {
     const ref = article?.[1] ?? story![1]!;
     await tx`SELECT pg_advisory_xact_lock(hashtext(${`receipt-work:${queue}:${ref}`}))`;
     const [receipt] = await tx<{ status: string; fallback_model: string | null; fallback_status: string | null; fallback_error: string | null }[]>`
@@ -64,7 +65,8 @@ export async function recoverReceiptWork(id: number): Promise<{ state: string; r
     if (!(await storyDigestNeedsUpdate(Number(ref), tx))) return { state: "settled", requeued: false };
     const job = await enqueue(queue, { storyId: Number(ref) }, { singletonKey: `story:${ref}` }, tx);
     return { state: job ? "queued" : "in-flight", requeued: !!job };
-  }) as Promise<{ state: string; requeued: boolean }>;
+  };
+  return db ? run(db) : sql.begin(run) as Promise<{ state: string; requeued: boolean }>;
 }
 
 /** Only unfinished business with a usable fallback is considered; unknown fallbacks stay blocked. */

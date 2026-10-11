@@ -1,6 +1,9 @@
 // Runs view: task timeline, queue backlog, source lag, error classes, process
 // heartbeats, and the receipts and deliveries whose outcome needs an operator.
-import { sql } from "../db.ts";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { sql, type Tx } from "../db.ts";
+import { sha256, stableJson } from "../lib/ids.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
 import { failureGroupSql, requeueFailed } from "../jobs/content.ts";
@@ -10,6 +13,24 @@ import { pendingBillingReview } from "../providers/billing-review.ts";
 import { backupOverview } from "../operations/backup.ts";
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
+const Reason = z.string().trim().min(1).max(2000);
+const Version = z.string().datetime({ offset: true });
+const RequestId = z.string().regex(/^[\w-]{8,80}$/);
+function parse<T>(schema: z.ZodType<T>, input: unknown): T {
+  const result=schema.safeParse(input);
+  if(!result.success) throw Object.assign(new Error(result.error.message),{statusCode:400});
+  return result.data;
+}
+
+/** The audit outlives queue jobs, so a lost HTTP reply cannot submit the same recovery twice. */
+async function previousRecoveryCommand<T>(tx: Tx, actor: string, action: string, subject: string, requestId: string, fingerprint: string): Promise<T | null> {
+  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`admin-recovery:${actor}:${action}:${requestId}`},0))`;
+  const [saved]=await tx<{subject:string;after:{command?:{fingerprint:string;result:T}}}[]>`SELECT subject,after FROM audit_log
+    WHERE actor=${actor} AND action=${action} AND request_id=${requestId} ORDER BY id LIMIT 1`;
+  if(!saved) return null;
+  if(saved.subject!==subject || saved.after?.command?.fingerprint!==fingerprint) throw new Conflict("这次操作的参数已改变，请刷新页面后重新提交");
+  return saved.after.command.result;
+}
 
 export async function runsOverview() {
   const [heartbeats, latest, timeline, queues, failedJobs, lagging, receipts, receiptIssues, deliveries, errors, ingest, leaderboard, receiptRecovery] = await Promise.all([
@@ -170,28 +191,53 @@ export async function confirmZeroCostReceipts(input: { receiptIds: number[]; not
  * failed, so the next attempt calls again; an article that stopped on it goes straight back to
  * processing (one action, not two). Only an unknown receipt is released, once.
  */
-async function release(id: number, error: string, actor: string, note: string, billed: boolean | null) {
-  const before = await sql.begin(async (tx) => {
-    const [row] = await tx<{ subject: string | null; purpose: string }[]>`
-      UPDATE receipts SET status = 'failed', error = ${error}, updated_at = now() WHERE id = ${id} AND status = 'unknown' RETURNING subject, purpose`;
-    if (row) await tx`UPDATE receipt_attempts SET release_note = ${error}, released_at = now()
+async function release(id: number, error: string, actor: string, note: string, billed: boolean | null,
+  options: { requestId?: string; input?: unknown; version?: string; autoAt?: number } = {}) {
+  const subject=`receipt:${id}`,fingerprint=sha256(stableJson(options.input ?? {}));
+  return sql.begin(async tx => {
+    if(options.requestId){
+      const saved=await previousRecoveryCommand<{id:number;status:string;subject:string|null;purpose:string;requeued:boolean}>(tx,actor,"receipt.release",subject,options.requestId,fingerprint);
+      if(saved) return saved;
+    }
+    const [row]=await tx<{subject:string|null;purpose:string;status:string;updated_at:Date;billing_review:unknown}[]>`
+      SELECT subject,purpose,status,updated_at,billing_review FROM receipts WHERE id=${id} FOR UPDATE`;
+    if(!row) return null;
+    if(row.status!=="unknown") {
+      if(options.autoAt!==undefined) return null;
+      throw new Conflict("只有结果未知的回执需要人工核对");
+    }
+    if(row.billing_review){
+      if(options.autoAt!==undefined) return null;
+      throw new Conflict("这条回执已确认计费，原始结果需要保留；计费确认不授权重发");
+    }
+    if(options.version!==undefined && row.updated_at.toISOString()!==options.version) throw new Conflict("这条回执已发生变化，请刷新后重新核对");
+    if(options.autoAt!==undefined){
+      const route=configuredDefaultFallback();
+      const [eligible]=await tx`SELECT 1 FROM receipts r WHERE r.id=${id}
+        AND r.updated_at<${new Date(options.autoAt-AUTO_RELEASE_AFTER_MS)} AND r.billing_review IS NULL
+        AND NOT EXISTS(SELECT 1 FROM receipt_attempts a WHERE a.receipt_id=r.id AND (a.released_at IS NOT NULL OR a.error LIKE ${AUTO_RELEASE_NOTE+"%"}))
+        AND NOT EXISTS(SELECT 1 FROM model_fallback_routes f WHERE f.primary_receipt_id=r.id OR f.fallback_receipt_id=r.id)
+        AND NOT(${!!route} AND r.service=${route?.primary.service ?? ""} AND r.model=${route?.primary.model ?? ""})`;
+      if(!eligible) return null;
+    }
+    await tx`UPDATE receipts SET status='failed',error=${error},updated_at=now() WHERE id=${id}`;
+    await tx`UPDATE receipt_attempts SET release_note = ${error}, released_at = now()
       WHERE receipt_id = ${id} AND status = 'unknown' AND released_at IS NULL`;
-    return row;
+    const {requeued}=await recoverReceiptWork(id,tx);
+    const result={id,status:"failed",subject:row.subject,purpose:row.purpose,requeued};
+    await audit(actor,"receipt.release",subject,note,{status:"unknown"},
+      {status:"failed",billed,requeued,...(options.requestId ? {command:{fingerprint,result}} : {})},options.requestId,tx);
+    return result;
   });
-  if (!before) return null;
-  const { requeued } = await recoverReceiptWork(id);
-  await audit(actor, "receipt.release", `receipt:${id}`, note, { status: "unknown" }, { status: "failed", billed, requeued });
-  return { id, status: "failed", subject: before.subject, purpose: before.purpose, requeued };
 }
 
 /** Admin, after checking the provider's console: records whether it was billed and releases it. */
-export async function releaseReceipt(id: number, input: { billed: boolean; note: string }, actor: string) {
-  if (!input.note?.trim()) throw new Error("note is required");
-  const [row] = await sql<{ status: string }[]>`SELECT status FROM receipts WHERE id = ${id}`;
-  if (!row) return null;
-  if (row.status !== "unknown") throw new Conflict("只有结果未知的回执需要人工核对");
+export async function releaseReceipt(id: number, input: { billed: boolean; note: string; version?: string }, actor: string, options: { requestId?: string } = {}) {
+  parse(z.number().int().positive().max(Number.MAX_SAFE_INTEGER),id);
+  input=parse(z.object({billed:z.boolean(),note:Reason,version:Version.optional()}).strict(),input);
+  const requestId=parse(RequestId,options.requestId ?? randomUUID());
   const error = `人工核对：${input.billed ? "供应商已计费但结果未取回" : "供应商未计费"}。${input.note}`;
-  return release(id, error, actor, input.note, input.billed);
+  return release(id,error,actor,input.note,input.billed,{requestId,input,version:input.version});
 }
 
 const AUTO_RELEASE_AFTER_MS = 30 * 60_000;
@@ -215,7 +261,7 @@ export async function autoReleaseUnknownReceipts(now = Date.now()) {
   let released = 0;
   let requeued = 0;
   for (const r of rows) {
-    const done = await release(r.id, AUTO_RELEASE_NOTE, "ops.recover", "结果未知，自动放行一次", null);
+    const done = await release(r.id, AUTO_RELEASE_NOTE, "ops.recover", "结果未知，自动放行一次", null, {autoAt:now});
     if (done) released += 1;
     if (done?.requeued) requeued += 1;
   }
@@ -223,11 +269,17 @@ export async function autoReleaseUnknownReceipts(now = Date.now()) {
 }
 
 /** Failed articles (one failure group, or all of the last 30 days) back into processing. */
-export async function requeueFailedArticles(input: { group: string | null; reason: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
-  const result = await requeueFailed(input.group);
-  await audit(actor, "processing.requeue", input.group ? `failure:${input.group.slice(0, 80)}` : "failure:all", input.reason, null, result);
-  return result;
+export async function requeueFailedArticles(input: { group: string | null; reason: string }, actor: string, options: {requestId?:string} = {}) {
+  input=parse(z.object({group:z.string().max(200).nullable(),reason:Reason}).strict(),input);
+  const requestId=parse(RequestId,options.requestId ?? randomUUID()),fingerprint=sha256(stableJson(input));
+  const subject=input.group ? `failure:${input.group.slice(0,80)}` : "failure:all";
+  return sql.begin(async tx => {
+    const saved=await previousRecoveryCommand<Awaited<ReturnType<typeof requeueFailed>>>(tx,actor,"processing.requeue",subject,requestId,fingerprint);
+    if(saved) return saved;
+    const result=await requeueFailed(input.group,tx);
+    await audit(actor,"processing.requeue",subject,input.reason,null,{...result,command:{fingerprint,result}},requestId,tx);
+    return result;
+  });
 }
 
 /** An in-doubt delivery: confirmed as arrived, given up, or sent again after checking the group. */

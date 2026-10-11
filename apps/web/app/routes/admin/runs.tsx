@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import type { Route } from "./+types/runs";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
+import { toast } from "../../features/admin/toast";
 import { ago, bj, duration, num, retryTime } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, DataTable, Dot, Empty, Field, Json, ReasonDialog, Select, Stat, Time } from "../../features/admin/ui";
 
@@ -46,7 +47,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const checkedAt = Date.parse(r.checkedAt);
   const { run, pending } = useAdminAction();
   const [receipt, setReceipt] = useState<Row | null>(null);
-  const [billed, setBilled] = useState("false");
+  const [billed, setBilled] = useState("");
   const [delivery, setDelivery] = useState<Row | null>(null);
   const [outcome, setOutcome] = useState<"sent" | "drop" | "resend">("sent");
   // Failure group to put back into processing ("" = every failure of the last 30 days).
@@ -171,7 +172,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
               { key: "f", label: "备用处理", render: (x) => x.fallback_model
                 ? <span className="text-[12px]" title={x.fallback_error ?? undefined}>{x.fallback_status === "completed" ? "步骤已完成" : x.fallback_status === "received" ? "响应已保存" : x.fallback_status === "pending" ? "执行中" : x.fallback_status === "unknown" ? "也待核账" : x.fallback_status === "failed" ? "调用失败" : "尚未发起"}{x.fallback_receipt_id ? ` · #${x.fallback_receipt_id}` : ""}</span>
                 : <span className="text-ink-4">未关联</span> },
-              { key: "a", label: "", render: (x) => (x.status === "unknown" ? <Button size="sm" onClick={() => setReceipt(x)}>核对</Button> : null) },
+              { key: "a", label: "", render: (x) => (x.status === "unknown" ? <Button size="sm" onClick={() => {setBilled("");setReceipt(x);}}>核对</Button> : null) },
             ]}
           />
         </Card>
@@ -311,14 +312,18 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={!!receipt}
         title={`核对回执 #${receipt?.id ?? ""}`}
-        description="先到供应商控制台确认有没有计费。放行会保留原始错误；已选备用的步骤继续复用备用回执，尚未完成且没有在途任务的内容才会重新排队。"
+        description="先到供应商控制台确认有没有计费。已确认计费的原始回执保留，不由这里放行。放行、未完成任务的恢复与审计一起生效，已选备用的步骤继续复用备用回执。"
         confirmLabel="记录并放行"
         busy={pending === "release"}
         onClose={() => setReceipt(null)}
-        onSubmit={async (note) => (await run("POST", `/api/admin/receipts/${receipt!.id}/release`, { billed: billed === "true", note }, { label: "release", success: "已放行" })) !== null}
+        onSubmit={async (note) => {
+          if(!["true","false"].includes(billed)){toast("请先选择供应商是否计费","error");return false;}
+          return (await run("POST",`/api/admin/receipts/${receipt!.id}/release`,{billed:billed==="true",note,version:new Date(String(receipt!.updated_at)).toISOString()},{label:"release",success:"已放行"}))!==null;
+        }}
       >
         <Field label="供应商是否计费">
           <Select value={billed} onChange={(e) => setBilled(e.target.value)}>
+            <option value="" disabled>请选择核账结果</option>
             <option value="false">未计费（请求没有被接受）</option>
             <option value="true">已计费（结果没有取回）</option>
           </Select>
@@ -327,11 +332,16 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={requeue !== null}
         title={requeue ? "重新处理这一类失败" : "重新处理全部失败"}
-        description="这些文章会重新进入处理队列（正文、判断、发布）。模型调用会重新计费；供应商拒绝的内容可能再次失败。"
+        description="已知失败的文章会重新进入处理队列；结果未知的文章保留，等待核对或独立恢复。模型调用可能重新计费；供应商拒绝的内容可能再次失败。"
         confirmLabel="重新处理"
         busy={pending === "requeue"}
         onClose={() => setRequeue(null)}
-        onSubmit={async (reason) => (await run("POST", "/api/admin/processing/requeue", { group: requeue || null, reason }, { label: "requeue", success: "已重新排队" })) !== null}
+        onSubmit={async (reason) => {
+          const result=await run<{requeued:number;enqueued:number;skippedUnknown:number}>("POST","/api/admin/processing/requeue",{group:requeue||null,reason},{label:"requeue"});
+          if(!result) return false;
+          toast(`已恢复 ${result.requeued} 篇，${result.skippedUnknown} 篇结果未知保留`,result.skippedUnknown ? "info" : "ok");
+          return true;
+        }}
       />
       <ReasonDialog
         open={!!delivery}

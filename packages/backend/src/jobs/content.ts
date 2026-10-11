@@ -4,7 +4,7 @@
 // extraction first. A provider outage makes an article wait and retry with backoff; only a permanent
 // refusal or exhausted retries end in "failed", which the admin re-queues in bulk.
 import type { PgBoss } from "pg-boss";
-import { sql, type Db } from "../db.ts";
+import { sql, type Db, type Tx } from "../db.ts";
 import { extractArticleBody, pageFetchable } from "../content/extract.ts";
 import { analyzeArticle, AnalysisInterruptedError } from "../editorial/analyze.ts";
 import { isHistorical } from "../content/materials.ts";
@@ -270,13 +270,29 @@ export const failureGroupSql = (column = "processing_error") =>
  * Admin: failed articles of the last 30 days back into processing, all or one failure group. The
  * first ones are queued now; the safety net picks up the rest within minutes.
  */
-export async function requeueFailed(group: string | null): Promise<{ requeued: number }> {
-  const rows = await sql<{ id: string }[]>`
-    UPDATE articles SET processing_state='new',processing_attempts=0,processing_retry_at=NULL,processing_error=NULL,
-      processing_queued_at=NULL,processing_generation=processing_generation+1
-    WHERE processing_state='failed' AND discovered_at > now() - interval '30 days'
-      AND (${group}::text IS NULL OR ${failureGroupSql()} = ${group})
-    RETURNING id`;
-  for (const r of rows.slice(0, 500)) await queueProcessing(r.id);
-  return { requeued: rows.length };
+export async function requeueFailed(group: string | null, db?: Tx): Promise<{ requeued: number; enqueued: number; skippedUnknown: number }> {
+  const run = async (tx: Tx) => {
+    const candidates = await tx<{ id: string }[]>`SELECT id FROM articles
+      WHERE processing_state='failed' AND discovered_at > now() - interval '30 days'
+        AND (${group}::text IS NULL OR ${failureGroupSql()} = ${group}) ORDER BY id FOR UPDATE`;
+    if (!candidates.length) return { requeued: 0, enqueued: 0, skippedUnknown: 0 };
+    // Read paid outcomes after acquiring the article locks, using a fresh statement snapshot.
+    const rows = await tx<{ id: string; blocked: boolean }[]>`
+      WITH uncertain AS MATERIALIZED (
+        SELECT substring(subject FROM '^article:([^@:]+)') AS article_id,
+          array_agg(DISTINCT coalesce(substring(subject FROM '@([0-9]+)'), '*')) AS revisions
+        FROM receipts WHERE status='unknown' GROUP BY 1
+      )
+      SELECT a.id, (coalesce(a.processing_error,'') ~* '(unknown.*outcome|outcome.*unknown|receiptunknownerror|结果未知)'
+        OR coalesce(a.revision::text=ANY(u.revisions) OR '*'=ANY(u.revisions),false)) AS blocked
+      FROM articles a LEFT JOIN uncertain u ON u.article_id=a.id WHERE a.id IN ${tx(candidates.map(r=>r.id))} ORDER BY a.id`;
+    const eligible=rows.filter(r=>!r.blocked),skippedUnknown=rows.length-eligible.length;
+    if (!eligible.length) return { requeued: 0, enqueued: 0, skippedUnknown };
+    await tx`UPDATE articles SET processing_state='new',processing_attempts=0,processing_retry_at=NULL,processing_error=NULL,
+      processing_queued_at=NULL,processing_generation=processing_generation+1 WHERE id IN ${tx(eligible.map(r=>r.id))}`;
+    let enqueued=0;
+    for(const r of eligible.slice(0,500)) if(await queueProcessing(r.id,{db:tx})) enqueued++;
+    return { requeued: eligible.length, enqueued, skippedUnknown };
+  };
+  return db ? run(db) : sql.begin(run) as Promise<{ requeued: number; enqueued: number; skippedUnknown: number }>;
 }
