@@ -198,20 +198,22 @@ export async function forwardFeedbackToFeishu(id: number): Promise<"sent" | "dis
 }
 
 /** Custom-bot webhook for content groups (selected cards, reset pushes). */
-export async function postWebhook(url: string, card: unknown): Promise<{ ok: boolean; status: number; body: string }> {
+export async function postWebhook(url: string, card: unknown): Promise<{ ok: boolean; rejected: boolean; status: number; body: string }> {
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ msg_type: "interactive", card }),
+    redirect: "manual",
     signal: AbortSignal.timeout(15_000),
   });
   const body = await res.text();
-  let ok = res.ok;
+  let acknowledged=false,rejected=res.status>=400 && res.status<500;
   try {
     const json = JSON.parse(body) as { code?: number; StatusCode?: number };
-    ok = ok && (json.code === 0 || json.StatusCode === 0);
+    acknowledged=json.code===0 || json.StatusCode===0;
+    if(res.ok && (typeof json.code==='number' || typeof json.StatusCode==='number')) rejected=!acknowledged;
   } catch {
-    // non-JSON body
+    // A proxy page or truncated response is not an acknowledgement of message delivery.
   }
-  return { ok, status: res.status, body: body.slice(0, 500) };
+  return { ok:res.ok && acknowledged, rejected, status: res.status, body: body.slice(0, 500) };
 }

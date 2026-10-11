@@ -49,7 +49,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const [receipt, setReceipt] = useState<Row | null>(null);
   const [billed, setBilled] = useState("");
   const [delivery, setDelivery] = useState<Row | null>(null);
-  const [outcome, setOutcome] = useState<"sent" | "drop" | "resend">("sent");
+  const [outcome, setOutcome] = useState<"sent" | "drop" | "resend" | "">("");
   // Failure group to put back into processing ("" = every failure of the last 30 days).
   const [requeue, setRequeue] = useState<string | null>(null);
 
@@ -185,9 +185,10 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
             columns={[
               { key: "t", label: "目标", render: (d) => d.target_key },
               { key: "s", label: "状态", render: (d) => <Badge tone={d.status === "unknown" ? "bad" : "warn"}>{d.status}</Badge> },
+              { key: "r", label: "结果", render: (d) => <div className="max-w-[300px] text-[12px] text-ink-3">{d.response}<span>{d.latest_attempt?.lateResponse ? " · 收到迟到响应，请结合尝试记录核对" : ""}</span></div> },
               { key: "sub", label: "内容", render: (d) => (d.subject_kind === "selected" ? <Link className="text-accent" to={`/admin/content/${d.subject_id}`}>{d.subject_id}</Link> : `${d.subject_kind} ${d.subject_id}`) },
               { key: "at", label: "时间", render: (d) => <Time at={d.updated_at} /> },
-              { key: "a", label: "", render: (d) => <Button size="sm" onClick={() => setDelivery(d)}>处理</Button> },
+              { key: "a", label: "", render: (d) => ['unknown','failed'].includes(d.status) ? <Button size="sm" onClick={() => {setOutcome('');setDelivery(d);}}>处理</Button> : <span className="text-[12px] text-ink-3">{d.status==='pending' ? '等待发送' : '发送中'}</span> },
             ]}
           />
         </Card>
@@ -346,15 +347,20 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={!!delivery}
         title="处理投递"
-        description="先到对应飞书群确认有没有收到。确认没收到再重发；开发环境不会真的发出。"
+        description="先到对应飞书群确认有没有收到。确认没收到再安排重发；授权、任务和审计一起保存，由 worker 发送。排队不代表已经送达；结果未知的尝试不会自动重发。"
         confirmLabel="确认"
         danger={outcome === "resend"}
         busy={pending === "delivery"}
         onClose={() => setDelivery(null)}
-        onSubmit={async (note) => (await run("POST", `/api/admin/deliveries/${delivery!.id}/resolve`, { outcome, note }, { label: "delivery", success: "已处理" })) !== null}
+        onSubmit={async(note)=>{
+          if(!outcome){toast('请先选择投递处理结果','error');return false;}
+          const result=await run<{queued:boolean}>('POST',`/api/admin/deliveries/${delivery!.id}/resolve`,{outcome,note,version:new Date(delivery!.updated_at).toISOString(),attempts:delivery!.attempts,generation:delivery!.dispatch_generation},{label:'delivery'});
+          if(!result)return false;toast(result.queued?'已安排重发，请继续核对投递结果':'已记录处理结果','ok');return true;
+        }}
       >
         <Field label="结果">
           <Select value={outcome} onChange={(e) => setOutcome(e.target.value as typeof outcome)}>
+            <option value="" disabled>请选择处理结果</option>
             <option value="sent">群里已收到，标记为已送达</option>
             <option value="drop">不再发送</option>
             <option value="resend">群里没有，重新发送</option>

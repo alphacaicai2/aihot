@@ -2,7 +2,7 @@
 // context are stored before the cursor moves; recognition runs afterwards in publication order.
 // Normal cadence is 5 minutes, as the public v1 description states; after an outage or an
 // announcement it is 3 minutes for a while.
-import { sql } from "../db.ts";
+import { sql, type Tx } from "../db.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import { getTweet, searchTweets, tweetText, type SdTweet } from "../providers/socialdata.ts";
 import { deliverContent } from "../notify/deliver.ts";
@@ -147,6 +147,14 @@ function resetCard(eventId: string, action: "announce" | "confirm", snapshot: Aw
   };
 }
 
+export async function resetDeliveryCard(eventId:string,dedupeKey:string,tx:Tx){
+  const match=/^codex:([^:]+):(.+):(announce|confirm)$/.exec(dedupeKey);
+  if(!match || match[2]!==eventId)return null;
+  const [event]=await tx`SELECT id,status,confirmation_basis FROM monitor_events WHERE id=${eventId} AND NOT withdrawn FOR SHARE`;
+  if(!event || match[3]==='confirm' && (event.status!=='confirmed' || event.confirmation_basis!=='source_post'))return null;
+  return resetCard(eventId,match[3] as 'announce'|'confirm',await codexResetsSnapshot(Date.now(),tx),match[1]!);
+}
+
 /**
  * Recognizes stored posts that have not been processed, oldest first. A failure stops the run (later
  * posts may relate to this one); the post is retried next tick, and ops.alerts reports a post stuck
@@ -193,14 +201,14 @@ export async function flushResetPushes(): Promise<number> {
     ORDER BY p.published_at, p.id`;
   if (!owed.length) return 0;
   const snapshot = await codexResetsSnapshot();
-  let pushed = 0;
+  let queued = 0;
   for (const o of owed) {
     const card = resetCard(o.event_id, o.action, snapshot, o.post_id);
     if (!card) continue;
     const results = await deliverContent({ subjectKind: "codex_reset", subjectId: o.event_id, dedupeKey: `codex:${o.post_id}:${o.event_id}:${o.action}`, contentAt: o.published_at, card });
-    pushed += results.filter((r) => r.status === "sent").length;
+    queued += results.filter((r) => r.status === "pending").length;
   }
-  return pushed;
+  return queued;
 }
 
 /** One scheduled tick: scan when due, process what was stored, push what is owed, then move the verified watermark. */
@@ -209,8 +217,8 @@ export async function monitorTick(opts: { force?: boolean; lookbackHours?: numbe
   const started = new Date();
   const collected = await collectPosts({ lookbackHours: opts.lookbackHours });
   const result = await processPending();
-  const pushed = await flushResetPushes();
+  const queued = await flushResetPushes();
   const [pending] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM monitor_posts WHERE processed_at IS NULL AND author = ${AUTHOR}`;
   if (!pending?.n) await touchWatermarks({ lastVerifiedAt: started.toISOString() });
-  return { ...collected, ...result, pushed, pending: pending?.n ?? 0, verifiedAt: pending?.n ? null : bjIso(started) };
+  return { ...collected, ...result, queued, pending: pending?.n ?? 0, verifiedAt: pending?.n ? null : bjIso(started) };
 }

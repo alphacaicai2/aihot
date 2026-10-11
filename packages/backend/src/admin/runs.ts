@@ -11,6 +11,8 @@ import { recoverReceiptWork } from "../jobs/receipt-recovery.ts";
 import { configuredDefaultFallback } from "../providers/llm.ts";
 import { pendingBillingReview } from "../providers/billing-review.ts";
 import { backupOverview } from "../operations/backup.ts";
+import { config, credential } from "../config.ts";
+import { queueDelivery } from "../notify/deliver.ts";
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
 const Reason = z.string().trim().min(1).max(2000);
@@ -99,8 +101,10 @@ export async function runsOverview() {
       WHERE (${pendingBillingReview("r")}) OR (r.status = 'failed' AND r.updated_at > now() - interval '3 days') OR (r.status = 'pending' AND r.updated_at < now() - interval '15 minutes')
       ORDER BY r.status = 'unknown' DESC, r.updated_at DESC LIMIT 40`,
     sql`
-      SELECT id, target_key, subject_kind, subject_id, status, attempts, left(response, 240) AS response, created_at, updated_at FROM deliveries
-      WHERE status IN ('unknown', 'failed') OR (status = 'sending' AND updated_at < now() - interval '15 minutes')
+      SELECT d.id,d.target_key,d.subject_kind,d.subject_id,d.status,d.attempts,d.dispatch_generation,left(d.response,240) AS response,d.created_at,d.updated_at,
+        (SELECT jsonb_build_object('generation',a.generation,'attempt',a.attempt,'status',a.status,'response',a.response,'lateResponse',a.late_response)
+          FROM delivery_attempts a WHERE a.delivery_id=d.id ORDER BY a.generation DESC LIMIT 1) AS latest_attempt
+      FROM deliveries d WHERE status IN ('unknown','failed','pending','sending')
       ORDER BY status = 'unknown' DESC, updated_at DESC LIMIT 40`,
     sql`
       SELECT ${failureGroupSql()} AS error, count(*)::int AS n, max(discovered_at) AS last,
@@ -284,22 +288,34 @@ export async function requeueFailedArticles(input: { group: string | null; reaso
 }
 
 /** An in-doubt delivery: confirmed as arrived, given up, or sent again after checking the group. */
-export async function resolveDelivery(id: number, input: { outcome: "sent" | "drop" | "resend"; note: string }, actor: string) {
-  if (!input.note?.trim()) throw new Error("note is required");
-  const [before] = await sql<{ status: string }[]>`SELECT status FROM deliveries WHERE id = ${id}`;
-  if (!before) return null;
-  if (before.status !== "unknown" && before.status !== "failed") throw new Conflict("这条投递不需要处理");
-  let status: string;
-  if (input.outcome === "sent") {
-    await sql`UPDATE deliveries SET status = 'sent', sent_at = coalesce(sent_at, now()), response = ${`人工确认已送达：${input.note}`}, updated_at = now() WHERE id = ${id}`;
-    status = "sent";
-  } else if (input.outcome === "drop") {
-    await sql`UPDATE deliveries SET status = 'failed', response = ${`人工放弃：${input.note}`}, updated_at = now() WHERE id = ${id}`;
-    status = "failed";
-  } else {
-    const { resendDelivery } = await import("../notify/deliver.ts");
-    status = (await resendDelivery(id)).status;
-  }
-  await audit(actor, `delivery.${input.outcome}`, `delivery:${id}`, input.note, { status: before.status }, { status });
-  return { id, status };
+export async function resolveDelivery(id:number,input:{outcome:'sent'|'drop'|'resend';note:string;version?:string;attempts?:number;generation?:number},actor:string,options:{requestId?:string}={}) {
+  parse(z.number().int().positive().max(Number.MAX_SAFE_INTEGER),id);
+  input=parse(z.object({outcome:z.enum(['sent','drop','resend']),note:Reason,version:Version.optional(),
+    attempts:z.number().int().nonnegative().optional(),generation:z.number().int().nonnegative().optional()}).strict(),input);
+  const requestId=parse(RequestId,options.requestId ?? randomUUID()),fingerprint=sha256(stableJson(input)),subject=`delivery:${id}`;
+  return sql.begin(async tx=>{
+    const previous=await previousRecoveryCommand<{id:number;status:string;queued:boolean;jobId:string|null}>(tx,actor,'delivery.resolve',subject,requestId,fingerprint);
+    if(previous)return previous;
+    const [d]=await tx<{status:string;attempts:number;dispatch_generation:number;updated_at:Date;target_key:string}[]>`SELECT * FROM deliveries WHERE id=${id} FOR UPDATE`;
+    if(!d)return null;
+    if(!['unknown','failed'].includes(d.status))throw new Conflict('这条投递不需要处理，请刷新');
+    if(input.version!==undefined && input.version!==d.updated_at.toISOString() || input.attempts!==undefined && input.attempts!==d.attempts || input.generation!==undefined && input.generation!==d.dispatch_generation)throw new Conflict('这条投递已发生变化，请刷新后重新核对');
+    let jobId:string|null=null,status:string;
+    const generation=d.dispatch_generation+1;
+    if(input.outcome==='resend'){
+      const [target]=await tx<{enabled:boolean;kind:string;config_ref:string|null}[]>`SELECT enabled,kind,config_ref FROM notify_targets WHERE key=${d.target_key} FOR SHARE`;
+      if(!config.feishuContentPushEnabled || !target?.enabled || target.kind!=='feishu_webhook')throw Object.assign(new Error('当前环境或目标未启用内容发送，不能重发'),{statusCode:400});
+      if(!target.config_ref || !credential('integrations',target.config_ref))throw Object.assign(new Error('发送目标尚未配置，请先检查目标设置'),{statusCode:400});
+      jobId=await queueDelivery(tx,id,generation);status='pending';
+    }else{
+      status=input.outcome==='sent'?'sent':'skipped';
+      await tx`UPDATE deliveries SET status=${status},dispatch_generation=${generation},
+        sent_at=CASE WHEN ${input.outcome==='sent'} THEN coalesce(sent_at,clock_timestamp()) ELSE sent_at END,
+        response=${`${input.outcome==='sent'?'人工确认已送达':'人工放弃'}：${input.note}`},
+        updated_at=greatest(clock_timestamp(),date_trunc('milliseconds',updated_at)+interval '1 millisecond') WHERE id=${id}`;
+    }
+    const result={id,status,queued:input.outcome==='resend',jobId};
+    await audit(actor,'delivery.resolve',subject,input.note,{status:d.status,attempts:d.attempts,generation:d.dispatch_generation},{...result,outcome:input.outcome,command:{fingerprint,result}},requestId,tx);
+    return result;
+  });
 }

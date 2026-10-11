@@ -3,10 +3,16 @@ import type { PgBoss } from "pg-boss";
 import { pushSelected } from "../notify/selected.ts";
 import { prepareArticleMedia, warmShareImage } from "../media/prepare.ts";
 import { enqueue, ensureQueue, QUEUES } from "./queue.ts";
+import { dispatchDelivery } from "../notify/deliver.ts";
 
 const MAX_RETRIES = 6;
 
 export async function registerNotifyJobs(boss: PgBoss) {
+  await ensureQueue(QUEUES.notifyDelivery);
+  await boss.work<{deliveryId:number;generation:number}>(QUEUES.notifyDelivery,{localConcurrency:2,pollingIntervalSeconds:5},async([job])=>{
+    if(!job)return;
+    return dispatchDelivery(job.data.deliveryId,job.data.generation);
+  });
   await ensureQueue(QUEUES.notifySelected);
   await boss.work<{ articleId: string; attempt?: number }>(QUEUES.notifySelected, { localConcurrency: 1, pollingIntervalSeconds: 5 }, async ([job]) => {
     if (!job) return;

@@ -3,7 +3,7 @@
 // passing an announced time never turns into a confirmation.
 import { addDays, beijingDate, beijingMidnight } from "@aihot/contracts/time";
 import type { CodexCalendarMark, CodexResetMonitor, CodexResetPageData, CodexResetsSnapshot } from "@aihot/contracts/monitor";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { proxiedImage } from "../media/imgproxy.ts";
 import { siteUrl } from "../publication/links.ts";
@@ -98,16 +98,16 @@ export function eventDay(e: Pick<EventRow, "occurred_on" | "confirmed_at" | "est
   return beijingDate(e.created_at);
 }
 
-async function loadAll() {
-  const events = await sql<EventRow[]>`
+async function loadAll(db:Db=sql) {
+  const events = await db<EventRow[]>`
     SELECT id, type, status, title, scope, label, display_label, schedule, estimate, presentation, confirmed_at, occurred_on, confirmation_basis, created_at, updated_at
     FROM monitor_events WHERE NOT withdrawn ORDER BY updated_at DESC, id ASC`;
-  const links = await sql<LinkRow[]>`SELECT event_id, post_id, stage, text, original_text FROM monitor_event_posts`;
-  const posts = await sql<PostRow[]>`
+  const links = await db<LinkRow[]>`SELECT event_id, post_id, stage, text, original_text FROM monitor_event_posts`;
+  const posts = await db<PostRow[]>`
     SELECT id, published_at, text, translation, url, context, activity, outage FROM monitor_posts
     WHERE activity IS NOT NULL OR outage IS NOT NULL OR id IN (SELECT post_id FROM monitor_event_posts)`;
-  const state = new Map((await sql<{ key: string; value: any }[]>`SELECT key, value FROM monitor_state`).map((r) => [r.key, r.value]));
-  const [counts] = await sql<{ pending: number; review: number }[]>`
+  const state = new Map((await db<{ key: string; value: any }[]>`SELECT key, value FROM monitor_state`).map((r) => [r.key, r.value]));
+  const [counts] = await db<{ pending: number; review: number }[]>`
     SELECT count(*) FILTER (WHERE processed_at IS NULL) AS pending,
            count(*) FILTER (WHERE recognition->>'needsReview' = 'true') AS review
     FROM monitor_posts`;
@@ -218,8 +218,8 @@ export async function codexResetsRecent(now = Date.now()): Promise<CodexResetsSn
 }
 
 /** The complete public snapshot served at GET /api/v1/codex-resets. */
-export async function codexResetsSnapshot(now = Date.now()): Promise<CodexResetsSnapshot> {
-  const { events, links, posts, state, counts } = await loadAll();
+export async function codexResetsSnapshot(now = Date.now(),db:Db=sql): Promise<CodexResetsSnapshot> {
+  const { events, links, posts, state, counts } = await loadAll(db);
   const eventJsons = events.map((e) => eventJson(e, links, posts, now));
   const activities = [...posts.values()]
     .filter((p) => p.activity)

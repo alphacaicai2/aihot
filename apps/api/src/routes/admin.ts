@@ -112,7 +112,11 @@ export function registerAdmin(app: FastifyInstance) {
     return orNotFound(req,reply,await releaseReceipt(Number(param(req,"id")),b,actorOf(admin),{requestId:recoveryRequestId(req)}));
   }));
   app.post("/api/admin/receipts/confirm-zero-cost", adminHandler(async (req, _reply, admin) => confirmZeroCostReceipts(body(req) as never, actorOf(admin))));
-  app.post("/api/admin/deliveries/:id/resolve", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await resolveDelivery(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
+  app.post("/api/admin/deliveries/:id/resolve",adminHandler(async(req,reply,admin)=>{
+    const b=body<{outcome:'sent'|'drop'|'resend';note:string;version:string;attempts:number;generation:number}>(req);
+    if(typeof b.version!=='string' || !b.version || !Number.isSafeInteger(b.attempts) || b.attempts<0 || !Number.isSafeInteger(b.generation) || b.generation<0)throw Object.assign(new Error('请刷新投递后重新核对'),{statusCode:400});
+    return orNotFound(req,reply,await resolveDelivery(Number(param(req,'id')),b,actorOf(admin),{requestId:recoveryRequestId(req)}));
+  }));
   app.post("/api/admin/processing/requeue", adminHandler(async (req, _reply, admin) => requeueFailedArticles(body(req) as never,actorOf(admin),{requestId:recoveryRequestId(req)})));
 
   // Reset monitor corrections (F12)

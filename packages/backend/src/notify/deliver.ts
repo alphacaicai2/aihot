@@ -1,108 +1,147 @@
-// Content-group deliveries (Feishu custom-bot webhooks): selected cards and reset pushes.
-// One row per target and dedupe key, so nothing is pushed twice; an outcome we cannot know
-// ("unknown") is never retried automatically; content older than a target's enabled_at is never
-// back-filled. FEISHU_CONTENT_PUSH_ENABLED is the safety valve: off, deliveries are recorded as
-// skipped and nothing leaves the process.
+// Content delivery is a durable outbox. Only a pending generation can claim a network attempt;
+// sending/unknown attempts are never replayed, even when the queue retries after a crash.
 import { config, credential } from "../config.ts";
-import { sql } from "../db.ts";
+import { sql, type Tx } from "../db.ts";
+import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { postWebhook } from "./feishu.ts";
+import { FEATURES } from "@aihot/industry/features";
 
 export interface DeliveryRequest {
   subjectKind: "codex_reset" | "selected";
   subjectId: string;
   dedupeKey: string;
-  /** When the underlying content appeared; older than a target's enabled_at means skip. */
   contentAt: Date;
   card: unknown;
 }
 
-interface Target {
-  key: string;
-  kind: "feishu_webhook" | "feishu_chat" | "log";
-  enabled_at: Date | null;
-  config_ref: string | null;
-}
-
-/** Default content targets; they start disabled and are switched on in production only. */
 export async function ensureContentTargets() {
-  await sql`
-    INSERT INTO notify_targets (key, purpose, kind, enabled, config_ref, note) VALUES
-      ('feishu-content-main', 'content', 'feishu_webhook', false, 'FEISHU_PUSH_WEBHOOK_URL', '飞书内容主群'),
-      ('feishu-content-mirror', 'content', 'feishu_webhook', false, 'FEISHU_PUSH_MIRROR_WEBHOOK_URL', '飞书内容镜像群')
-    ON CONFLICT (key) DO NOTHING`;
+  await sql`INSERT INTO notify_targets(key,purpose,kind,enabled,config_ref,note) VALUES
+    ('feishu-content-main','content','feishu_webhook',false,'FEISHU_PUSH_WEBHOOK_URL','飞书内容主群'),
+    ('feishu-content-mirror','content','feishu_webhook',false,'FEISHU_PUSH_MIRROR_WEBHOOK_URL','飞书内容镜像群') ON CONFLICT(key) DO NOTHING`;
 }
 
-export async function deliverContent(req: DeliveryRequest): Promise<Array<{ target: string; status: string }>> {
-  const targets = await sql<Target[]>`SELECT key, kind, enabled_at, config_ref FROM notify_targets WHERE purpose = 'content' AND enabled`;
-  const results: Array<{ target: string; status: string }> = [];
-  for (const t of targets) {
-    if (t.enabled_at && req.contentAt < t.enabled_at) continue;
-    const [row] = await sql<{ id: number }[]>`
-      INSERT INTO deliveries (target_key, subject_kind, subject_id, dedupe_key, status, payload)
-      VALUES (${t.key}, ${req.subjectKind}, ${req.subjectId}, ${req.dedupeKey}, 'pending', ${sql.json(req.card as never)})
-      ON CONFLICT (target_key, dedupe_key) DO NOTHING RETURNING id`;
-    if (!row) continue; // already delivered, skipped or in doubt
-    if (!config.feishuContentPushEnabled || t.kind !== "feishu_webhook") {
-      await sql`UPDATE deliveries SET status = 'skipped', response = 'content push disabled', updated_at = now() WHERE id = ${row.id}`;
-      results.push({ target: t.key, status: "skipped" });
-      continue;
+/** Called with the caller's row lock; the job commits with its authorisation and audit. */
+export async function queueDelivery(tx: Tx, id: number, generation: number) {
+  await tx`INSERT INTO delivery_attempts(delivery_id,generation,status) VALUES(${id},${generation},'pending')`;
+  await tx`UPDATE deliveries SET status='pending',dispatch_generation=${generation},response='已授权，等待发送',
+    updated_at=greatest(clock_timestamp(),date_trunc('milliseconds',updated_at)+interval '1 millisecond') WHERE id=${id}`;
+  const jobId=await enqueue(QUEUES.notifyDelivery,{deliveryId:id,generation},{singletonKey:`delivery:${id}:${generation}`},tx);
+  if(!jobId) throw new Error('delivery handoff did not create its job');
+  return jobId;
+}
+
+export async function deliverContent(req: DeliveryRequest): Promise<Array<{target:string;status:string}>> {
+  return sql.begin(async tx=>{
+    const targets=await tx<{key:string;kind:string;enabled_at:Date|null}[]>`SELECT key,kind,enabled_at FROM notify_targets
+      WHERE purpose='content' AND enabled ORDER BY key FOR SHARE`;
+    const results:Array<{target:string;status:string}>=[];
+    for(const t of targets){
+      if(t.enabled_at && req.contentAt<t.enabled_at) continue;
+      const [row]=await tx<{id:number}[]>`INSERT INTO deliveries(target_key,subject_kind,subject_id,dedupe_key,status,payload,content_at)
+        VALUES(${t.key},${req.subjectKind},${req.subjectId},${req.dedupeKey},'pending',${tx.json(req.card as never)},${req.contentAt})
+        ON CONFLICT(target_key,dedupe_key) DO NOTHING RETURNING id`;
+      if(!row) continue;
+      if(!config.feishuContentPushEnabled || t.kind!=='feishu_webhook'){
+        await tx`UPDATE deliveries SET status='skipped',response='content push disabled' WHERE id=${row.id}`;
+        results.push({target:t.key,status:'skipped'});continue;
+      }
+      await queueDelivery(tx,row.id,1);
+      results.push({target:t.key,status:'pending'});
     }
-    const url = t.config_ref ? credential("integrations", t.config_ref) : undefined;
-    if (!url) {
-      await sql`UPDATE deliveries SET status = 'failed', response = 'webhook not configured', updated_at = now() WHERE id = ${row.id}`;
-      results.push({ target: t.key, status: "failed" });
-      continue;
-    }
-    await sql`UPDATE deliveries SET status = 'sending', attempts = attempts + 1, updated_at = now() WHERE id = ${row.id}`;
-    try {
-      const res = await postWebhook(url, req.card);
-      // A Feishu error code on HTTP 200, or a 4xx, is a definite rejection; 5xx may have gone through.
-      const status = res.ok ? "sent" : res.status < 500 ? "failed" : "unknown";
-      await sql`UPDATE deliveries SET status = ${status}, response = ${res.body.slice(0, 500)}, sent_at = ${res.ok ? new Date() : null}, updated_at = now() WHERE id = ${row.id}`;
-      results.push({ target: t.key, status });
-    } catch (error) {
-      // Timeout or connection loss after sending may still have delivered: never resend.
-      await sql`UPDATE deliveries SET status = 'unknown', response = ${String(error).slice(0, 500)}, updated_at = now() WHERE id = ${row.id}`;
-      results.push({ target: t.key, status: "unknown" });
-    }
+    return results;
+  }) as Promise<Array<{target:string;status:string}>>;
+}
+
+async function payloadFor(d:{subject_kind:string;subject_id:string;dedupe_key:string},tx:Tx){
+  if(d.subject_kind==='selected'){
+    const {selectedDeliveryCard}=await import('./selected.ts');
+    return selectedDeliveryCard(d.subject_id,tx);
   }
-  return results;
-}
-
-/**
- * Sends a stored delivery again after an operator checked the group and found it missing. Only
- * for deliveries in doubt or definitely failed; the safety valve still applies.
- */
-export async function resendDelivery(id: number): Promise<{ status: string }> {
-  const [d] = await sql<{ status: string; payload: unknown; target_key: string; config_ref: string | null; kind: string }[]>`
-    SELECT d.status, d.payload, d.target_key, t.config_ref, t.kind FROM deliveries d JOIN notify_targets t ON t.key = d.target_key WHERE d.id = ${id}`;
-  if (!d) throw new Error(`delivery ${id} not found`);
-  if (d.status !== "unknown" && d.status !== "failed") throw new Error(`delivery ${id} is ${d.status}`);
-  if (!config.feishuContentPushEnabled || d.kind !== "feishu_webhook") throw new Error("content push is disabled in this environment");
-  const url = d.config_ref ? credential("integrations", d.config_ref) : undefined;
-  if (!url) throw new Error("webhook not configured");
-  await sql`UPDATE deliveries SET status = 'sending', attempts = attempts + 1, updated_at = now() WHERE id = ${id}`;
-  try {
-    const res = await postWebhook(url, d.payload);
-    const status = res.ok ? "sent" : res.status < 500 ? "failed" : "unknown";
-    await sql`UPDATE deliveries SET status = ${status}, response = ${res.body.slice(0, 500)}, sent_at = ${res.ok ? new Date() : null}, updated_at = now() WHERE id = ${id}`;
-    return { status };
-  } catch (error) {
-    await sql`UPDATE deliveries SET status = 'unknown', response = ${String(error).slice(0, 500)}, updated_at = now() WHERE id = ${id}`;
-    return { status: "unknown" };
+  if(d.subject_kind==='codex_reset' && FEATURES.codexResetMonitor){
+    const {resetDeliveryCard}=await import('../monitor/scan.ts');
+    return resetDeliveryCard(d.subject_id,d.dedupe_key,tx);
   }
+  return null;
 }
 
-/**
- * Deliveries a stopped process left half way: "sending" may have reached the group, so it becomes
- * "unknown" (alerted, resolved in the admin); "pending" never left, so it becomes "failed" (the
- * admin can send it). Nothing is re-sent automatically.
- */
-export async function markStaleDeliveries(): Promise<{ unknown: number; failed: number }> {
-  const cutoff = new Date(Date.now() - 15 * 60_000);
-  const unknown = await sql`UPDATE deliveries SET status = 'unknown', response = coalesce(response, '发送中进程中断，是否送达未知'), updated_at = now()
-                            WHERE status = 'sending' AND updated_at < ${cutoff}`;
-  const failed = await sql`UPDATE deliveries SET status = 'failed', response = coalesce(response, '发送前进程中断，没有发出'), updated_at = now()
-                           WHERE status = 'pending' AND updated_at < ${cutoff}`;
-  return { unknown: unknown.count, failed: failed.count };
+function transportError(error:unknown){
+  const e=error as {name?:string;code?:unknown;cause?:{code?:unknown}};
+  const name=['Error','TypeError','TimeoutError','AbortError'].includes(e?.name ?? '') ? e.name! : 'Error';
+  const code=e?.cause?.code ?? e?.code;
+  return typeof code==='string' && /^[A-Z0-9_]{1,60}$/.test(code) ? `${name}: ${code}` : name;
+}
+
+export async function dispatchDelivery(id:number,generation:number):Promise<{status:string}> {
+  const claimed=await sql.begin(async tx=>{
+    const [d]=await tx<{status:string;dispatch_generation:number;attempts:number;target_key:string;subject_kind:string;subject_id:string;dedupe_key:string;content_at:Date|null;created_at:Date}[]>`
+      SELECT * FROM deliveries WHERE id=${id} FOR UPDATE`;
+    if(!d) return {status:'missing'};
+    if(d.dispatch_generation!==generation) return {status:'obsolete'};
+    const [a]=await tx`SELECT status FROM delivery_attempts WHERE delivery_id=${id} AND generation=${generation} FOR UPDATE`;
+    if(d.status!=='pending' || a?.status!=='pending') return {status:d.status};
+    const [t]=await tx<{kind:string;enabled:boolean;enabled_at:Date|null;config_ref:string|null}[]>`SELECT kind,enabled,enabled_at,config_ref FROM notify_targets WHERE key=${d.target_key} FOR SHARE`;
+    let reason:string|null=null,status='skipped';
+    if(!config.feishuContentPushEnabled || !t?.enabled || t.kind!=='feishu_webhook') reason='content push disabled or target disabled';
+    else if(t.enabled_at && (d.content_at ?? d.created_at)<t.enabled_at) reason='content predates target activation';
+    const url=t?.config_ref ? credential('integrations',t.config_ref) : undefined;
+    if(!reason && !url){reason='webhook not configured';status='failed';}
+    const payload=reason ? null : await payloadFor(d,tx);
+    if(!reason && !payload) reason='content is no longer eligible for delivery';
+    if(reason){
+      await tx`UPDATE deliveries SET status=${status},response=${reason},updated_at=clock_timestamp() WHERE id=${id}`;
+      await tx`UPDATE delivery_attempts SET status=${status},response=${reason},finished_at=clock_timestamp() WHERE delivery_id=${id} AND generation=${generation}`;
+      return {status};
+    }
+    const attempt=d.attempts+1;
+    await tx`UPDATE deliveries SET status='sending',attempts=${attempt},payload=${tx.json(payload as never)},updated_at=clock_timestamp() WHERE id=${id}`;
+    await tx`UPDATE delivery_attempts SET status='sending',attempt=${attempt},payload=${tx.json(payload as never)},started_at=clock_timestamp() WHERE delivery_id=${id} AND generation=${generation}`;
+    return {status:'sending',url:url!,payload,attempt};
+  });
+  if(claimed.url===undefined) return {status:claimed.status};
+  let outcome:{status:string;response:string};
+  try{
+    const res=await postWebhook(claimed.url,claimed.payload);
+    outcome={status:res.ok?'sent':res.rejected?'failed':'unknown',response:res.body};
+  }catch(error){outcome={status:'unknown',response:transportError(error)};}
+  // A failed database commit after POST leaves sending, so a queue retry cannot POST again.
+  return sql.begin(async tx=>{
+    const rows=await tx`UPDATE deliveries SET status=${outcome.status},response=${outcome.response},
+      sent_at=CASE WHEN ${outcome.status==='sent'} THEN clock_timestamp() ELSE sent_at END,updated_at=clock_timestamp()
+      WHERE id=${id} AND dispatch_generation=${generation} AND status='sending' AND attempts=${claimed.attempt} RETURNING id`;
+    if(rows.length){
+      await tx`UPDATE delivery_attempts SET status=${outcome.status},response=${outcome.response},finished_at=clock_timestamp()
+        WHERE delivery_id=${id} AND generation=${generation} AND status='sending'`;
+      return {status:outcome.status};
+    }
+    await tx`UPDATE delivery_attempts SET late_response=${tx.json(outcome)},finished_at=coalesce(finished_at,clock_timestamp())
+      WHERE delivery_id=${id} AND generation=${generation}`;
+    const [current]=await tx`SELECT status FROM deliveries WHERE id=${id}`;
+    return {status:current?.status ?? 'missing'};
+  }) as Promise<{status:string}>;
+}
+
+/** Lost pending jobs are safe to repair; a sending attempt is conservatively held for review. */
+export async function markStaleDeliveries():Promise<{unknown:number;failed:number;requeued:number}> {
+  const cutoff=new Date(Date.now()-15*60_000);
+  return sql.begin(async tx=>{
+    const rows=await tx<{id:number;status:string;dispatch_generation:number}[]>`SELECT id,status,dispatch_generation FROM deliveries
+      WHERE status IN ('pending','sending') AND updated_at<${cutoff} ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED`;
+    let unknown=0,failed=0,requeued=0;
+    for(const r of rows){
+      if(r.status==='sending'){
+        await tx`UPDATE deliveries SET status='unknown',response='发送中断，是否送达未知',updated_at=clock_timestamp() WHERE id=${r.id}`;
+        await tx`UPDATE delivery_attempts SET status='unknown',response='发送中断，是否送达未知',finished_at=clock_timestamp()
+          WHERE delivery_id=${r.id} AND generation=${r.dispatch_generation} AND status='sending'`;unknown++;continue;
+      }
+      const [a]=await tx`SELECT status FROM delivery_attempts WHERE delivery_id=${r.id} AND generation=${r.dispatch_generation}`;
+      if(a?.status==='pending'){
+        const [busy]=await tx`SELECT 1 FROM pgboss.job WHERE name=${QUEUES.notifyDelivery} AND data->>'deliveryId'=${String(r.id)}
+          AND data->>'generation'=${String(r.dispatch_generation)} AND state IN ('created','retry','active')`;
+        if(!busy && await enqueue(QUEUES.notifyDelivery,{deliveryId:r.id,generation:r.dispatch_generation},{singletonKey:`delivery:${r.id}:${r.dispatch_generation}`},tx)) requeued++;
+      }else{
+        await tx`UPDATE deliveries SET status='failed',response='发送前进程中断，没有发出',updated_at=clock_timestamp() WHERE id=${r.id}`;failed++;
+      }
+    }
+    return {unknown,failed,requeued};
+  }) as Promise<{unknown:number;failed:number;requeued:number}>;
 }

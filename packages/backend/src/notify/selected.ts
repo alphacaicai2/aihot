@@ -1,7 +1,7 @@
 // Selected-item pushes to the content groups. One card per new fact: a short same-title lease holds
 // back concurrent duplicates until grouping settles the fact, and the fact (or the article when it
 // has none) is the dedupe identity per target. Old, backfilled or silenced items are never pushed.
-import { sql } from "../db.ts";
+import { sql, type Tx } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
 import { itemUrl } from "../publication/links.ts";
 import { CATEGORY_LABELS, type CategoryKey } from "@aihot/contracts/taxonomy";
@@ -12,7 +12,7 @@ const MAX_AGE_MS = 12 * 3600_000;
 const LEASE_MS = 10 * 60_000;
 
 export type PushOutcome =
-  | { status: "pushed" | "skipped"; reason?: string; targets?: Array<{ target: string; status: string }> }
+  | { status: "queued" | "skipped"; reason?: string; targets?: Array<{ target: string; status: string }> }
   | { status: "retry"; after: Date; reason: string };
 
 interface Row {
@@ -56,6 +56,19 @@ function card(r: Row) {
   };
 }
 
+/** Rebuild from currently public material at dispatch, including manual corrections and silence. */
+export async function selectedDeliveryCard(articleId:string,tx:Tx,now=new Date()){
+  const [owner]=await tx`SELECT source_id FROM publications WHERE article_id=${articleId}`;
+  if(!owner)return null;
+  await tx`SELECT id FROM sources WHERE id=${owner.source_id} FOR SHARE`;
+  const [r]=await tx<Row[]>`SELECT p.article_id,p.selected,p.visibility,p.title,p.summary,p.reason,p.category,s.name AS source_name,p.url,
+    p.timeline_at,p.discovered_at,p.visible_after,p.backfill,p.fact_id,coalesce((o.fields->>'silent')::boolean,false) AS silent
+    FROM publications p JOIN sources s ON s.id=p.source_id LEFT JOIN editorial_overrides o ON o.article_id=p.article_id
+    WHERE p.article_id=${articleId} AND p.eligible AND s.participation_mode='editorial' FOR SHARE OF p`;
+  if(!r || !r.selected || r.visibility!=='public' || r.silent || r.backfill || now.getTime()-r.timeline_at.getTime()>MAX_AGE_MS || r.visible_after && r.visible_after>now)return null;
+  return card(r);
+}
+
 export async function pushSelected(articleId: string, now = new Date()): Promise<PushOutcome> {
   const [r] = await sql<Row[]>`
     SELECT p.article_id, p.selected, p.visibility, p.title, p.summary, p.reason, p.category, s.name AS source_name, p.url,
@@ -79,5 +92,5 @@ export async function pushSelected(articleId: string, now = new Date()): Promise
 
   const dedupeKey = r.fact_id ? `selected:fact:${r.fact_id}` : `selected:article:${articleId}`;
   const targets = await deliverContent({ subjectKind: "selected", subjectId: articleId, dedupeKey, contentAt: r.discovered_at, card: card(r) });
-  return { status: targets.some((t) => t.status === "sent") ? "pushed" : "skipped", targets, reason: targets.length ? undefined : "no new target" };
+  return { status: targets.some((t) => t.status === "pending") ? "queued" : "skipped", targets, reason: targets.length ? undefined : "no new target" };
 }
