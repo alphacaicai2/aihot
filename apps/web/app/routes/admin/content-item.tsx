@@ -169,7 +169,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                         <div className="mt-2 flex flex-wrap gap-1.5 text-[11.5px]">
                           {(an.receipts as Row[]).map((r) => (
                             <span key={r.id} className="num rounded bg-surface px-1.5 py-0.5 text-ink-3 ring-1 ring-line">
-                              回执 #{r.id} · {r.status} · {r.model ?? r.service}{r.cost !== null ? ` · ${money(r.cost)}` : ""}
+                              回执 #{r.id} · {r.status} · {r.model ?? r.service}{r.cost !== null ? ` · ${r.cost_basis === "estimated" ? "≈ " : ""}${money(r.cost, r.currency ?? "CNY")}${r.cost_basis === "estimated" ? "（官方估算）" : ""}` : ""}
                             </span>
                           ))}
                         </div>

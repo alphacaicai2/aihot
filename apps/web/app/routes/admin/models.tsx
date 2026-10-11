@@ -21,7 +21,7 @@ interface Usage {
   tokensOut: number;
   actualCost: number | null;
   currency: string | null;
-  estimate: { amount: number; currency: string } | null;
+  estimate: { amount: number; currency: string; note: string; sourceUrl: string | null } | null;
 }
 
 interface Models {
@@ -107,9 +107,9 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                       align: "right",
                       render: (u) =>
                         u.actualCost !== null ? (
-                          `${money(u.actualCost)}${u.currency && u.currency !== "CNY" ? ` ${u.currency}` : ""}`
+                          `${money(u.actualCost, u.currency ?? "CNY")}${u.currency && u.currency !== "CNY" ? ` ${u.currency}` : ""}`
                         ) : u.estimate ? (
-                          <span title="按用量 × 单价推算">≈ {money(u.estimate.amount)}{u.estimate.currency !== "CNY" ? ` ${u.estimate.currency}` : ""}</span>
+                          <span title={u.estimate.note}>≈ {money(u.estimate.amount, u.estimate.currency)}{u.estimate.currency !== "CNY" ? ` ${u.estimate.currency}` : ""}{u.estimate.sourceUrl ? "（官方估算）" : ""}</span>
                         ) : (
                           <span className="whitespace-nowrap text-ink-4" title="服务商没有返回费用，按 token 数和你的模型单价自己估算">未定价</span>
                         ),

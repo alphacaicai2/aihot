@@ -44,8 +44,13 @@ export async function contentChain(id: string) {
     sql`
       SELECT an.id, an.origin, an.model, an.prompt_version, an.input_revision, an.relevance, an.category, an.score, an.selected, an.title_zh, an.reason_zh,
              an.created_at,
-             (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'status', r.status, 'service', r.service, 'model', r.model, 'cost', r.cost, 'at', r.created_at) ORDER BY r.id), '[]'::jsonb)
-                FROM receipts r WHERE r.id = ANY(an.receipt_ids)) AS receipts
+             (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'status', r.status, 'service', r.service, 'model', r.model,
+                  'cost', coalesce(r.cost, e.amount), 'currency', coalesce(r.currency, CASE WHEN e.amount IS NOT NULL THEN 'USD' END),
+                  'cost_basis', coalesce(r.cost_basis, CASE WHEN e.amount IS NOT NULL THEN 'estimated' END), 'at', r.created_at) ORDER BY r.id), '[]'::jsonb)
+                FROM receipts r LEFT JOIN LATERAL (
+                  SELECT estimate_deepseek_v41_flash(r.usage, r.created_at) AS amount
+                  WHERE r.model IN ('deepseek-v4.1-flash', 'deepseek-flash') AND r.origin = 'live'
+                ) e ON true WHERE r.id = ANY(an.receipt_ids)) AS receipts
       FROM analyses an WHERE an.article_id = ${id} ORDER BY an.created_at DESC LIMIT 10`,
     sql`SELECT * FROM publications WHERE article_id = ${id}`,
     sql`SELECT fields, visibility, reason, version, updated_by, updated_at FROM editorial_overrides WHERE article_id = ${id}`,

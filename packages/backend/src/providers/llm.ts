@@ -17,6 +17,8 @@ export interface ModelSpec {
   extra?: Record<string, unknown>;
   jsonMode: boolean;
   vision?: boolean;
+  /** Only set when the provider documents usage.cost as the amount actually charged. */
+  usageCostCurrency?: "USD" | "CNY";
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {
@@ -64,6 +66,13 @@ export const MODELS: Record<string, ModelSpec> = {
     key: "qwen3.7-flash", service: "dashscope", model: "qwen3.7-flash",
     baseUrlEnv: "DASHSCOPE_BASE_URL", apiKeyEnv: "DASHSCOPE_API_KEY",
     extra: { enable_thinking: false }, jsonMode: true,
+  },
+  // Shares the deployment's LLM budget; OpenRouter uses a provider-qualified model ID.
+  "openrouter-qwen3.7-flash": {
+    key: "openrouter-qwen3.7-flash", service: "llm", model: "qwen/qwen3.7-flash",
+    baseUrlEnv: "OPENROUTER_BASE_URL", apiKeyEnv: "OPENROUTER_API_KEY",
+    extra: { reasoning: { enabled: false }, provider: { require_parameters: true } }, jsonMode: true,
+    usageCostCurrency: "USD",
   },
   "qwen3.8-flash": {
     key: "qwen3.8-flash", service: "dashscope", model: "qwen3.8-flash",
@@ -212,11 +221,14 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
         json = { unparsable: text.slice(0, 20000) };
       }
       const usage = (json.usage as Record<string, unknown> | undefined) ?? null;
+      const amount = usage?.cost;
       return {
         response: { ...json, _latencyMs: Date.now() - started },
         requestId: (json.id as string | undefined) ?? res.headers.get("x-request-id"),
         usage,
-        cost: null,
+        cost: spec.usageCostCurrency && typeof amount === "number" && Number.isFinite(amount) && amount >= 0
+          ? { amount, currency: spec.usageCostCurrency, basis: "actual" as const }
+          : null,
       };
     },
   );

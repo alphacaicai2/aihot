@@ -33,8 +33,11 @@ export function num(n: number | string | null | undefined, digits = 0): string {
 export function money(n: number | string | null | undefined, currency = "CNY"): string {
   if (n === null || n === undefined) return "—";
   const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
   const sign = currency === "USD" ? "$" : "¥";
-  return `${sign}${v.toLocaleString("zh-CN", { maximumFractionDigits: v < 10 ? 3 : 2, minimumFractionDigits: 2 })}`;
+  const magnitude = Math.abs(v);
+  const digits = magnitude > 0 && magnitude < 0.01 ? 12 : magnitude < 10 ? 3 : 2;
+  return `${sign}${v.toLocaleString("zh-CN", { maximumFractionDigits: digits, minimumFractionDigits: 2 })}`;
 }
 
 export function duration(from: string | null, to: string | null): string {

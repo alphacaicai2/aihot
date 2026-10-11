@@ -13,12 +13,12 @@ for (const name of Object.keys(process.env)) if (/_MODEL$/.test(name) && name !=
 
 const T = tag();
 const SOURCE = `test-default-model-${T}`;
-const seen: Array<{ model: string; system: string }> = [];
+const seen: Array<{ model: string; system: string; reasoning?: unknown; response_format?: unknown }> = [];
 const provider = await stub((_hit, req) => {
-  const body = JSON.parse(req.body) as { model: string; messages: Array<{ role: string; content: unknown }> };
+  const body = JSON.parse(req.body) as { model: string; messages: Array<{ role: string; content: unknown }>; reasoning?: unknown; response_format?: unknown };
   const system = body.messages[0]!.role === "system" ? String(body.messages[0]!.content) : "";
   const user = String(body.messages.at(-1)!.content);
-  seen.push({ model: body.model, system });
+  seen.push({ model: body.model, system, reasoning: body.reasoning, response_format: body.response_format });
   const content =
     system.includes("宽召回") ? { label: "PASS", reason: "测试" }
     : system.includes("事件注意力评分器") ? { attentionScore: 80 }
@@ -52,4 +52,35 @@ test("one model runs the prefilter, both scores, the writing and the structure",
   assert.ok(seen.every((r) => r.model === "one-model"), "every request names the configured model");
   const services = await sql<{ service: string }[]>`SELECT DISTINCT service FROM receipts WHERE subject LIKE ${`article:${articleId}%`}`;
   assert.deepEqual(services.map((s) => s.service), ["llm"]);
+});
+
+test("OpenRouter can run only the prefilter while the other steps keep the default model and budget", async () => {
+  const start = seen.length;
+  Object.assign(process.env, {
+    PREFILTER_MODEL: "openrouter-qwen3.7-flash", OPENROUTER_BASE_URL: `${provider.url}/v1`, OPENROUTER_API_KEY: "test-openrouter-key",
+  });
+  try {
+    const { articleId } = await upsertMaterial({
+      sourceId: SOURCE, url: `https://example.com/${T}/openrouter`, title: `Another product launch ${T}`,
+      bodyText: `A company launched another AI product with pricing and availability. ${T} `.repeat(6),
+      bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
+    } as never);
+    const res = await analyzeArticle(articleId);
+    assert.equal(res!.output!.selected, true);
+    const calls = seen.slice(start);
+    assert.equal(calls.length, 5);
+    const prefilter = calls.filter((r) => r.system.includes("宽召回"));
+    assert.equal(prefilter.length, 1);
+    assert.equal(prefilter[0]!.model, "qwen/qwen3.7-flash");
+    assert.deepEqual(prefilter[0]!.reasoning, { enabled: false });
+    assert.deepEqual(prefilter[0]!.response_format, { type: "json_object" });
+    assert.ok(calls.filter((r) => !r.system.includes("宽召回")).every((r) => r.model === "one-model"));
+    const receipts = await sql<{ service: string; model: string }[]>`SELECT service, model FROM receipts WHERE subject LIKE ${`article:${articleId}%`}`;
+    assert.ok(receipts.every((r) => r.service === "llm"));
+    assert.equal(receipts.filter((r) => r.model === "qwen/qwen3.7-flash").length, 1);
+  } finally {
+    delete process.env.PREFILTER_MODEL;
+    delete process.env.OPENROUTER_BASE_URL;
+    delete process.env.OPENROUTER_API_KEY;
+  }
 });

@@ -21,6 +21,7 @@ interface UsageRow {
   tokens_out: string | null;
   actual_cost: string | null;
   currency: string | null;
+  official_estimate: string | null;
 }
 
 export async function modelsOverview(days = 7) {
@@ -35,7 +36,9 @@ export async function modelsOverview(days = 7) {
              percentile_disc(0.5) WITHIN GROUP (ORDER BY a.latency_ms) AS p50,
              percentile_disc(0.95) WITHIN GROUP (ORDER BY a.latency_ms) AS p95,
              sum((a.usage->>'prompt_tokens')::bigint) AS tokens_in, sum((a.usage->>'completion_tokens')::bigint) AS tokens_out,
-             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, max(a.currency) AS currency
+             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, max(a.currency) AS currency,
+             sum(estimate_deepseek_v41_flash(a.usage, a.started_at))
+               FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash')) AS official_estimate
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
       WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
       GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC`,
@@ -50,10 +53,12 @@ export async function modelsOverview(days = 7) {
   ]);
   const serviceOf = (model: string) => Object.values(MODELS).find((m) => m.model === model || m.key === model)?.service ?? null;
   const priced = (u: UsageRow) => {
+    if (u.official_estimate !== null) return { amount: Number(u.official_estimate), currency: "USD", note: "DeepSeek 官方估算：按缓存命中和请求时间分峰谷（含 2026 中国节假日）；缓存数据缺失按未命中算。", sourceUrl: "https://api-docs.deepseek.com/quick_start/pricing/" };
+    if (u.model === "deepseek-v4.1-flash" || u.model === "deepseek-flash") return null;
     const service = u.model ? serviceOf(u.model) : null;
     const p = prices.find((x) => x.service === service && x.model === u.model) ?? prices.find((x) => x.service === service && x.model === "");
     if (!p || (!p.input_per_mtok && !p.output_per_mtok)) return null;
-    return { amount: (Number(u.tokens_in ?? 0) / 1e6) * Number(p.input_per_mtok ?? 0) + (Number(u.tokens_out ?? 0) / 1e6) * Number(p.output_per_mtok ?? 0), currency: p.currency };
+    return { amount: (Number(u.tokens_in ?? 0) / 1e6) * Number(p.input_per_mtok ?? 0) + (Number(u.tokens_out ?? 0) / 1e6) * Number(p.output_per_mtok ?? 0), currency: p.currency, note: "按用量 × 单价推算", sourceUrl: null };
   };
   const capabilities = (Object.entries(CAPABILITIES) as Array<[CapabilityKey, Capability]>).map(([key, c]) => ({
     key,

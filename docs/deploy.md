@@ -76,6 +76,8 @@ docker compose logs -f --tail 100 api worker web
 - **付费采集**（X、公众号、Jina）：按请求计费，默认不启用，填了 key 才会用。
 - 所有付费服务都有每分钟、每小时、每天的调用上限（后台“设置 → 预算”），超过就暂停，不会一夜之间刷爆账单。填 0 表示立即停用这个服务。
 
+后台费用有两种口径：OpenRouter Qwen 显示回执返回的实际费用；DeepSeek V4.1 Flash 显示 `≈` 和“官方估算”，按各次请求的 token 用量、缓存命中和请求时间计算，即使代理没有返回费用也能显示。缺少缓存信息时按未命中算，没有 token 用量的请求不计成零费用。估算采用 [DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/) 的 2026-10-11 快照及 2026 中国节假日；价格或后续年度假期变化时，用增量迁移更新 `estimate_deepseek_v41_flash` 和 `service_prices`。历史用量按此价格快照估值，原始回执和实际账单保留。
+
 ## 不用 Docker
 
 需要 Node.js 24.11 以上和 PostgreSQL 16 或 17。
