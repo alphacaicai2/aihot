@@ -110,6 +110,12 @@ test("an unknown outcome is released automatically once, so a lost answer costs 
   await age();
   await autoReleaseUnknownReceipts();
   assert.equal(await status(), "failed");
+  const [original] = await sql`SELECT status, error, release_note, released_at FROM receipt_attempts
+    WHERE receipt_id = (SELECT id FROM receipts WHERE subject = ${req.subject}) AND attempt = 1`;
+  assert.equal(original!.status, "unknown");
+  assert.match(original!.error, /socket hang up after sending/);
+  assert.match(original!.release_note, /自动放行/);
+  assert.ok(original!.released_at);
   await assert.rejects(paidRequest(req, lost));
   assert.equal(sent, 2, "one repeat after the release");
 

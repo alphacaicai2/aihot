@@ -3,12 +3,14 @@
 import { sql } from "../db.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
-import { failureGroupSql, queueProcessing, requeueFailed } from "../jobs/content.ts";
+import { failureGroupSql, requeueFailed } from "../jobs/content.ts";
+import { recoverReceiptWork } from "../jobs/receipt-recovery.ts";
+import { configuredDefaultFallback } from "../providers/llm.ts";
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
 
 export async function runsOverview() {
-  const [heartbeats, latest, timeline, queues, failedJobs, lagging, receipts, receiptIssues, deliveries, errors, ingest, leaderboard] = await Promise.all([
+  const [heartbeats, latest, timeline, queues, failedJobs, lagging, receipts, receiptIssues, deliveries, errors, ingest, leaderboard, receiptRecovery] = await Promise.all([
     sql<{ key: string; value: Record<string, unknown>; updated_at: Date }[]>`SELECT key, value, updated_at FROM settings WHERE key LIKE 'heartbeat.%' ORDER BY key`,
     sql`
       WITH latest AS (
@@ -25,8 +27,30 @@ export async function runsOverview() {
       SELECT name, state, count(*)::int AS n, min(created_on) AS oldest FROM pgboss.job
       WHERE state IN ('created', 'retry', 'active') GROUP BY 1, 2 ORDER BY 1, 2`,
     sql`
-      SELECT name, count(*)::int AS failed, max(completed_on) AS last, left((array_agg(output::text ORDER BY completed_on DESC))[1], 300) AS last_output
-      FROM pgboss.job WHERE state = 'failed' AND completed_on > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC`,
+      WITH failed AS (
+        SELECT *, coalesce(data->>'articleId', data->>'storyId', data::text, '') AS ref,
+          substring(output->>'message' FROM '^Receipt ([0-9]+) has an unknown outcome')::bigint AS receipt_id
+        FROM pgboss.job WHERE state = 'failed' AND completed_on > now() - interval '24 hours'
+      ), succeeded AS (
+        SELECT name, coalesce(data->>'articleId', data->>'storyId', data::text, '') AS ref, max(completed_on) AS at
+        FROM pgboss.job WHERE state = 'completed' AND completed_on > now() - interval '24 hours'
+          AND name IN (SELECT DISTINCT name FROM failed) GROUP BY 1, 2
+      ), resolved AS (
+        SELECT f.*, coalesce(q.at > f.completed_on, false)
+          OR (f.name = 'events.digest' AND s.id IS NOT NULL AND (s.merged_into IS NOT NULL OR coalesce(s.digest_updated_at > f.completed_on, false)
+            OR NOT EXISTS (SELECT 1 FROM facts x JOIN fact_articles fa ON fa.fact_id = x.id
+              JOIN publications p ON p.article_id = fa.article_id
+              WHERE x.story_id = s.id AND p.visibility = 'public' AND p.eligible)))
+          OR (f.name = 'cron.reports.daily' AND EXISTS (SELECT 1 FROM reports p WHERE p.kind = 'daily'
+            AND p.key = to_char(f.created_on AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AND p.generated_at > f.completed_on)) AS recovered
+        FROM failed f LEFT JOIN succeeded q ON q.name = f.name AND q.ref = f.ref
+        LEFT JOIN stories s ON f.name = 'events.digest' AND s.id::text = f.data->>'storyId'
+      )
+      SELECT name, count(*)::int AS failed, count(*) FILTER (WHERE recovered)::int AS recovered,
+        count(*) FILTER (WHERE NOT recovered)::int AS unresolved, max(completed_on) AS last,
+        left((array_agg(coalesce((SELECT a.error FROM receipt_attempts a WHERE a.receipt_id = f.receipt_id ORDER BY a.attempt DESC LIMIT 1),
+          output->>'message', output::text) ORDER BY completed_on DESC))[1], 1200) AS last_output
+      FROM resolved f GROUP BY name ORDER BY failed DESC`,
     sql`
       SELECT id, name, kind, health, fail_count, last_ok_at, last_fetch_at, next_fetch_at, interval_minutes, left(last_error, 200) AS last_error
       FROM sources
@@ -35,9 +59,15 @@ export async function runsOverview() {
       ORDER BY health = 'failing' DESC, next_fetch_at LIMIT 60`,
     sql<{ status: string; n: number }[]>`SELECT status, count(*)::int AS n FROM receipts WHERE created_at > now() - interval '7 days' GROUP BY 1`,
     sql`
-      SELECT id, service, model, purpose, subject, status, attempts, left(error, 240) AS error, created_at, updated_at FROM receipts
-      WHERE status = 'unknown' OR (status = 'failed' AND updated_at > now() - interval '3 days') OR (status = 'pending' AND updated_at < now() - interval '15 minutes')
-      ORDER BY status = 'unknown' DESC, updated_at DESC LIMIT 40`,
+      SELECT r.id, r.service, r.model, r.purpose, r.subject, r.status, r.attempts, r.error AS release_or_error,
+        coalesce((SELECT a.error FROM receipt_attempts a WHERE a.receipt_id = r.id ORDER BY a.attempt DESC LIMIT 1), r.error) AS error,
+        r.created_at, r.updated_at, f.fallback_model, f.fallback_receipt_id, b.status AS fallback_status,
+        b.error AS fallback_error
+      FROM receipts r LEFT JOIN LATERAL (SELECT * FROM model_fallback_routes f
+        WHERE f.primary_receipt_id = r.id OR f.fallback_receipt_id = r.id ORDER BY f.created_at DESC LIMIT 1) f ON true
+      LEFT JOIN receipts b ON b.id = f.fallback_receipt_id
+      WHERE r.status = 'unknown' OR (r.status = 'failed' AND r.updated_at > now() - interval '3 days') OR (r.status = 'pending' AND r.updated_at < now() - interval '15 minutes')
+      ORDER BY r.status = 'unknown' DESC, r.updated_at DESC LIMIT 40`,
     sql`
       SELECT id, target_key, subject_kind, subject_id, status, attempts, left(response, 240) AS response, created_at, updated_at FROM deliveries
       WHERE status IN ('unknown', 'failed') OR (status = 'sending' AND updated_at < now() - interval '15 minutes')
@@ -49,6 +79,22 @@ export async function runsOverview() {
     sql`SELECT client, kind, status, left(error, 200) AS error, summary, created_at FROM ingest_events ORDER BY created_at DESC LIMIT 20`,
     sql<{ value: { at: string; sources: Record<string, { ok: boolean; at: string; lastOkAt: string | null; changed?: boolean; rows?: number; error?: string }> } }[]>`
       SELECT value FROM settings WHERE key = 'leaderboard.fetch'`,
+    sql<{ unknown: number; fallback_completed: number; fallback_received: number; fallback_pending: number; fallback_failed: number; fallback_unknown: number; fallback_not_sent: number; no_fallback: number; failed_articles: number }[]>`
+      SELECT count(*)::int AS unknown,
+        count(*) FILTER (WHERE b.status = 'completed')::int AS fallback_completed,
+        count(*) FILTER (WHERE b.status = 'received')::int AS fallback_received,
+        count(*) FILTER (WHERE b.status = 'pending')::int AS fallback_pending,
+        count(*) FILTER (WHERE b.status = 'failed')::int AS fallback_failed,
+        count(*) FILTER (WHERE b.status = 'unknown')::int AS fallback_unknown,
+        count(*) FILTER (WHERE f.primary_key IS NOT NULL AND b.id IS NULL)::int AS fallback_not_sent,
+        count(*) FILTER (WHERE f.primary_key IS NULL)::int AS no_fallback,
+        count(DISTINCT a.id) FILTER (WHERE a.processing_state = 'failed'
+          AND a.revision::text = substring(r.subject FROM '@([0-9]+)'))::int AS failed_articles
+      FROM receipts r LEFT JOIN LATERAL (SELECT * FROM model_fallback_routes f
+        WHERE f.primary_receipt_id = r.id OR f.fallback_receipt_id = r.id ORDER BY f.created_at DESC LIMIT 1) f ON true
+      LEFT JOIN receipts b ON b.id = f.fallback_receipt_id
+      LEFT JOIN articles a ON a.id = substring(r.subject FROM '^article:([^@:]+)')
+      WHERE r.status = 'unknown'`,
   ]);
   // Articles waiting to retry after a passing provider problem (they are not failed).
   const [retrying] = await sql<{ n: number; next: Date | null }[]>`
@@ -67,7 +113,7 @@ export async function runsOverview() {
     queues,
     failedJobs,
     lagging,
-    receipts: { counts: Object.fromEntries(receipts.map((r) => [r.status, r.n])), issues: receiptIssues },
+    receipts: { counts: Object.fromEntries(receipts.map((r) => [r.status, r.n])), issues: receiptIssues, recovery: receiptRecovery[0]! },
     deliveries,
     errors,
     retrying: { count: retrying?.n ?? 0, next: retrying?.next ?? null },
@@ -84,17 +130,15 @@ export async function runsOverview() {
  * processing (one action, not two). Only an unknown receipt is released, once.
  */
 async function release(id: number, error: string, actor: string, note: string, billed: boolean | null) {
-  const [before] = await sql<{ subject: string | null; purpose: string }[]>`
-    UPDATE receipts SET status = 'failed', error = ${error}, updated_at = now() WHERE id = ${id} AND status = 'unknown' RETURNING subject, purpose`;
+  const before = await sql.begin(async (tx) => {
+    const [row] = await tx<{ subject: string | null; purpose: string }[]>`
+      UPDATE receipts SET status = 'failed', error = ${error}, updated_at = now() WHERE id = ${id} AND status = 'unknown' RETURNING subject, purpose`;
+    if (row) await tx`UPDATE receipt_attempts SET release_note = ${error}, released_at = now()
+      WHERE receipt_id = ${id} AND status = 'unknown' AND released_at IS NULL`;
+    return row;
+  });
   if (!before) return null;
-  await sql`UPDATE receipt_attempts SET status = 'failed', error = ${error} WHERE receipt_id = ${id} AND status = 'unknown'`;
-  const article = before.purpose === "analyze_article" ? /^article:([^@]+)@/.exec(before.subject ?? "")?.[1] : undefined;
-  let requeued = false;
-  if (article) {
-    const [a] = await sql`UPDATE articles SET processing_state = 'new', processing_attempts = 0, processing_retry_at = NULL, processing_error = NULL
-                          WHERE id = ${article} AND processing_state = 'failed' RETURNING id`;
-    if (a) requeued = !!(await queueProcessing(article, { step: "analyze" }));
-  }
+  const { requeued } = await recoverReceiptWork(id);
   await audit(actor, "receipt.release", `receipt:${id}`, note, { status: "unknown" }, { status: "failed", billed, requeued });
   return { id, status: "failed", subject: before.subject, purpose: before.purpose, requeued };
 }
@@ -113,16 +157,18 @@ const AUTO_RELEASE_AFTER_MS = 30 * 60_000;
 const AUTO_RELEASE_NOTE = "自动放行：结果未知超过 30 分钟，未核对是否计费";
 
 /**
- * Every 10 minutes (ops.recover): unknown receipts older than half an hour are released
- * without checking the provider's bill. A lost answer costs at most one repeat: a request released this
- * way once and unknown again stays for the admin (the daily ops digest lists it).
+ * Every 10 minutes: preserve model requests with an independent fallback for bill review. Other
+ * unknown receipts older than half an hour may be released once; another loss waits for the admin.
  */
 export async function autoReleaseUnknownReceipts(now = Date.now()) {
+  const route = configuredDefaultFallback();
   const rows = await sql<{ id: number }[]>`
     SELECT r.id FROM receipts r
     WHERE r.status = 'unknown' AND r.updated_at < ${new Date(now - AUTO_RELEASE_AFTER_MS)}
-      AND NOT EXISTS (SELECT 1 FROM receipt_attempts a WHERE a.receipt_id = r.id AND a.error LIKE ${AUTO_RELEASE_NOTE + "%"})
+      AND NOT EXISTS (SELECT 1 FROM receipt_attempts a WHERE a.receipt_id = r.id
+        AND (a.released_at IS NOT NULL OR a.error LIKE ${AUTO_RELEASE_NOTE + "%"}))
       AND NOT EXISTS (SELECT 1 FROM model_fallback_routes f WHERE f.primary_receipt_id = r.id OR f.fallback_receipt_id = r.id)
+      AND NOT (${!!route} AND r.service = ${route?.primary.service ?? ""} AND r.model = ${route?.primary.model ?? ""})
     ORDER BY r.id LIMIT 200`;
   let released = 0;
   let requeued = 0;

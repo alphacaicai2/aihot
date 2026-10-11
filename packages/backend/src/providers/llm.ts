@@ -6,6 +6,7 @@ import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
 import { completeReceipt, logicalKeyFor, paidRequest, ProviderRejectedError, ReceiptUnknownError, rejectReceivedResponse, type ReceiptRequest } from "./receipts.ts";
 import { sql } from "../db.ts";
+import { acquirePrimary, releasePrimary, settlePrimary } from "./model-circuit.ts";
 
 export interface ModelSpec {
   key: string;
@@ -92,6 +93,15 @@ export const MODELS: Record<string, ModelSpec> = {
 };
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+
+/** Recovery may route the configured default elsewhere, but must not release its uncertain call. */
+export function configuredDefaultFallback(): { primary: ModelSpec; fallback: ModelSpec } | null {
+  const primary = MODELS.default!;
+  const fallback = MODELS[process.env.LLM_FALLBACK_MODEL ?? ""];
+  if (!primary.model || !fallback || (primary.service === fallback.service && primary.model === fallback.model)) return null;
+  if (![primary, fallback].every(spec => credential("models", spec.baseUrlEnv) && credential("models", spec.apiKeyEnv))) return null;
+  return { primary, fallback };
+}
 
 export interface ChatJsonOptions<S extends z.ZodType> {
   model: string;
@@ -231,28 +241,19 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
   }
   // Configuration failures must not create a route that cannot ever be executed.
   if (!credential("models", fallback.baseUrlEnv) || !credential("models", fallback.apiKeyEnv)) throw new Error(`Fallback model ${fallback.key} is not configured`);
-  const [circuit] = await sql<{ open: boolean; open_until: Date | null }[]>`SELECT open_until > now() AS open, open_until FROM model_circuits WHERE provider_key = ${providerKey}`;
-  if (circuit?.open) return useFallback("primary circuit open");
-  if (circuit?.open_until) {
-    // At cooldown expiry one process probes; the others continue using the fallback during the probe.
-    const probe = await sql`UPDATE model_circuits SET open_until = now() + interval '5 minutes', updated_at = now()
-                            WHERE provider_key = ${providerKey} AND open_until <= now() RETURNING provider_key`;
-    if (!probe.length) return useFallback("primary recovery probe in flight");
-  }
+  if (existing?.status === "unknown") return useFallback("primary outcome unknown; preserve for bill review");
+  const claim = await acquirePrimary(providerKey, opts.timeoutMs ?? 120_000);
+  if (!claim) return useFallback("primary circuit open or concurrency limit reached");
   try {
     const result = await chatJsonOnce(opts);
-    await sql`DELETE FROM model_circuits WHERE provider_key = ${providerKey}`;
+    await settlePrimary(claim, false);
     return result;
   } catch (error) {
     if (!fallbackEligible(error)) throw error;
-    const threshold = Math.max(1, Number(process.env.LLM_FALLBACK_FAILURE_THRESHOLD) || 3);
-    const cooldown = Math.max(1, Number(process.env.LLM_FALLBACK_COOLDOWN_SECONDS) || 300);
-    await sql`INSERT INTO model_circuits(provider_key, failures, open_until)
-              VALUES (${providerKey}, 1, CASE WHEN ${threshold} <= 1 THEN now() + make_interval(secs => ${cooldown}) END)
-              ON CONFLICT (provider_key) DO UPDATE SET failures = model_circuits.failures + 1,
-                open_until = CASE WHEN model_circuits.failures + 1 >= ${threshold} THEN now() + make_interval(secs => ${cooldown}) ELSE model_circuits.open_until END,
-                updated_at = now()`;
+    await settlePrimary(claim, true);
     return useFallback(error instanceof Error ? error.message : String(error));
+  } finally {
+    await releasePrimary(claim);
   }
 }
 
@@ -294,10 +295,16 @@ async function chatJsonOnce<S extends z.ZodType>(opts: ChatJsonOptions<S>): Prom
           signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
         });
       } catch (error) {
-        if (isConnectFailure(error)) throw new ProviderRejectedError(`connect failed: ${String(error)}`, null, true);
+        if (error instanceof Error) Object.assign(error, { phase: "headers", elapsedMs: Date.now() - started });
+        if (isConnectFailure(error)) throw new ProviderRejectedError(`connect failed: ${String(error)}`, null, true, { cause: error });
         throw error;
       }
-      const text = await res.text();
+      let text: string;
+      try { text = await res.text(); }
+      catch (error) {
+        if (error instanceof Error) Object.assign(error, { phase: "body", elapsedMs: Date.now() - started });
+        throw error;
+      }
       if (!res.ok) {
         const retryable = res.status === 429 || res.status >= 500;
         throw new ProviderRejectedError(`HTTP ${res.status}: ${text.slice(0, 500)}`, res.status, retryable);

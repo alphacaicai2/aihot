@@ -1,5 +1,5 @@
 // Model failures may buy one answer from an independent provider, never release the lost answer.
-import { stub, tag, Reply } from "./setup.ts";
+import { stub, tag, Reply, gate } from "./setup.ts";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, beforeEach, test } from "node:test";
@@ -13,18 +13,29 @@ import { autoReleaseUnknownReceipts } from "@aihot/backend/admin/runs";
 let mode = "ok";
 let fallbackMode = "ok";
 let primaryHits = 0;
+let held = gate();
+let arrived = gate();
 const primary = http.createServer((req, res) => {
   req.resume();
   req.on("end", () => {
     primaryHits++;
-    if (mode === "socket") { req.socket.destroy(); return; }
-    const status = mode === "503" ? 503 : mode === "safety" ? 400 : 200;
+    const currentMode = mode;
+    const release = held;
+    if (currentMode === "socket") { req.socket.destroy(); return; }
+    if (currentMode === "body-socket") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"choices":');
+      setTimeout(() => req.socket.destroy(), 20);
+      return;
+    }
+    const status = currentMode === "503" ? 503 : currentMode === "safety" ? 400 : 200;
     const send = () => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(status !== 200 ? { error: { code: status === 400 ? "1301" : "overloaded" } }
-        : { choices: [{ message: { content: mode === "invalid" ? "not JSON" : '{"ok":true}' } }], usage: { prompt_tokens: 5, completion_tokens: 5 } }));
+        : { choices: [{ message: { content: currentMode === "invalid" ? "not JSON" : '{"ok":true}' } }], usage: { prompt_tokens: 5, completion_tokens: 5 } }));
     };
-    if (mode === "delay") setTimeout(send, 150); else send();
+    if (currentMode === "held") { arrived.open(); void release.promise.then(send); }
+    else if (currentMode === "delay") setTimeout(send, 150); else send();
   });
 });
 await new Promise<void>(resolve => primary.listen(0, "127.0.0.1", resolve));
@@ -49,7 +60,12 @@ beforeEach(async () => {
   mode = fallbackMode = "ok";
   process.env.LLM_FALLBACK_MODEL = "deepseek-flash";
   process.env.LLM_FALLBACK_FAILURE_THRESHOLD = "3";
+  process.env.LLM_PRIMARY_MODE = "normal";
+  process.env.LLM_PRIMARY_MAX_CONCURRENCY = "20";
+  held = gate();
+  arrived = gate();
   await sql`DELETE FROM model_circuits`;
+  await sql`DELETE FROM model_primary_leases`;
   await sql`UPDATE budgets SET per_minute=10000, per_hour=100000, per_day=1000000 WHERE service IN ('llm','deepseek')`;
 });
 after(async () => {
@@ -91,7 +107,35 @@ test("time limits trigger a separate budgeted fallback request", async () => {
   const rows = await sql`SELECT service,status,error FROM receipts WHERE subject=${subject} ORDER BY id`;
   assert.equal(rows[0]!.status,"unknown");
   assert.match(rows[0]!.error,/timeout/i);
+  assert.match(rows[0]!.error,/phase=headers/);
   assert.equal(rows[1]!.service,"deepseek");
+});
+
+test("connection rejection retains the original transport cause without credentials", async () => {
+  const closed = http.createServer();
+  await new Promise<void>(resolve => closed.listen(0, "127.0.0.1", resolve));
+  const port = (closed.address() as { port: number }).port;
+  await new Promise<void>(resolve => closed.close(() => resolve()));
+  const subject = `connection-refused-${tag()}`;
+  process.env.LLM_BASE_URL = `http://127.0.0.1:${port}`;
+  try {
+    assert.equal((await ask(subject)).model, "deepseek-flash");
+    const [receipt] = await sql`SELECT status,error FROM receipts WHERE subject=${subject} AND service='llm'`;
+    assert.equal(receipt!.status, "failed");
+    assert.match(receipt!.error, /ECONNREFUSED/);
+    assert.match(receipt!.error, /phase=headers/);
+    assert.doesNotMatch(receipt!.error, /test-primary-key|authorization/);
+  } finally { process.env.LLM_BASE_URL = primaryUrl; }
+});
+
+test("a response body disconnect is recorded as unknown with its response phase", async () => {
+  mode = "body-socket";
+  const subject = `body-disconnect-${tag()}`;
+  assert.equal((await ask(subject)).model, "deepseek-flash");
+  const [receipt] = await sql`SELECT status,error FROM receipts WHERE subject=${subject} AND service='llm'`;
+  assert.equal(receipt!.status, "unknown");
+  assert.match(receipt!.error, /phase=body/);
+  assert.match(receipt!.error, /UND_ERR_SOCKET/);
 });
 
 test("temporary rejection and invalid output can fall back; content safety rejection cannot", async () => {
@@ -137,6 +181,55 @@ test("only one recovery probe uses the primary after circuit cooldown", async ()
   assert.equal((await probe).model,"default");
   assert.equal(primaryHits-before,1);
   assert.equal((await sql`SELECT * FROM model_circuits`).length,0);
+});
+
+test("a late success cannot close a circuit opened by newer failures", async () => {
+  mode = "held";
+  const slow = ask(`old-in-flight-${tag()}`);
+  await arrived.promise;
+  mode = "503";
+  process.env.LLM_FALLBACK_FAILURE_THRESHOLD = "1";
+  await ask(`new-failure-${tag()}`);
+  const [opened] = await sql`SELECT generation, open_until FROM model_circuits`;
+  assert.ok(opened?.open_until);
+  held.open();
+  assert.equal((await slow).model, "default");
+  const [stillOpen] = await sql`SELECT generation, open_until FROM model_circuits`;
+  assert.equal(stillOpen?.generation, opened!.generation);
+  assert.ok(stillOpen?.open_until);
+  const sent = primaryHits;
+  assert.equal((await ask(`after-late-success-${tag()}`)).model, "deepseek-flash");
+  assert.equal(primaryHits, sent);
+});
+
+test("probe mode retains the fallback route after a successful small recovery probe", async () => {
+  process.env.LLM_PRIMARY_MODE = "probe";
+  mode = "held";
+  const probe = ask(`maintenance-probe-${tag()}`);
+  await arrived.promise;
+  const sent = primaryHits;
+  assert.equal((await ask(`during-maintenance-${tag()}`)).model, "deepseek-flash");
+  held.open();
+  assert.equal((await probe).model, "default");
+  mode = "ok";
+  assert.equal((await ask(`after-maintenance-probe-${tag()}`)).model, "deepseek-flash");
+  assert.equal(primaryHits, sent);
+  assert.equal((await sql`SELECT * FROM model_primary_leases`).length, 0);
+});
+
+test("the shared concurrency limit bypasses a full primary without losing its existing request", async () => {
+  process.env.LLM_PRIMARY_MAX_CONCURRENCY = "1";
+  mode = "held";
+  const first = ask(`capacity-first-${tag()}`);
+  await arrived.promise;
+  const sent = primaryHits;
+  assert.equal((await ask(`capacity-overflow-${tag()}`)).model, "deepseek-flash");
+  assert.equal(primaryHits, sent);
+  held.open();
+  assert.equal((await first).model, "default");
+  assert.equal((await sql`SELECT * FROM model_primary_leases`).length, 0);
+  mode = "ok";
+  assert.equal((await ask(`capacity-free-${tag()}`)).model, "default");
 });
 
 test("fallback budget and primary budget remain effective, without switching to evade limits", async () => {

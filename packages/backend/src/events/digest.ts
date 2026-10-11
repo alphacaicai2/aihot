@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { modelFor } from "../editorial/models.ts";
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { chatJson } from "../providers/llm.ts";
 import { completeReceipt } from "../providers/receipts.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
@@ -27,26 +27,39 @@ export function storyStatusFor(latestAt: Date | null, now = Date.now()): "active
   return "settled";
 }
 
-/** `afterCorrection`: an editor changed a report of this story; rewrite even when older versions lack inputs. */
-export async function composeStoryDigest(storyId: number, opts: { afterCorrection?: boolean } = {}): Promise<{ updated: boolean; version?: number }> {
-  const [story] = await sql<{ id: number; title: string; digest: string | null; version: number; origin: string }[]>`
+async function digestInput(storyId: number, db: Db) {
+  const [story] = await db<{ id: number; title: string; digest: string | null; version: number; origin: string }[]>`
     SELECT id, title, digest, version, origin FROM stories WHERE id = ${storyId} AND merged_into IS NULL`;
-  if (!story) return { updated: false };
-  const reports = await sql<{ id: string; title: string; summary: string | null; source_name: string; first_party: boolean; at: Date }[]>`
+  if (!story) return null;
+  const reports = await db<{ id: string; title: string; summary: string | null; source_name: string; first_party: boolean; at: Date }[]>`
     SELECT DISTINCT ON (p.article_id) p.article_id AS id, p.title, p.summary, s.name AS source_name, p.first_party,
       coalesce(p.published_at, p.discovered_at) AS at
     FROM facts f JOIN fact_articles fa ON fa.fact_id = f.id JOIN publications p ON p.article_id = fa.article_id
     JOIN sources s ON s.id = p.source_id
     WHERE f.story_id = ${storyId} AND p.visibility = 'public' AND p.eligible
     ORDER BY p.article_id`;
-  if (reports.length === 0) return { updated: false };
+  if (reports.length === 0) return null;
   reports.sort((a, b) => a.at.getTime() - b.at.getTime());
   const ids = reports.map((r) => r.id).sort();
   // What this version is written from: the reports and what they currently say (corrections included).
   const inputsHash = sha256(stableJson([...reports].sort((a, b) => a.id.localeCompare(b.id)).map((r) => [r.id, r.title, r.summary ?? ""])));
-  const [last] = await sql<{ article_ids: string[]; inputs_hash: string | null }[]>`
+  const [last] = await db<{ article_ids: string[]; inputs_hash: string | null }[]>`
     SELECT article_ids, inputs_hash FROM story_digests WHERE story_id = ${storyId} ORDER BY version DESC LIMIT 1`;
   const sameReports = !!last && JSON.stringify([...last.article_ids].sort()) === JSON.stringify(ids);
+  return { story, reports, ids, inputsHash, last, sameReports };
+}
+
+/** Read-only recovery check: a historical failure does not imply the current inputs need a call. */
+export async function storyDigestNeedsUpdate(storyId: number, db: Db = sql): Promise<boolean> {
+  const input = await digestInput(storyId, db);
+  return !!input && !(input.sameReports && (input.last!.inputs_hash === input.inputsHash || input.last!.inputs_hash === null));
+}
+
+/** `afterCorrection`: an editor changed a report of this story; rewrite even when older versions lack inputs. */
+export async function composeStoryDigest(storyId: number, opts: { afterCorrection?: boolean } = {}): Promise<{ updated: boolean; version?: number }> {
+  const input = await digestInput(storyId, sql);
+  if (!input) return { updated: false };
+  const { story, reports, ids, inputsHash, last, sameReports } = input;
   // Versions written before inputs were recorded compare by report set only.
   if (sameReports && (last!.inputs_hash === inputsHash || (last!.inputs_hash === null && !opts.afterCorrection))) return { updated: false };
   // Same reports, different content: an editor corrected one. Rewrite from the reports as they are now,

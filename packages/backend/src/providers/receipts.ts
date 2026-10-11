@@ -4,8 +4,8 @@
 // 2. Before calling, a placeholder row and an attempt row are persisted; budgets count attempts.
 // 3. The raw response is saved before any business write; recovery reuses a received response.
 // 4. A request whose outcome is unknown (timeout after sending, crash mid-flight) is not re-sent by the
-//    caller. ops.recover releases it once after 30 minutes (admin/runs.ts), so a lost answer costs at
-//    most one repeat; after that it waits for the admin.
+//    caller. Configured model fallbacks preserve it for billing review. Other services may be released
+//    once after 30 minutes (admin/runs.ts); a second unknown outcome waits for the admin.
 import { sql, type Db } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { errorDetails } from "../lib/error-details.ts";
@@ -34,8 +34,8 @@ export class ReceiptUnknownError extends Error {
 export class ProviderRejectedError extends Error {
   readonly status: number | null;
   readonly retryable: boolean;
-  constructor(message: string, status: number | null, retryable: boolean) {
-    super(message);
+  constructor(message: string, status: number | null, retryable: boolean, options?: ErrorOptions) {
+    super(message, options);
     this.status = status;
     this.retryable = retryable;
   }
@@ -143,7 +143,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   if (claimed.kind === "reuse") return { receiptId: claimed.row.id, response: claimed.row.response, reused: true };
   if (claimed.kind === "busy") throw new ReceiptBusyError(`Receipt ${claimed.row.id} is in flight`);
   if (claimed.kind === "unknown") {
-    throw new ReceiptUnknownError(claimed.row.id, `Receipt ${claimed.row.id} has an unknown outcome; it is released once automatically, then from the admin`);
+    throw new ReceiptUnknownError(claimed.row.id, `Receipt ${claimed.row.id} has an unknown outcome; preserve it for billing review before releasing or retrying`);
   }
 
   const { id: receiptId, attemptId } = claimed;
@@ -154,7 +154,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   } catch (error) {
     const status = error instanceof ProviderRejectedError ? "failed" : "unknown";
     // "unknown": the request may have reached the provider (timeout, reset): do not re-send automatically.
-    const message = error instanceof ProviderRejectedError ? error.message.slice(0, 2000) : errorDetails(error);
+    const message = error instanceof ProviderRejectedError && !error.cause ? error.message.slice(0, 2000) : errorDetails(error);
     await sql.begin(async (tx) => {
       await tx`UPDATE receipts SET status = ${status}, error = ${message}, updated_at = now() WHERE id = ${receiptId}`;
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;

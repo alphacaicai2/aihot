@@ -10,6 +10,8 @@ export function errorDetails(error: unknown): string {
     if (typeof e.name === "string" && /^[A-Za-z]{1,48}Error$/.test(e.name)) fields.push(e.name);
     if (typeof e.code === "string" && /^(?:E[A-Z0-9_]{1,40}|UND_ERR_[A-Z0-9_]{1,40})$/.test(e.code)) fields.push(`code=${e.code}`);
     if (typeof e.syscall === "string" && /^(connect|read|write|getaddrinfo|recv|send)$/.test(e.syscall)) fields.push(`syscall=${e.syscall}`);
+    if (e.phase === "headers" || e.phase === "body") fields.push(`phase=${e.phase}`);
+    if (typeof e.elapsedMs === "number" && Number.isFinite(e.elapsedMs) && e.elapsedMs >= 0) fields.push(`elapsedMs=${Math.round(e.elapsedMs)}`);
     if (fields.length) details.push(`${path}: ${fields.join(" ")}`);
     visit(e.cause, `${path}.cause`, depth + 1);
     if (Array.isArray(e.errors)) e.errors.slice(0, 4).forEach((item, i) => visit(item, `${path}.errors[${i}]`, depth + 1));

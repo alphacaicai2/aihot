@@ -17,7 +17,10 @@ interface Runs {
   queues: Array<{ name: string; state: string; n: number; oldest: string }>;
   failedJobs: Row[];
   lagging: Row[];
-  receipts: { counts: Record<string, number>; issues: Row[] };
+  receipts: { counts: Record<string, number>; issues: Row[]; recovery: {
+    unknown: number; fallback_completed: number; fallback_received: number; fallback_pending: number;
+    fallback_failed: number; fallback_unknown: number; fallback_not_sent: number; no_fallback: number; failed_articles: number;
+  } };
   deliveries: Row[];
   errors: Row[];
   retrying: { count: number; next: string | null };
@@ -67,7 +70,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         />
         <Stat label="队列积压" value={num(queued)} tone={queued > 500 ? "warn" : undefined} hint="排队与等待重试" />
         <Stat label="失败的定时任务" value={num(failing.length)} tone={failing.length ? "bad" : "ok"} hint="最近一次运行失败" />
-        <Stat label="回执结果未知" value={num(r.receipts.issues.filter((x) => x.status === "unknown").length)} tone={r.receipts.issues.some((x) => x.status === "unknown") ? "bad" : "ok"} hint={`7 天 ${num(Object.values(r.receipts.counts).reduce((a, b) => a + b, 0))} 次付费请求`} />
+        <Stat label="待核账回执" value={num(r.receipts.recovery.unknown)} tone={r.receipts.recovery.unknown ? "warn" : "ok"} hint={`其中备用步骤已完成 ${num(r.receipts.recovery.fallback_completed)}`} />
         <Stat label="投递待核实" value={num(r.deliveries.filter((d) => d.status === "unknown").length)} tone={r.deliveries.some((d) => d.status === "unknown") ? "bad" : "ok"} />
       </div>
 
@@ -107,20 +110,37 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       </div>
 
       {r.failedJobs.length > 0 && (
-        <Card className="mt-5" title="24 小时内失败的队列任务" pad={false}>
+        <Card className="mt-5" title="24 小时队列失败记录" pad={false}>
+          <p className="px-4 py-3 text-[12px] text-ink-3">历史失败保留在这里；后续已成功或当前已无需生成的任务计入已恢复。</p>
           <DataTable
             dense
             rows={r.failedJobs}
             rowKey={(j) => j.name}
             columns={[
               { key: "n", label: "队列", render: (j) => <span className="font-mono text-[12.5px]">{j.name}</span> },
-              { key: "c", label: "失败", align: "right", render: (j) => num(j.failed) },
+              { key: "c", label: "历史失败", align: "right", render: (j) => num(j.failed) },
+              { key: "r", label: "后续已恢复", align: "right", render: (j) => num(j.recovered) },
+              { key: "u", label: "未见恢复记录", align: "right", render: (j) => <span className={j.unresolved ? "text-hot" : "text-ok"}>{num(j.unresolved)}</span> },
               { key: "l", label: "最近", render: (j) => <Time at={j.last} /> },
-              { key: "o", label: "最近错误", render: (j) => <span className="line-clamp-2 font-mono text-[11.5px] text-ink-3">{j.last_output}</span> },
+              { key: "o", label: "最近原始错误", render: (j) => <span title={j.last_output} className="line-clamp-2 font-mono text-[11.5px] text-ink-3">{j.last_output}</span> },
             ]}
           />
         </Card>
       )}
+
+      <Card className="mt-5" title="未知回执的备用处理状态">
+        <p className="mb-3 text-[12px] text-ink-3">备用调用完成后，原回执仍保留未知用于核账。步骤完成不代表整篇文章已完成。</p>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Stat label="备用步骤已完成" value={num(r.receipts.recovery.fallback_completed)} />
+          <Stat label="备用响应已保存" value={num(r.receipts.recovery.fallback_received)} />
+          <Stat label="备用执行中" value={num(r.receipts.recovery.fallback_pending)} />
+          <Stat label="备用尚未发起" value={num(r.receipts.recovery.fallback_not_sent)} />
+          <Stat label="备用调用失败" value={num(r.receipts.recovery.fallback_failed)} />
+          <Stat label="备用结果也未知" value={num(r.receipts.recovery.fallback_unknown)} tone={r.receipts.recovery.fallback_unknown ? "warn" : undefined} />
+          <Stat label="未关联备用" value={num(r.receipts.recovery.no_fallback)} />
+          <Stat label="关联的处理失败文章" value={num(r.receipts.recovery.failed_articles)} tone={r.receipts.recovery.failed_articles ? "bad" : "ok"} hint="当前版本仍处理失败" />
+        </div>
+      </Card>
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
         <Card title="需要核对的付费回执" right={<span>{Object.entries(r.receipts.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>} pad={false}>
@@ -135,6 +155,9 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
               { key: "w", label: "服务", render: (x) => <span className="whitespace-nowrap">{x.service}{x.model ? ` · ${x.model}` : ""}</span> },
               { key: "p", label: "用途", render: (x) => (x.subject && /^[\w-]{10,}$/.test(x.subject) && x.purpose.includes("analy") ? <Link className="text-accent" to={`/admin/content/${x.subject}`}>{x.purpose}</Link> : x.purpose) },
               { key: "e", label: "错误", render: (x) => <span className="line-clamp-2 text-[12px] text-ink-3" title={x.error ?? ""}>{x.error}</span> },
+              { key: "f", label: "备用处理", render: (x) => x.fallback_model
+                ? <span className="text-[12px]" title={x.fallback_error ?? undefined}>{x.fallback_status === "completed" ? "步骤已完成" : x.fallback_status === "received" ? "响应已保存" : x.fallback_status === "pending" ? "执行中" : x.fallback_status === "unknown" ? "也待核账" : x.fallback_status === "failed" ? "调用失败" : "尚未发起"}{x.fallback_receipt_id ? ` · #${x.fallback_receipt_id}` : ""}</span>
+                : <span className="text-ink-4">未关联</span> },
               { key: "a", label: "", render: (x) => (x.status === "unknown" ? <Button size="sm" onClick={() => setReceipt(x)}>核对</Button> : null) },
             ]}
           />
@@ -275,7 +298,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={!!receipt}
         title={`核对回执 #${receipt?.id ?? ""}`}
-        description="结果未知的请求不会自动重发。先到供应商控制台确认这次请求有没有计费，再放行：放行后下一次处理会重新发起调用。"
+        description="先到供应商控制台确认有没有计费。放行会保留原始错误；已选备用的步骤继续复用备用回执，尚未完成且没有在途任务的内容才会重新排队。"
         confirmLabel="记录并放行"
         busy={pending === "release"}
         onClose={() => setReceipt(null)}
