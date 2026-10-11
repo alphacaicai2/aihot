@@ -9,11 +9,13 @@ import { ensureQueue, enqueue, QUEUES } from "./queue.ts";
 export async function registerEventJobs(boss: PgBoss) {
   await ensureQueue(QUEUES.group);
   // Serial on purpose: two reports of the same new fact must not both create it.
-  await boss.work<{ articleId: string; signalOnly?: boolean; force?: boolean }>(QUEUES.group, { localConcurrency: 1, pollingIntervalSeconds: 0.5 }, async ([job]) => {
+  await boss.work<{ articleId: string; signalOnly?:boolean;force?:boolean;revision?:number;generation?:number }>(QUEUES.group, { localConcurrency: 1, pollingIntervalSeconds: 0.5 }, async ([job]) => {
     if (!job) return;
     try {
       // A discussion post comes here straight from collection: record it first (settleNonEditorial).
-      if (job.data.signalOnly && !job.data.force && !(await settleNonEditorial(job.data.articleId)).group) return { verdict: "skipped" };
+      const {revision,generation}=job.data;
+      const input=revision!==undefined && generation!==undefined ? {revision,generation} : undefined;
+      if (job.data.signalOnly && !job.data.force && !(await settleNonEditorial(job.data.articleId,input)).group) return { verdict: "skipped" };
       const result = await groupArticle(job.data.articleId, { signalOnly: job.data.signalOnly, force: job.data.force });
       if (result.storyId && !result.verdict.startsWith("signal")) {
         await enqueue(QUEUES.digest, { storyId: result.storyId }, { singletonKey: `story:${result.storyId}`, startAfter: 60 });

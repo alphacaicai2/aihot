@@ -43,7 +43,7 @@ export async function contentChain(id: string) {
     sql`SELECT source_id, via, discovered_at FROM article_discoveries WHERE article_id = ${id} ORDER BY discovered_at`,
     sql`SELECT revision, title, content_hash, created_at FROM article_revisions WHERE article_id = ${id} ORDER BY revision DESC LIMIT 10`,
     sql`
-      SELECT an.id, an.origin, an.model, an.prompt_version, an.input_revision, an.relevance, an.category, an.score, an.selected, an.title_zh, an.reason_zh,
+      SELECT an.id, an.origin, an.model, an.prompt_version, an.input_revision, an.superseded, an.relevance, an.category, an.score, an.selected, an.title_zh, an.reason_zh,
              an.created_at,
              (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'status', r.status, 'service', r.service, 'model', r.model,
                   'cost', coalesce(r.cost, e.amount), 'currency', coalesce(r.currency, CASE WHEN e.amount IS NOT NULL THEN 'USD' END),
@@ -166,11 +166,13 @@ export async function rerun(id: string, step: "extract" | "analyze" | "group", r
     await sql`DELETE FROM grouping_overrides WHERE article_id = ${id}`;
     jobId = await enqueue(QUEUES.group, { articleId: id, force: true }, { singletonKey: `manual:group:${id}:${requestId}` });
   } else {
-    await sql`UPDATE articles SET processing_state = 'new', processing_error = NULL, processing_attempts = 0, processing_retry_at = NULL,
-                body_status = CASE WHEN ${step === "extract"} THEN 'pending' ELSE body_status END WHERE id = ${id}`;
-    jobId = step === "analyze"
-      ? await queueProcessing(id, { step: "analyze", attemptTag: `admin:${requestId}` })
-      : await queueProcessing(id, { step: "extract" });
+    jobId=await sql.begin(async tx=>{
+      await tx`UPDATE articles SET processing_state='new',processing_error=NULL,processing_attempts=0,processing_retry_at=NULL,
+        body_status=CASE WHEN ${step==='extract'} THEN 'pending' ELSE body_status END WHERE id=${id}`;
+      return step==='analyze'
+        ? queueProcessing(id,{step:'analyze',attemptTag:`admin:${requestId}`,db:tx})
+        : queueProcessing(id,{step:'extract',db:tx});
+    });
   }
   await audit(actor, `content.rerun.${step}`, `content:${id}`, null, null, { jobId, requestId }, requestId);
   return { jobId };

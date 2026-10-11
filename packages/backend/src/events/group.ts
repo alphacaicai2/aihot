@@ -116,7 +116,7 @@ async function reportTexts(ids: string[]): Promise<Map<string, string>> {
     SELECT a.id, coalesce(p.title, an.title_zh, a.title) AS title, coalesce(p.summary, an.summary_zh, '') AS summary
     FROM articles a
     LEFT JOIN publications p ON p.article_id = a.id
-    LEFT JOIN LATERAL (SELECT title_zh, summary_zh FROM analyses x WHERE x.article_id = a.id ORDER BY input_revision DESC, id DESC LIMIT 1) an ON true
+    LEFT JOIN LATERAL (SELECT title_zh, summary_zh FROM analyses x WHERE x.article_id=a.id AND NOT x.superseded ORDER BY input_revision DESC, id DESC LIMIT 1) an ON true
     WHERE a.id = ANY(${ids})`;
   return new Map(rows.map((r) => [r.id, reportText(r.title, r.summary)]));
 }
@@ -638,7 +638,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
   }
 
   const [an] = await sql<{ relevance: string | null; title_zh: string | null; summary_zh: string | null; output: Record<string, any> | null }[]>`
-    SELECT relevance, title_zh, summary_zh, output FROM analyses WHERE article_id = ${articleId} ORDER BY input_revision DESC, id DESC LIMIT 1`;
+    SELECT relevance, title_zh, summary_zh, output FROM analyses WHERE article_id=${articleId} AND NOT superseded ORDER BY input_revision DESC, id DESC LIMIT 1`;
   const frame = (an?.output?.fact ?? null) as Record<string, any> | null;
   if (!an || an.relevance !== "pass") {
     await markGrouped(articleId);

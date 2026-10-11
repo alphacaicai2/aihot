@@ -11,6 +11,7 @@ import { getArticle } from "../providers/socialdata.ts";
 import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
 import { contentHash } from "./materials.ts";
+import type { ProcessingInput } from "./processing.ts";
 
 export interface ExtractedBody {
   html: string;
@@ -104,30 +105,34 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 }
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
-export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null }[]>`
-    SELECT id, url, body_status, revision, x_post FROM articles WHERE id = ${articleId}`;
-  if (!a || a.body_status === "ok") return "skipped";
-  if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId);
+export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false", expected?:ProcessingInput): Promise<"ok" | "unconfirmed" | "skipped" | "stale"> {
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; generation:number; x_post: { tweetId?: string } | null }[]>`
+    SELECT id,url,body_status,revision,processing_generation AS generation,x_post FROM articles WHERE id = ${articleId}`;
+  if (!a) return "skipped";
+  const input=expected ?? {revision:a.revision,generation:a.generation};
+  if (a.revision!==input.revision || a.generation!==input.generation) return "stale";
+  if (a.body_status==="ok") return "skipped";
+  if (a.x_post?.tweetId) return extractXArticle(a.id,a.x_post.tweetId,input);
   const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}` });
   if (!got) {
-    await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
-    return "unconfirmed";
+    return markUnconfirmed(articleId,input);
   }
   // The body is new content: a new revision, so an analysis of the body-less input counts as stale.
-  await sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null }[]>`SELECT title, excerpt FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    if (!row) return;
+  const applied=await sql.begin(async tx=>{
+    const [row]=await tx<{title:string;excerpt:string|null}[]>`SELECT title,excerpt FROM articles WHERE id=${articleId}
+      AND revision=${input.revision} AND processing_generation=${input.generation} AND body_status<>'ok' FOR UPDATE`;
+    if (!row) return false;
     const hash = contentHash({ title: row.title, bodyText: got.text, excerpt: row.excerpt });
     const [r] = await tx<{ revision: number }[]>`
       UPDATE articles SET body_html = ${got.html}, body_text = ${got.text}, body_status = 'ok',
         media = CASE WHEN jsonb_array_length(media) = 0 THEN ${tx.json(got.images as never)}::jsonb ELSE media END,
-        revision = revision + 1, content_hash = ${hash}, processing_state = 'new', updated_at = now()
+        revision = revision + 1, content_hash=${hash},processing_state='new',processing_attempts=0,processing_error=NULL,processing_retry_at=NULL,processing_queued_at=NULL,updated_at=now()
       WHERE id = ${articleId} RETURNING revision`;
     await tx`INSERT INTO article_revisions (article_id, revision, content_hash, title, body_text)
              VALUES (${articleId}, ${r!.revision}, ${hash}, ${row.title}, ${got.text})`;
+    return true;
   });
-  return "ok";
+  return applied ? "ok" : "stale";
 }
 
 /**
@@ -136,28 +141,35 @@ export async function extractArticleBody(articleId: string, allowJina = process.
  * No article (the link points at someone else's, or X has none) leaves the post "unconfirmed", and
  * the judging steps are told the article was not fetched.
  */
-async function extractXArticle(articleId: string, tweetId: string): Promise<"ok" | "unconfirmed"> {
+async function extractXArticle(articleId: string, tweetId: string, input:ProcessingInput): Promise<"ok" | "unconfirmed" | "stale"> {
   const found = await getArticle(tweetId, { purpose: "x_article", subject: `article:${articleId}` });
   const got = found ? xArticleText(found) : null;
   if (!got) {
-    await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
-    return "unconfirmed";
+    return markUnconfirmed(articleId,input);
   }
-  await sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null; body_text: string | null; x_post: { text?: string } | null }[]>`
-      SELECT title, excerpt, body_text, x_post FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    if (!row) return;
+  const applied=await sql.begin(async tx=>{
+    const [row]=await tx<{title:string;excerpt:string|null;body_text:string|null;x_post:{text?:string}|null}[]>`
+      SELECT title,excerpt,body_text,x_post FROM articles WHERE id=${articleId}
+      AND revision=${input.revision} AND processing_generation=${input.generation} AND body_status<>'ok' FOR UPDATE`;
+    if (!row) return false;
     const title = got.title && onlyXArticleLink(row.x_post?.text) ? got.title : row.title;
     const bodyText = [row.body_text ?? "", got.title ? `# ${got.title}` : "", got.text].filter(Boolean).join("\n\n");
     const hash = contentHash({ title, bodyText, excerpt: row.excerpt });
     const [r] = await tx<{ revision: number }[]>`
       UPDATE articles SET title = ${title}, body_text = ${bodyText}, x_article = ${tx.json(got as never)}, body_status = 'ok',
-        revision = revision + 1, content_hash = ${hash}, processing_state = 'new', updated_at = now()
+        revision = revision + 1, content_hash=${hash},processing_state='new',processing_attempts=0,processing_error=NULL,processing_retry_at=NULL,processing_queued_at=NULL,updated_at=now()
       WHERE id = ${articleId} RETURNING revision`;
     await tx`INSERT INTO article_revisions (article_id, revision, content_hash, title, body_text)
              VALUES (${articleId}, ${r!.revision}, ${hash}, ${title}, ${bodyText})`;
+    return true;
   });
-  return "ok";
+  return applied ? "ok" : "stale";
+}
+
+async function markUnconfirmed(articleId:string,input:ProcessingInput):Promise<"unconfirmed"|"stale">{
+  const rows=await sql`UPDATE articles SET body_status='unconfirmed',updated_at=now() WHERE id=${articleId}
+    AND revision=${input.revision} AND processing_generation=${input.generation} AND body_status<>'ok' RETURNING id`;
+  return rows.count ? "unconfirmed" : "stale";
 }
 
 export { collapseWhitespace };

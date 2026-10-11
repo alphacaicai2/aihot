@@ -19,6 +19,7 @@ import { collapseWhitespace } from "../lib/text.ts";
 import { modelFor } from "./models.ts";
 import { buildMaterial, firstImagePart, loadAnalyzeInput, type AnalyzeInputArticle } from "./input.ts";
 import { pageFetchable } from "../content/extract.ts";
+import type { ProcessingInput } from "../content/processing.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import {
   buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt, finalizeCopy, isShortTweetInput, looksZh, MAX_BODY_CHARS, missingEvidence,
@@ -181,7 +182,7 @@ export function waitsForPage(a: AnalyzeInputArticle): boolean {
   return a.bodyStatus === "pending" && !a.bodyText && !a.xPost && pageFetchable(a.url, a.source.kind);
 }
 
-type StepOpts = { attemptTag?: string; scoreModel?: string; fallback?: boolean };
+type StepOpts = { attemptTag?: string; scoreModel?: string; fallback?: boolean; processingInput?:ProcessingInput };
 export class AnalysisInterruptedError extends Error {}
 
 function checkAnalysisRunning() {
@@ -427,6 +428,9 @@ export interface AnalyzeResult {
 export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Promise<AnalyzeResult | null> {
   const input = await loadAnalyzeInput(articleId);
   if (!input) return null;
+  if (opts.processingInput && (input.revision!==opts.processingInput.revision || input.processingGeneration!==opts.processingInput.generation)) {
+    return {analysisId:null,stale:true,output:null,receiptIds:[],reused:true};
+  }
   // Its page first; extraction queues the analysis again (normally the queue already routed it there).
   if (waitsForPage(input)) return { analysisId: null, stale: false, needsBody: true, output: null, receiptIds: [], reused: true };
   const run = await runAnalysis(input, opts);
@@ -443,18 +447,20 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     fact: out.fact,
   };
   const committed = await sql.begin(async (tx) => {
-    const [current] = await tx<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    const stale = !current || current.revision !== input.revision;
+    const [current] = await tx<{ revision:number; processing_generation:number; processing_state:string }[]>`
+      SELECT revision,processing_generation,processing_state FROM articles WHERE id=${articleId} FOR UPDATE`;
+    const stale = !current || current.revision!==input.revision || (!!opts.processingInput &&
+      (current.processing_generation!==opts.processingInput.generation || current.processing_state!=='new'));
     const [row] = await tx<{ id: number }[]>`
-      INSERT INTO analyses (article_id, input_revision, origin, model, prompt_version, receipt_ids, relevance, category, tags,
+      INSERT INTO analyses (article_id,input_revision,superseded,origin,model, prompt_version, receipt_ids, relevance, category, tags,
         subjects, title_zh, summary_zh, reason_zh, score, selected, output)
-      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${ANALYZE_PROMPT_VERSION}, ${receiptIds},
+      VALUES (${articleId},${input.revision},${stale},'model', ${w?.model ?? run.prefilter.model}, ${ANALYZE_PROMPT_VERSION}, ${receiptIds},
         ${out.relevance}, ${out.category}, ${out.tags}, ${out.subjects}, ${out.titleZh}, ${out.summaryZh}, ${out.reasonZh},
         ${out.score}, ${out.selected}, ${tx.json(detail as never)})
       RETURNING id`;
     for (const id of receiptIds) await completeReceipt(tx, id);
     if (!stale) {
-      await tx`UPDATE articles SET processing_state = ${out.relevance === "block" ? "blocked" : "analyzed"}, processing_error = NULL WHERE id = ${articleId}`;
+      await tx`UPDATE articles SET processing_state = ${out.relevance === "block" ? "blocked" : "analyzed"}, processing_error=NULL,processing_attempts=0,processing_retry_at=NULL,processing_queued_at=NULL WHERE id=${articleId}`;
     }
     return { analysisId: row!.id, stale };
   });

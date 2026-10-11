@@ -157,6 +157,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                   {c.analyses.map((an) => (
                     <div key={an.id} className="rounded-control bg-bg-sunk/60 p-3 ring-1 ring-line">
                       <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
+                        {an.superseded && <Badge tone="warn">过期结果 · 仅留档</Badge>}
                         <Badge tone={an.relevance === "pass" ? "ok" : "muted"}>{an.relevance}</Badge>
                         {an.selected && <Badge tone="accent">入选</Badge>}
                         <Badge tone="info">分数 {an.score}</Badge>
