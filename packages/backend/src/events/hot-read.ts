@@ -68,9 +68,9 @@ async function queryLatestHotRanking(): Promise<HotRanking | null> {
           WHERE f.story_id=s.id AND p.visibility='public' AND p.eligible AND src.participation_mode='editorial'
             AND (NOT p.selected OR p.visible_after<=${row.computed_at})) AS report_ids,
         p.article_id AS representative_id,p.url AS representative_url,src.name AS representative_source
-      FROM stories s LEFT JOIN publications p ON p.article_id IN (
-        SELECT e->>'representativeItemId' FROM jsonb_array_elements(${sql.json(row.entries as never)}) e
-        WHERE (e->>'storyId')::bigint=s.id) AND p.visibility='public' AND p.eligible
+      FROM stories s LEFT JOIN unnest(${ids}::bigint[],${row.entries.map(e => e.representativeItemId)}::text[])
+        AS entry(story_id,article_id) ON entry.story_id=s.id
+      LEFT JOIN publications p ON p.article_id=entry.article_id AND p.visibility='public' AND p.eligible
         AND (NOT p.selected OR p.visible_after<=${row.computed_at})
       LEFT JOIN sources src ON src.id=p.source_id AND src.participation_mode='editorial'
       WHERE s.id=ANY(${ids}::bigint[])`,
