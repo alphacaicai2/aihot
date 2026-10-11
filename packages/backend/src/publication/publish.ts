@@ -9,6 +9,7 @@ import { sha256, stableJson } from "../lib/ids.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { itemUrl } from "./links.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
+import { invalidateStoryDigests } from "../events/digest-invalidation.ts";
 import {
   bodyModeOf, channelOf, displayTags, isIndexable, isPoolEligible, isSelectable, mayRedistribute, type SourceFacts,
 } from "./rules.ts";
@@ -56,6 +57,9 @@ interface PublicationRow {
   title: string;
   original_title: string | null;
   summary: string | null;
+  first_party: boolean;
+  published_at: Date | null;
+  discovered_at: Date;
   reason: string | null;
   category: string | null;
   tags: string[];
@@ -245,6 +249,22 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
       });
   const revision = previous ? previous.revision + (changed ? 1 : 0) : 1;
 
+  const wasEvidence = !!previous && previous.visibility === 'public' && previous.eligible;
+  const isEvidence = visibility === 'public' && eligible;
+  const evidenceChanged = !previous || previous.title !== next.title || previous.summary !== summary
+    || previous.visibility !== visibility || previous.eligible !== eligible || previous.story_id !== next.story_id
+    || previous.first_party !== source.first_party || previous.published_at?.getTime() !== article.published_at?.getTime()
+    || previous.discovered_at.getTime() !== article.discovered_at.getTime();
+  const affected = evidenceChanged && (wasEvidence || isEvidence) ? await tx<{ id:number }[]>`
+    SELECT s.id FROM stories s WHERE s.merged_into IS NULL AND (
+      s.id=${previous?.story_id ?? null} OR s.id=${next.story_id} OR EXISTS (
+        SELECT 1 FROM facts f JOIN fact_articles fa ON fa.fact_id=f.id
+        WHERE f.story_id=s.id AND fa.article_id=${articleId})) ORDER BY s.id FOR UPDATE` : [];
+  const invalidates = wasEvidence && (!isEvidence || previous!.title !== next.title || previous!.summary !== summary
+    || previous!.first_party !== source.first_party || previous!.published_at?.getTime() !== article.published_at?.getTime()
+    || previous!.discovered_at.getTime() !== article.discovered_at.getTime()
+    || (previous!.story_id !== null && previous!.story_id !== next.story_id));
+
   await tx`
     INSERT INTO publications (article_id, analysis_id, revision, visibility, eligible, selected, title, original_title, summary,
       reason, category, tags, score, source_id, channel, first_party, url, published_at, discovered_at, timeline_at, backfill,
@@ -279,6 +299,9 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
         EXCLUDED.selected_ready_at, EXCLUDED.visible_after, EXCLUDED.body_mode, EXCLUDED.syndicate,
         EXCLUDED.indexable, EXCLUDED.story_id, EXCLUDED.fact_id, EXCLUDED.search_text,
         EXCLUDED.sort_at)`;
+
+  if (invalidates) await invalidateStoryDigests(tx,affected.map(s=>s.id),articleId);
+  else for (const story of affected) await enqueue(QUEUES.digest,{storyId:story.id},{singletonKey:`story:${story.id}`,startAfter:60},tx);
 
   // The pool search row follows eligibility; its body part only covers full text the site may show.
   if (eligible) {

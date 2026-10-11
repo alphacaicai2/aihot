@@ -13,6 +13,7 @@ import { publishArticle } from "../publication/publish.ts";
 import { computeHotRanking } from "../events/hot.ts";
 import { mergeStoryInto } from "../events/merge.ts";
 import { latestHotRanking } from "../events/hot-read.ts";
+import { invalidateStoryDigests } from "../events/digest-invalidation.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
 
@@ -147,11 +148,6 @@ export async function overrideFields(id: string, input: { fields: unknown; clear
     RETURNING version`;
   if (!written.count) throw new Conflict(STALE);
   const published = await publishArticle(id);
-  // A corrected title or summary reaches the event summary: rewrite the digest of its story.
-  if (published?.changed) {
-    const [st] = await sql<{ story_id: number | null }[]>`SELECT story_id FROM publications WHERE article_id = ${id}`;
-    if (st?.story_id) await enqueue(QUEUES.digest, { storyId: st.story_id, afterCorrection: true }, { singletonKey: `story:${st.story_id}:correction` });
-  }
   await audit(actor, "content.override", `content:${id}`, input.reason, before.fields, next);
   return published;
 }
@@ -197,6 +193,7 @@ export async function detachFromFact(id: string, reason: string, actor: string) 
     await tx`INSERT INTO grouping_overrides (article_id, reason, actor) VALUES (${id}, ${reason}, ${actor})
              ON CONFLICT (article_id) DO UPDATE SET reason = EXCLUDED.reason, actor = EXCLUDED.actor, created_at = now()`;
     await tx`UPDATE articles SET grouped_at = now() WHERE id = ${id}`;
+    await invalidateStoryDigests(tx,storyIds,id,factIds);
     return { facts: factIds, stories: storyIds };
   });
   await publishArticle(id);

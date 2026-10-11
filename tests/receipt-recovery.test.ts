@@ -191,6 +191,7 @@ test('digest recovery checks current public inputs before queuing any work', asy
   const [p] = await sql`SELECT title,summary FROM publications WHERE article_id=${id}`;
   const hash = sha256(stableJson([[id,p!.title,p!.summary ?? '']]));
   await sql`INSERT INTO story_digests(story_id,version,digest,article_ids,inputs_hash) VALUES (${sid},1,'Saved digest',${[id]},${hash})`;
+  await sql`UPDATE stories SET digest='Saved digest' WHERE id=${sid}`;
   assert.equal((await recoverReceiptWork(r.id)).state, 'settled', 'unchanged saved inputs');
   await sql`UPDATE publications SET summary='Changed summary' WHERE article_id=${id}`;
   assert.ok((await recoverReceiptWork(r.id)).requeued);

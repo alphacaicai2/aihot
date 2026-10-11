@@ -10,8 +10,9 @@ import { publishArticle } from "../publication/publish.ts";
 export async function mergeStoryInto(fromId: number, intoId: number, reason: string, actor: string): Promise<{ moved: number } | null> {
   if (fromId === intoId) throw new Error("cannot merge a story into itself");
   const articles = await sql.begin(async (tx) => {
-    const [from] = await tx<{ public_id: string; merged_into: number | null }[]>`SELECT public_id, merged_into FROM stories WHERE id = ${fromId} FOR UPDATE`;
-    const [into] = await tx<{ merged_into: number | null }[]>`SELECT merged_into FROM stories WHERE id = ${intoId} FOR UPDATE`;
+    const locked = await tx<{ id:number; public_id:string; merged_into:number|null }[]>`
+      SELECT id,public_id,merged_into FROM stories WHERE id IN (${fromId},${intoId}) ORDER BY id FOR UPDATE`;
+    const from=locked.find(s=>s.id===fromId),into=locked.find(s=>s.id===intoId);
     if (!from || !into || from.merged_into || into.merged_into) return null;
     await tx`UPDATE facts SET story_id = ${intoId}, updated_at = now() WHERE story_id = ${fromId}`;
     // A report with evidence in both stories keeps one row: (story, article) is unique.

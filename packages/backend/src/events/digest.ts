@@ -53,7 +53,7 @@ async function digestInput(storyId: number, db: Db) {
 /** Read-only recovery check: a historical failure does not imply the current inputs need a call. */
 export async function storyDigestNeedsUpdate(storyId: number, db: Db = sql): Promise<boolean> {
   const input = await digestInput(storyId, db);
-  return !!input && !(input.sameReports && (input.last!.inputs_hash === input.inputsHash || input.last!.inputs_hash === null));
+  return !!input && !(input.story.digest !== null && input.sameReports && (input.last!.inputs_hash === input.inputsHash || input.last!.inputs_hash === null));
 }
 
 /** `afterCorrection`: an editor changed a report of this story; rewrite even when older versions lack inputs. */
@@ -62,7 +62,7 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
   if (!input) return { updated: false };
   const { story, reports, ids, inputsHash, last, sameReports } = input;
   // Versions written before inputs were recorded compare by report set only.
-  if (sameReports && (last!.inputs_hash === inputsHash || (last!.inputs_hash === null && !opts.afterCorrection))) return { updated: false };
+  if (story.digest !== null && sameReports && (last!.inputs_hash === inputsHash || (last!.inputs_hash === null && !opts.afterCorrection))) return { updated: false };
   // Same reports, different content: an editor corrected one. Rewrite from the reports as they are now,
   // without the previous digest, so a corrected fact does not survive as "earlier reports said".
   const corrected = sameReports || !!opts.afterCorrection || (last?.article_ids.some(id => !ids.includes(id)) ?? false);
@@ -89,7 +89,7 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
     // Includes title, previous digest/version, membership and all prompt metadata (source/time).
     // An out-of-order answer remains saved on its receipt, without becoming a public version.
     if (stableJson(current) !== stableJson(input)) {
-      const upToDate = current.sameReports && current.last!.inputs_hash === current.inputsHash;
+      const upToDate = current.story.digest !== null && current.sameReports && current.last!.inputs_hash === current.inputsHash;
       if (!upToDate) await enqueue(QUEUES.digest, { storyId, afterCorrection: true }, { singletonKey: `story:${storyId}:correction` }, tx);
       return { updated: false };
     }
