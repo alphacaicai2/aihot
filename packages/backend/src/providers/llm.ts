@@ -4,7 +4,7 @@
 import type { z } from "zod";
 import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
-import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
+import { completeReceipt, logicalKeyFor, paidRequest, ProviderRejectedError, ReceiptUnknownError, rejectReceivedResponse, type ReceiptRequest } from "./receipts.ts";
 import { sql } from "../db.ts";
 
 export interface ModelSpec {
@@ -105,6 +105,8 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   maxTokens?: number;
   attemptTag?: string;
   timeoutMs?: number;
+  /** Comparisons/benchmarks can require the chosen model without automatic substitution. */
+  fallback?: boolean;
   /** false: the model answers in its own text format (no JSON mode); `parse` turns it into the schema's input. */
   json?: boolean;
   parse?: (content: string) => unknown;
@@ -160,7 +162,101 @@ function isConnectFailure(error: unknown): boolean {
   return ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "ECONNRESET_BEFORE_SEND", "CERT_HAS_EXPIRED"].includes(code ?? "");
 }
 
+function requestFor<S extends z.ZodType>(opts: ChatJsonOptions<S>, spec: ModelSpec): ReceiptRequest {
+  const temperature = opts.temperature ?? 0.2;
+  const maxTokens = Math.max(opts.maxTokens ?? 1500, 512) + (spec.key.endsWith("-think") ? 4000 : 0);
+  const userText = typeof opts.user === "string" ? opts.user : JSON.stringify(opts.user);
+  return {
+    service: spec.service, model: spec.model, purpose: opts.purpose, subject: opts.subject,
+    identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null },
+    requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens },
+    attemptTag: opts.attemptTag,
+  };
+}
+
+function fallbackEligible(error: unknown): boolean {
+  if (error instanceof ReceiptUnknownError || error instanceof ModelOutputError) return true;
+  if (error instanceof ProviderRejectedError) return error.retryable;
+  if (!(error instanceof Error)) return false;
+  const code = (error as { cause?: { code?: string } }).cause?.code;
+  return error.name === "TimeoutError" || (error instanceof TypeError && error.message === "fetch failed")
+    || ["ECONNRESET", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code ?? "");
+}
+
+/** A fallback gets its own paid receipt; the primary's unknown outcome is kept for bill review. */
 export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
+  const primary = MODELS[opts.model];
+  if (!primary) throw new Error(`Unknown model ${opts.model}`);
+  if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
+  if (opts.fallback === false) return chatJsonOnce(opts);
+  const primaryKey = logicalKeyFor(requestFor(opts, primary));
+  const [saved] = await sql<{ fallback_model: string }[]>`SELECT fallback_model FROM model_fallback_routes WHERE primary_key = ${primaryKey}`;
+  const fallbackModel = saved?.fallback_model ?? process.env.LLM_FALLBACK_MODEL;
+  const fallback = fallbackModel ? MODELS[fallbackModel] : null;
+  if (!fallback) {
+    if (fallbackModel) throw new Error(`Unknown fallback model ${fallbackModel}`);
+    return chatJsonOnce(opts);
+  }
+  const fallbackOpts = { ...opts, model: fallback.key, fallback: false };
+  const fallbackKey = logicalKeyFor(requestFor(fallbackOpts, fallback));
+  if (fallbackKey === primaryKey) return chatJsonOnce(opts);
+  const providerKey = sha256(`${primary.service}:${primary.model}:${credential("models", primary.baseUrlEnv) ?? ""}`);
+  const useFallback = async (reason: string) => {
+    // Persist before sending. Concurrent callers agree on one route and paidRequest owns the call.
+    const [route] = await sql<{ fallback_model: string }[]>`
+      INSERT INTO model_fallback_routes(primary_key, fallback_model, primary_receipt_id, reason)
+      VALUES (${primaryKey}, ${fallback.key}, (SELECT id FROM receipts WHERE logical_key = ${primaryKey}), ${reason.slice(0, 1000)})
+      ON CONFLICT (primary_key) DO UPDATE SET primary_key = EXCLUDED.primary_key RETURNING fallback_model`;
+    const chosen = { ...opts, model: route!.fallback_model, fallback: false };
+    const budget = await sql`SELECT service FROM budgets WHERE service = ${MODELS[chosen.model]!.service}`;
+    if (!budget.length) throw new Error(`Fallback model ${chosen.model} requires a service budget`);
+    const chosenKey = logicalKeyFor(requestFor(chosen, MODELS[chosen.model]!));
+    try {
+      return await chatJsonOnce(chosen);
+    } finally {
+      await sql`UPDATE model_fallback_routes SET fallback_receipt_id = (SELECT id FROM receipts WHERE logical_key = ${chosenKey}), updated_at = now()
+                WHERE primary_key = ${primaryKey}`;
+    }
+  };
+  if (saved) return useFallback("reuse existing fallback route");
+  const [existing] = await sql<{ status: string; updated_at: Date }[]>`SELECT status, updated_at FROM receipts WHERE logical_key = ${primaryKey}`;
+  // A completed step is free to reuse. A still-running request keeps its ownership until it settles.
+  if (existing && (["received", "completed"].includes(existing.status)
+    || (existing.status === "pending" && Date.now() - existing.updated_at.getTime() < 10 * 60_000))) {
+    try { return await chatJsonOnce(opts); }
+    catch (error) {
+      if (!fallbackEligible(error)) throw error;
+      return useFallback(error instanceof Error ? error.message : String(error));
+    }
+  }
+  // Configuration failures must not create a route that cannot ever be executed.
+  if (!credential("models", fallback.baseUrlEnv) || !credential("models", fallback.apiKeyEnv)) throw new Error(`Fallback model ${fallback.key} is not configured`);
+  const [circuit] = await sql<{ open: boolean; open_until: Date | null }[]>`SELECT open_until > now() AS open, open_until FROM model_circuits WHERE provider_key = ${providerKey}`;
+  if (circuit?.open) return useFallback("primary circuit open");
+  if (circuit?.open_until) {
+    // At cooldown expiry one process probes; the others continue using the fallback during the probe.
+    const probe = await sql`UPDATE model_circuits SET open_until = now() + interval '5 minutes', updated_at = now()
+                            WHERE provider_key = ${providerKey} AND open_until <= now() RETURNING provider_key`;
+    if (!probe.length) return useFallback("primary recovery probe in flight");
+  }
+  try {
+    const result = await chatJsonOnce(opts);
+    await sql`DELETE FROM model_circuits WHERE provider_key = ${providerKey}`;
+    return result;
+  } catch (error) {
+    if (!fallbackEligible(error)) throw error;
+    const threshold = Math.max(1, Number(process.env.LLM_FALLBACK_FAILURE_THRESHOLD) || 3);
+    const cooldown = Math.max(1, Number(process.env.LLM_FALLBACK_COOLDOWN_SECONDS) || 300);
+    await sql`INSERT INTO model_circuits(provider_key, failures, open_until)
+              VALUES (${providerKey}, 1, CASE WHEN ${threshold} <= 1 THEN now() + make_interval(secs => ${cooldown}) END)
+              ON CONFLICT (provider_key) DO UPDATE SET failures = model_circuits.failures + 1,
+                open_until = CASE WHEN model_circuits.failures + 1 >= ${threshold} THEN now() + make_interval(secs => ${cooldown}) ELSE model_circuits.open_until END,
+                updated_at = now()`;
+    return useFallback(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function chatJsonOnce<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
   const spec = MODELS[opts.model];
   if (!spec) throw new Error(`Unknown model ${opts.model}`);
   if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
@@ -186,15 +282,7 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
   };
 
   const receipt = await paidRequest(
-    {
-      service: spec.service,
-      model: spec.model,
-      purpose: opts.purpose,
-      subject: opts.subject,
-      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null },
-      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens },
-      attemptTag: opts.attemptTag,
-    },
+    requestFor(opts, spec),
     async () => {
       const started = Date.now();
       let res: Response;

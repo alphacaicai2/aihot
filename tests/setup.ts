@@ -14,7 +14,16 @@ process.env.SESSION_SECRET ??= "test-session-secret-0123456789";
 process.env.IMG_PROXY_SIGN_SECRET ??= "test-img-secret-0123456789";
 process.env.FEISHU_CONTENT_PUSH_ENABLED = "false";
 process.env.INDEXNOW_SUBMIT_ENABLED = "false";
+process.env.COLLECT_ENABLED = "false";
+process.env.MODEL_CALLS_ENABLED = "false";
 process.env.LOG_LEVEL ??= "error";
+// A stub test may open the model valve below, but native fetch still cannot reach a live provider.
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (["http:", "https:"].includes(url.protocol) && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error(`Tests cannot fetch external services: ${url.hostname}`);
+  return nativeFetch(input, init);
+};
 // The tests were written against the named model presets AIHOT assigns to each step (each provider is
 // pointed at a local stub by the test that needs it). The open-source default is one model for every
 // step, which tests/default-model.test.ts covers.
@@ -30,6 +39,8 @@ for (const [name, model] of Object.entries(AIHOT_MODELS)) process.env[name] ??= 
  * (it may wait, to hold a request open while a test changes something).
  */
 export async function stub(answer: (hit: number, req: { url: string; body: string }) => unknown) {
+  const { config } = await import("@aihot/backend/config");
+  config.modelCallsEnabled = true; // Every actual request is confined to loopback by the guard above.
   let hits = 0;
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
