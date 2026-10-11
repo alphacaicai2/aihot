@@ -8,6 +8,7 @@ import { chatJson } from "../providers/llm.ts";
 import { completeReceipt } from "../providers/receipts.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
+import { enqueue, QUEUES } from "../jobs/queue.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
 
@@ -57,14 +58,14 @@ export async function storyDigestNeedsUpdate(storyId: number, db: Db = sql): Pro
 
 /** `afterCorrection`: an editor changed a report of this story; rewrite even when older versions lack inputs. */
 export async function composeStoryDigest(storyId: number, opts: { afterCorrection?: boolean } = {}): Promise<{ updated: boolean; version?: number }> {
-  const input = await digestInput(storyId, sql);
+  const input = await sql.begin('isolation level repeatable read read only', tx => digestInput(storyId, tx));
   if (!input) return { updated: false };
   const { story, reports, ids, inputsHash, last, sameReports } = input;
   // Versions written before inputs were recorded compare by report set only.
   if (sameReports && (last!.inputs_hash === inputsHash || (last!.inputs_hash === null && !opts.afterCorrection))) return { updated: false };
   // Same reports, different content: an editor corrected one. Rewrite from the reports as they are now,
   // without the previous digest, so a corrected fact does not survive as "earlier reports said".
-  const corrected = sameReports;
+  const corrected = sameReports || !!opts.afterCorrection || (last?.article_ids.some(id => !ids.includes(id)) ?? false);
   const known = new Set(last?.article_ids ?? []);
 
   const lines = reports.slice(-40).map((r) => `${corrected || known.has(r.id) ? "" : "【新】"}${beijingDate(r.at)} ${beijingTime(r.at)}｜${r.source_name}${r.first_party ? "（一手）" : ""}｜${r.title}｜${(r.summary ?? "").slice(0, 220)}`);
@@ -75,8 +76,24 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
     model: await modelFor("digest"), purpose: "story_digest", subject: `story:${storyId}@${ids.length}`, promptVersion: DIGEST_PROMPT_VERSION,
     system: SYSTEM, user, schema: Schema, temperature: 0.3, maxTokens: 1200,
   });
-  const version = story.version + 1;
-  await sql.begin(async (tx) => {
+  return sql.begin(async (tx) => {
+    // Never hold a lock while waiting for a model. After it answers, serialize the short commit
+    // with other digests and merges, and freeze the reports against a concurrent publication edit.
+    await tx`SELECT id FROM stories WHERE id = ${storyId} FOR UPDATE`;
+    await tx`SELECT p.article_id FROM publications p WHERE EXISTS (
+      SELECT 1 FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id
+      WHERE fa.article_id = p.article_id AND f.story_id = ${storyId})
+      ORDER BY p.article_id FOR SHARE OF p`;
+    const current = await digestInput(storyId, tx);
+    if (!current) return { updated: false };
+    // Includes title, previous digest/version, membership and all prompt metadata (source/time).
+    // An out-of-order answer remains saved on its receipt, without becoming a public version.
+    if (stableJson(current) !== stableJson(input)) {
+      const upToDate = current.sameReports && current.last!.inputs_hash === current.inputsHash;
+      if (!upToDate) await enqueue(QUEUES.digest, { storyId, afterCorrection: true }, { singletonKey: `story:${storyId}:correction` }, tx);
+      return { updated: false };
+    }
+    const version = current.story.version + 1;
     await tx`INSERT INTO story_digests (story_id, version, digest, latest, receipt_id, article_ids, inputs_hash)
              VALUES (${storyId}, ${version}, ${res.data.digest}, ${res.data.latest || null}, ${res.receiptId}, ${ids}, ${inputsHash})`;
     await tx`UPDATE stories SET digest = ${res.data.digest}, latest = ${res.data.latest || null}, digest_updated_at = now(),
@@ -84,8 +101,8 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
                version = ${version}, updated_at = now()
              WHERE id = ${storyId}`;
     await completeReceipt(tx, res.receiptId);
+    return { updated: true, version };
   });
-  return { updated: true, version };
 }
 
 /** Periodic: statuses follow activity (持续更新 / 观察中 / 历史事件). */
