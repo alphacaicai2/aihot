@@ -196,3 +196,19 @@ test("analysing the same revision again reuses every paid answer", async () => {
   assert.equal(provider.hits(), hits, "no new requests");
   assert.deepEqual([again!.reused, again!.receiptIds], [true, first!.receiptIds]);
 });
+
+test("counter-only RSS updates and legacy queued revisions reuse model receipts", async () => {
+  scoreAnswers.CLEAR = [80, 70];
+  const footer = (likes: number) => ` 🔗 View on Twitter 💬 8 🔄 2 ❤️ ${likes} 👀 6415 📊 10 ⚡ Powered by xgo.ing`;
+  const body = `CLEAR: ${LONG} (${T} engagement)`;
+  const material = { sourceId: SOURCE, url: `https://x.com/test/status/${Date.now()}`, title: `CLEAR stats test ${T}`, bodyText: body + footer(10), bodyStatus: "ok" as const, via: "fetch" as const };
+  const { articleId } = await upsertMaterial(material);
+  await analyzeArticle(articleId);
+  const hits = provider.hits();
+  assert.equal((await upsertMaterial({ ...material, bodyText: body + footer(1000) })).revised, false);
+  assert.equal((await analyzeArticle(articleId))!.reused, true);
+  assert.equal(provider.hits(), hits, "counter changes send no new model requests");
+  await sql`UPDATE articles SET body_text = ${body + footer(2000)}, revision = revision + 1, processing_state = 'new' WHERE id = ${articleId}`;
+  assert.equal((await analyzeArticle(articleId))!.reused, true);
+  assert.equal(provider.hits(), hits, "already queued legacy footer revisions also reuse stable inputs");
+});

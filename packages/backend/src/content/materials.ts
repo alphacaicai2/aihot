@@ -4,6 +4,7 @@ import { sql, type Db } from "../db.ts";
 import { newArticleId, sha256 } from "../lib/ids.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { collapseWhitespace } from "../lib/text.ts";
+import { xFeedContent } from "./x-feed.ts";
 
 export interface MediaItem {
   kind: "image" | "video";
@@ -130,6 +131,14 @@ export async function upsertMaterial(m: MaterialInput, db: Db = sql): Promise<Ma
 }
 
 async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
+  const feedBody = xFeedContent(m.url, m.bodyText);
+  const feedExcerpt = xFeedContent(m.url, m.excerpt);
+  const metrics = feedBody.metrics ?? feedExcerpt.metrics;
+  m = { ...m, bodyText: feedBody.text, excerpt: feedExcerpt.text };
+  if (metrics) {
+    const raw = m.raw && typeof m.raw === "object" && !Array.isArray(m.raw) ? m.raw : {};
+    m.raw = { ...raw, xFeedMetrics: { ...metrics, observedAt: new Date().toISOString() } };
+  }
   const identityKey = identityKeyFor(m);
   const discoveredAt = m.discoveredAt ?? new Date();
   const title = collapseWhitespace(m.title).slice(0, 1000) || m.url;
@@ -164,11 +173,19 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
   // discovery only: its title and summary are its own rendering, and taking them made the article flip
   // between the two sources' versions on every fetch. Only the article's own source revises it.
   if (existing!.source_id !== m.sourceId) return unchanged;
+  if (metrics) await db`UPDATE articles SET raw = coalesce(raw, '{}'::jsonb) || ${db.json(m.raw as never)} WHERE id = ${existing!.id}`;
   // What the row will hold after this report: a listing without body keeps the stored (extracted) body.
-  const bodyText = m.bodyText ?? existing!.body_text;
-  const excerpt = m.excerpt ?? existing!.excerpt;
+  const bodyText = m.bodyText ?? xFeedContent(m.url, existing!.body_text).text ?? null;
+  const excerpt = m.excerpt ?? xFeedContent(m.url, existing!.excerpt).text ?? null;
   const next = contentHash({ title, bodyText, excerpt });
   if (existing!.content_hash === next) return unchanged;
+  // Rebaseline legacy footer hashes without revising or requeueing the same post.
+  const oldBody = xFeedContent(m.url, existing!.body_text);
+  const oldExcerpt = xFeedContent(m.url, existing!.excerpt);
+  if ((oldBody.metrics || oldExcerpt.metrics) && contentHash({ title: existing!.title, bodyText: oldBody.text, excerpt: oldExcerpt.text }) === next) {
+    await db`UPDATE articles SET body_text = ${oldBody.text ?? null}, excerpt = ${oldExcerpt.text ?? null}, content_hash = ${next} WHERE id = ${existing!.id}`;
+    return unchanged;
+  }
   if (existing!.content_hash === null) {
     // Imported history carries no hash of this form (its collectors normalised differently): the
     // first report here records the baseline instead of a revision, so an import does not send
