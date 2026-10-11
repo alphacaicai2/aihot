@@ -55,9 +55,9 @@ export function registerAdmin(app: FastifyInstance) {
   // Content and events (F19)
   app.get("/api/admin/content", adminHandler(async (req) => ({ rows: await searchContent(q(req).q ?? "") })));
   app.get("/api/admin/content/:id", adminHandler(async (req, reply) => orNotFound(req, reply, await contentChain(param(req, "id")))));
-  app.post("/api/admin/content/:id/visibility", adminHandler(async (req, _reply, admin) => setVisibility(param(req, "id"), body(req) as never, actorOf(admin))));
+  app.post("/api/admin/content/:id/visibility", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await setVisibility(param(req, "id"), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/content/:id/seo", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await setSeoIndexed(param(req, "id"), body(req) as never, actorOf(admin)))));
-  app.post("/api/admin/content/:id/override", adminHandler(async (req, _reply, admin) => overrideFields(param(req, "id"), body(req) as never, actorOf(admin))));
+  app.post("/api/admin/content/:id/override", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await overrideFields(param(req, "id"), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/content/:id/rerun", adminHandler(async (req, reply, admin) => {
     const b = body<{ step: "extract" | "analyze" | "group" }>(req);
     const requestId = String(req.headers["idempotency-key"] ?? "");

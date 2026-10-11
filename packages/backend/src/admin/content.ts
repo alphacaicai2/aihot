@@ -4,15 +4,13 @@
 // overrides with a version check, are re-projected to every public exit, and are audited.
 import { z } from "zod";
 import { ARTICLE_ID_PATTERN, CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
 import { normalizeUrl } from "../lib/url.ts";
-import { publishArticle } from "../publication/publish.ts";
+import { publishArticle, publishArticleTx } from "../publication/publish.ts";
 
-import { computeHotRanking } from "../events/hot.ts";
 import { mergeStoryInto } from "../events/merge.ts";
-import { latestHotRanking } from "../events/hot-read.ts";
 import { invalidateStoryDigests } from "../events/digest-invalidation.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
@@ -67,19 +65,10 @@ export async function contentChain(id: string) {
 }
 
 
-/** Whether the current hot ranking shows the article: as an event's representative or among its reports. */
-async function inHotRanking(id: string): Promise<boolean> {
-  const ranking = await latestHotRanking();
-  if (!ranking?.entries.length) return false;
-  if (ranking.entries.some((e) => e.representativeItemId === id)) return true;
-  const [p] = await sql<{ story_id: number | null }[]>`SELECT story_id FROM publications WHERE article_id = ${id}`;
-  return !!p?.story_id && ranking.entries.some((e) => e.storyId === Number(p.story_id));
-}
-
 const STALE = "这条内容的人工设置已被修改，请刷新后再操作";
 
-async function overrideRow(id: string) {
-  const [o] = await sql<{ fields: Record<string, unknown>; visibility: string | null; version: number }[]>`SELECT fields, visibility, version FROM editorial_overrides WHERE article_id = ${id}`;
+async function overrideRow(id: string, db: Db) {
+  const [o] = await db<{ fields: Record<string, unknown>; visibility: string | null; version: number }[]>`SELECT fields, visibility, version FROM editorial_overrides WHERE article_id = ${id}`;
   return o ?? { fields: {}, visibility: null, version: 0 };
 }
 
@@ -89,35 +78,42 @@ async function overrideRow(id: string) {
  */
 export async function setVisibility(id: string, input: { visibility: "public" | "summary-only" | "withdrawn"; reason: string; version: number }, actor: string) {
   if (!input.reason?.trim()) throw new Error("reason is required");
-  const before = await overrideRow(id);
-  if (before.version !== input.version) throw new Conflict(STALE);
-  // The version check and the write are one statement: of two tabs saving the same version, one wins.
-  const written = await sql`
-    INSERT INTO editorial_overrides (article_id, visibility, reason, version, updated_by) VALUES (${id}, ${input.visibility}, ${input.reason}, 1, ${actor})
-    ON CONFLICT (article_id) DO UPDATE SET visibility = EXCLUDED.visibility, reason = EXCLUDED.reason, version = editorial_overrides.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
-    WHERE editorial_overrides.version = ${input.version}
-    RETURNING version`;
-  if (!written.count) throw new Conflict(STALE);
-  const published = await publishArticle(id);
-  if (published?.reduced || (before.visibility ?? "public") !== input.visibility) {
-    // On the hot board the change shows at once, not at the next five-minute ranking.
-    if (await inHotRanking(id)) await computeHotRanking();
-  }
-  await audit(actor, "content.visibility", `content:${id}`, input.reason, { visibility: before.visibility }, { visibility: input.visibility });
-  return published;
+  if (!["public", "summary-only", "withdrawn"].includes(input.visibility)) throw Object.assign(new Error("unknown visibility"), { statusCode: 400 });
+  return sql.begin(async tx => {
+    if (!(await tx`SELECT id FROM articles WHERE id=${id} FOR UPDATE`).length) return null;
+    const before = await overrideRow(id, tx);
+    if (before.version !== input.version) throw new Conflict(STALE);
+    const written = await tx`
+      INSERT INTO editorial_overrides (article_id, visibility, reason, version, updated_by) VALUES (${id}, ${input.visibility}, ${input.reason}, 1, ${actor})
+      ON CONFLICT (article_id) DO UPDATE SET visibility = EXCLUDED.visibility, reason = EXCLUDED.reason, version = editorial_overrides.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
+      WHERE editorial_overrides.version = ${input.version}
+      RETURNING version`;
+    if (!written.count) throw new Conflict(STALE);
+    const published = await publishArticleTx(tx, id);
+    // Saved rankings already validate current visibility on reads; refresh their scores in the worker.
+    if (published?.reduced || (before.visibility ?? "public") !== input.visibility) {
+      await enqueue("cron.hot.rank", {}, { singletonKey: `publication:${id}` }, tx);
+    }
+    await audit(actor, "content.visibility", `content:${id}`, input.reason, { visibility: before.visibility }, { visibility: input.visibility }, undefined, tx);
+    return published;
+  });
 }
 
 /** Marks a detail page for search indexing (sitemap, IndexNow, robots) or removes the mark. */
 export async function setSeoIndexed(id: string, input: { indexed: boolean; reason: string }, actor: string) {
   if (!input.reason?.trim()) throw new Error("reason is required");
-  const [before] = await sql<{ seo_indexed_at: Date | null; indexable: boolean }[]>`SELECT seo_indexed_at, indexable FROM publications WHERE article_id = ${id}`;
-  if (!before) return null;
-  // Marking indexes the page; unmarking excludes it, so a selected page is not indexed again automatically.
-  await sql`UPDATE publications SET seo_indexed_at = ${input.indexed ? (before.seo_indexed_at ?? new Date()) : null},
-              seo_excluded_at = ${input.indexed ? null : new Date()} WHERE article_id = ${id}`;
-  const published = await publishArticle(id);
-  await audit(actor, "content.seo", `content:${id}`, input.reason, { indexed: before.indexable }, { indexed: input.indexed });
-  return published;
+  if (typeof input.indexed !== "boolean") throw Object.assign(new Error("indexed must be boolean"), { statusCode: 400 });
+  return sql.begin(async tx => {
+    if (!(await tx`SELECT id FROM articles WHERE id=${id} FOR UPDATE`).length) return null;
+    const [before] = await tx<{ seo_indexed_at: Date | null; indexable: boolean }[]>`SELECT seo_indexed_at, indexable FROM publications WHERE article_id = ${id}`;
+    if (!before) return null;
+    // Marking indexes the page; unmarking excludes it, so a selected page is not indexed again automatically.
+    await tx`UPDATE publications SET seo_indexed_at = ${input.indexed ? (before.seo_indexed_at ?? new Date()) : null},
+                seo_excluded_at = ${input.indexed ? null : new Date()} WHERE article_id = ${id}`;
+    const published = await publishArticleTx(tx, id);
+    await audit(actor, "content.seo", `content:${id}`, input.reason, { indexed: before.indexable }, { indexed: input.indexed }, undefined, tx);
+    return published;
+  });
 }
 
 const FieldsSchema = z
@@ -137,19 +133,22 @@ const FieldsSchema = z
 export async function overrideFields(id: string, input: { fields: unknown; clear?: string[]; reason: string; version: number }, actor: string) {
   if (!input.reason?.trim()) throw new Error("reason is required");
   const fields = FieldsSchema.parse(input.fields ?? {});
-  const before = await overrideRow(id);
-  if (before.version !== input.version) throw new Conflict(STALE);
-  const next = { ...before.fields, ...fields };
-  for (const k of input.clear ?? []) delete (next as Record<string, unknown>)[k];
-  const written = await sql`
-    INSERT INTO editorial_overrides (article_id, fields, reason, version, updated_by) VALUES (${id}, ${sql.json(next as never)}, ${input.reason}, 1, ${actor})
-    ON CONFLICT (article_id) DO UPDATE SET fields = EXCLUDED.fields, reason = EXCLUDED.reason, version = editorial_overrides.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
-    WHERE editorial_overrides.version = ${input.version}
-    RETURNING version`;
-  if (!written.count) throw new Conflict(STALE);
-  const published = await publishArticle(id);
-  await audit(actor, "content.override", `content:${id}`, input.reason, before.fields, next);
-  return published;
+  return sql.begin(async tx => {
+    if (!(await tx`SELECT id FROM articles WHERE id=${id} FOR UPDATE`).length) return null;
+    const before = await overrideRow(id, tx);
+    if (before.version !== input.version) throw new Conflict(STALE);
+    const next = { ...before.fields, ...fields };
+    for (const k of input.clear ?? []) delete (next as Record<string, unknown>)[k];
+    const written = await tx`
+      INSERT INTO editorial_overrides (article_id, fields, reason, version, updated_by) VALUES (${id}, ${tx.json(next as never)}, ${input.reason}, 1, ${actor})
+      ON CONFLICT (article_id) DO UPDATE SET fields = EXCLUDED.fields, reason = EXCLUDED.reason, version = editorial_overrides.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
+      WHERE editorial_overrides.version = ${input.version}
+      RETURNING version`;
+    if (!written.count) throw new Conflict(STALE);
+    const published = await publishArticleTx(tx, id);
+    await audit(actor, "content.override", `content:${id}`, input.reason, before.fields, next, undefined, tx);
+    return published;
+  });
 }
 
 /**
@@ -157,34 +156,33 @@ export async function overrideFields(id: string, input: { fields: unknown; clear
  * the request id, so submitting the same request twice neither enqueues nor pays twice.
  */
 export async function rerun(id: string, step: "extract" | "analyze" | "group", requestId: string, actor: string) {
-  if (!/^[\w-]{8,80}$/.test(requestId)) throw new Error("a stable request id is required");
-  const [a] = await sql`SELECT id FROM articles WHERE id = ${id}`;
-  if (!a) return null;
-  let jobId: string | null;
-  if (step === "group") {
-    // An explicit regroup replaces an earlier manual "keep standalone" decision and the automatic membership.
-    jobId=await sql.begin(async tx=>{
-      const [input]=await tx<{revision:number;generation:number}[]>`SELECT revision,processing_generation AS generation FROM articles WHERE id=${id} FOR UPDATE`;
-      if(!input)return null;
-      const queued=await enqueue(QUEUES.group,{articleId:id,force:true,revision:input.revision,generation:input.generation},
+  if (!["extract", "analyze", "group"].includes(step)) throw Object.assign(new Error("unknown pipeline step"), { statusCode: 400 });
+  if (!/^[\w-]{8,80}$/.test(requestId)) throw Object.assign(new Error("a stable request id is required"), { statusCode: 400 });
+  return sql.begin(async tx => {
+    const [input]=await tx<{revision:number;generation:number}[]>`SELECT revision,processing_generation AS generation FROM articles WHERE id=${id} FOR UPDATE`;
+    if (!input) return null;
+    // Queue singleton keys expire when jobs finish. The committed command audit survives that expiry.
+    const [previous]=await tx<{after:{jobId:string|null}}[]>`SELECT after FROM audit_log
+      WHERE subject=${`content:${id}`} AND action=${`content.rerun.${step}`} AND request_id=${requestId} ORDER BY id LIMIT 1`;
+    if (previous) return { jobId: previous.after.jobId };
+    let jobId: string | null;
+    if (step === "group") {
+      jobId=await enqueue(QUEUES.group,{articleId:id,force:true,revision:input.revision,generation:input.generation},
         {singletonKey:`manual:group:${id}:${requestId}`},tx);
-      if(queued){
+      if(jobId){
         await tx`DELETE FROM grouping_overrides WHERE article_id=${id}`;
         await tx`INSERT INTO regroup_pending(article_id) VALUES(${id}) ON CONFLICT(article_id) DO UPDATE SET requested_at=now()`;
       }
-      return queued;
-    });
-  } else {
-    jobId=await sql.begin(async tx=>{
+    } else {
       await tx`UPDATE articles SET processing_state='new',processing_error=NULL,processing_attempts=0,processing_retry_at=NULL,
         body_status=CASE WHEN ${step==='extract'} THEN 'pending' ELSE body_status END WHERE id=${id}`;
-      return step==='analyze'
+      jobId=await (step==='analyze'
         ? queueProcessing(id,{step:'analyze',attemptTag:`admin:${requestId}`,db:tx})
-        : queueProcessing(id,{step:'extract',db:tx});
-    });
-  }
-  await audit(actor, `content.rerun.${step}`, `content:${id}`, null, null, { jobId, requestId }, requestId);
-  return { jobId };
+        : queueProcessing(id,{step:'extract',db:tx}));
+    }
+    await audit(actor, `content.rerun.${step}`, `content:${id}`, null, null, { jobId, requestId }, requestId, tx);
+    return { jobId };
+  });
 }
 
 /**

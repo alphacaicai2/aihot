@@ -95,7 +95,7 @@ test("a new analysis promotes an existing pending grouping job to its current in
   assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name='events.group' AND state='created' AND data->>'articleId'=${id}`).length,1);
 });
 
-test("manual regroup enqueues its current input and replaces standalone once per pending request", async () => {
+test("manual regroup enqueues its current input and returns the original job on request replay", async () => {
   hold=gate(); hold.open();
   const id=await report("manual-regroup",`${FACT_TITLE} manual regroup`);
   await detachFromFact(id,"keep standalone","test");
@@ -105,7 +105,8 @@ test("manual regroup enqueues its current input and replaces standalone once per
   assert.ok(first?.jobId);
   assert.equal((await sql`SELECT 1 FROM grouping_overrides WHERE article_id=${id}`).length,0);
   const duplicate=await rerun(id,"group",requestId,"test");
-  assert.equal(duplicate!.jobId,null);
+  assert.equal(duplicate!.jobId,first!.jobId);
+  assert.equal((await sql`SELECT 1 FROM audit_log WHERE subject=${`content:${id}`} AND action='content.rerun.group' AND request_id=${requestId}`).length,1);
   assert.equal((await sql`SELECT requested_at FROM regroup_pending WHERE article_id=${id}`)[0]!.requested_at.getTime(),pending!.requested_at.getTime());
   const [job]=await sql`SELECT data FROM pgboss.job WHERE id=${first!.jobId!}`;
   assert.deepEqual(job!.data,{articleId:id,force:true,revision:1,generation:0});
