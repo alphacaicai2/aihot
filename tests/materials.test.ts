@@ -7,11 +7,13 @@ import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { upsertMaterial } from "@aihot/backend/content/materials";
+import { upsertMaterial, contentHash } from "@aihot/backend/content/materials";
 import { identityKeyForUrl } from "@aihot/backend/lib/url";
+import { loadAnalyzeInput } from "@aihot/backend/editorial/input";
 
 const SOURCE = `test-materials-${tag()}`;
 const OTHER = `test-materials-other-${tag()}`;
+const xFooter = (likes: number) => ` 🔗 View on Twitter 💬 8 🔄 2 ❤️ ${likes} 👀 6415 📊 10 ⚡ Powered by xgo.ing`;
 before(async () => {
   await sql`INSERT INTO sources (id, name, kind, next_fetch_at) VALUES (${SOURCE}, 'Test materials', 'rss', '2100-01-01'),
             (${OTHER}, 'Test aggregator', 'rss', '2100-01-01')`;
@@ -21,6 +23,34 @@ after(() => closeDb());
 const state = async (id: string) =>
   (await sql<{ revision: number; title: string; content_hash: string | null; processing_state: string }[]>`
     SELECT revision, title, content_hash, processing_state FROM articles WHERE id = ${id}`)[0]!;
+
+test("RSS engagement updates metadata without changing revisions or analysis input", async () => {
+  const url = `https://x.com/test/status/${Date.now()}`;
+  const material = { sourceId: SOURCE, url, title: "A model release", excerpt: "The model is available." + xFooter(10), via: "fetch" as const };
+  const first = await upsertMaterial(material);
+  await sql`UPDATE articles SET processing_state = 'analyzed' WHERE id = ${first.articleId}`;
+  const input = await loadAnalyzeInput(first.articleId);
+  const again = await upsertMaterial({ ...material, excerpt: "The model is available." + xFooter(1000) });
+  assert.equal(again.revised, false);
+  assert.deepEqual([(await state(first.articleId)).revision, (await state(first.articleId)).processing_state], [1, "analyzed"]);
+  const [saved] = await sql`SELECT excerpt,raw FROM articles WHERE id = ${first.articleId}`;
+  assert.equal(saved!.excerpt, "The model is available.");
+  assert.equal(saved!.raw.xFeedMetrics.likes, "1000");
+  assert.deepEqual(await loadAnalyzeInput(first.articleId), input);
+  assert.equal((await upsertMaterial({ ...material, excerpt: "The model is now open source." + xFooter(1000) })).revised, true);
+});
+
+test("legacy RSS counter footers are removed without requeueing an analysed post", async () => {
+  const url = `https://twitter.com/test/status/${Date.now() + 1}`;
+  const first = await upsertMaterial({ sourceId: SOURCE, url, title: "Legacy post", excerpt: "Real content.", via: "fetch" });
+  const dirty = "Real content." + xFooter(10);
+  await sql`UPDATE articles SET excerpt = ${dirty}, content_hash = ${contentHash({ title: "Legacy post", excerpt: dirty })}, processing_state = 'analyzed' WHERE id = ${first.articleId}`;
+  assert.equal((await loadAnalyzeInput(first.articleId))!.excerpt, "Real content.", "queued legacy work sees stable model input immediately");
+  const again = await upsertMaterial({ sourceId: SOURCE, url, title: "Legacy post", excerpt: "Real content." + xFooter(20), via: "fetch" });
+  assert.equal(again.revised, false);
+  assert.deepEqual([(await state(first.articleId)).revision, (await state(first.articleId)).processing_state], [1, "analyzed"]);
+  assert.equal((await state(first.articleId)).content_hash, contentHash({ title: "Legacy post", excerpt: "Real content." }));
+});
 
 /** An article as a history import writes it: imported content, no hash, no history row, analysed. */
 async function imported(url: string) {
