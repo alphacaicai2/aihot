@@ -7,6 +7,14 @@ import { manualSchedule } from "../monitor/time.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
 
+const Reason = z.string().trim().min(1);
+const Version = z.string().datetime({ offset: true });
+function parse<T>(schema: z.ZodType<T>, input: unknown): T {
+  const result = schema.safeParse(input);
+  if (!result.success) throw Object.assign(new Error(result.error.message), { statusCode: 400 });
+  return result.data;
+}
+
 export async function listMonitorEvents(opts: { withdrawn?: boolean } = {}) {
   const events = await sql`
     SELECT e.id, e.type, e.status, e.label, e.display_label, e.scope, e.schedule, e.estimate, e.presentation, e.confirmed_at, e.occurred_on,
@@ -47,22 +55,24 @@ export async function listMonitorPosts(opts: { filter?: "relevant" | "review" | 
  * were dealt with (the event edited or confirmed, or nothing to do), so it leaves the review list.
  */
 export async function resolveMonitorPost(id: string, input: { action: "skip" | "reviewed"; reason: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
-  if (input.action !== "skip" && input.action !== "reviewed") throw new Error("action must be skip or reviewed");
-  const [post] = await sql<{ processed_at: Date | null; recognition: Record<string, unknown> | null }[]>`SELECT processed_at, recognition FROM monitor_posts WHERE id = ${id}`;
-  if (!post) return null;
-  if (input.action === "skip") {
-    const skipped = await sql`
-      UPDATE monitor_posts SET processed_at = now(),
-        recognition = ${sql.json({ skipped: true, relevant: false, needsReview: false, propositions: [], reason: input.reason, by: actor } as never)}
-      WHERE id = ${id} AND processed_at IS NULL`;
-    if (!skipped.count) throw new Conflict("这条帖子已经识别过了，请刷新");
-    await sql`DELETE FROM monitor_state WHERE key = ${`failures:${id}`}`;
-  } else {
-    await sql`UPDATE monitor_posts SET recognition = coalesce(recognition, '{}'::jsonb) || ${sql.json({ reviewed: true, reviewedBy: actor, reviewReason: input.reason } as never)} WHERE id = ${id}`;
-  }
-  await audit(actor, `monitor.post.${input.action}`, `monitor-post:${id}`, input.reason, { processedAt: post.processed_at }, { action: input.action });
-  return { id, action: input.action };
+  input = parse(z.object({ action: z.enum(["skip", "reviewed"]), reason: Reason }).strict(), input);
+  return sql.begin(async (tx) => {
+    // The recognizer takes the same post lock before assembling events.
+    const [post] = await tx<{ processed_at: Date | null; recognition: Record<string, unknown> | null }[]>`SELECT processed_at, recognition FROM monitor_posts WHERE id = ${id} FOR UPDATE`;
+    if (!post) return null;
+    if (input.action === "skip") {
+      if (post.processed_at) throw new Conflict("这条帖子已经识别过了，请刷新");
+      await tx`
+        UPDATE monitor_posts SET processed_at = now(),
+          recognition = ${tx.json({ skipped: true, relevant: false, needsReview: false, propositions: [], reason: input.reason, by: actor } as never)}
+        WHERE id = ${id} AND processed_at IS NULL`;
+      await tx`DELETE FROM monitor_state WHERE key = ${`failures:${id}`}`;
+    } else {
+      await tx`UPDATE monitor_posts SET recognition = coalesce(recognition, '{}'::jsonb) || ${tx.json({ reviewed: true, reviewedBy: actor, reviewReason: input.reason } as never)} WHERE id = ${id}`;
+    }
+    await audit(actor, `monitor.post.${input.action}`, `monitor-post:${id}`, input.reason, { processedAt: post.processed_at }, { action: input.action }, undefined, tx);
+    return { id, action: input.action };
+  });
 }
 
 const Patch = z
@@ -91,8 +101,9 @@ async function lockEvent(tx: Tx, id: string, version: string) {
 }
 
 export async function updateMonitorEvent(id: string, input: { patch: unknown; reason: string; version: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
-  const patch = Patch.parse(input.patch);
+  const parsed = parse(z.object({ patch: Patch, reason: Reason, version: Version }).strict(), input);
+  const { patch } = parsed;
+  input = parsed;
   return sql.begin(async (tx) => {
     const before = await lockEvent(tx, id, input.version);
     if (!before) return null;
@@ -115,9 +126,9 @@ export async function updateMonitorEvent(id: string, input: { patch: unknown; re
         estimate = CASE WHEN ${confirming || patch.status === "confirmed"} THEN NULL ELSE estimate END,
         scope = coalesce(${patch.scope ?? null}, scope),
         presentation = coalesce(presentation, '{}'::jsonb) || ${tx.json(presentation as never)},
-        updated_at = now()
+        updated_at = greatest(clock_timestamp(), date_trunc('milliseconds', updated_at) + interval '1 millisecond')
       WHERE id = ${id} RETURNING *`;
-    await audit(actor, "monitor.update", `monitor-event:${id}`, input.reason, pick(before, patch), pick(after!, patch));
+    await audit(actor, "monitor.update", `monitor-event:${id}`, input.reason, pick(before, patch), pick(after!, patch), undefined, tx);
     return after;
   });
 }
@@ -135,40 +146,45 @@ function pick(row: Record<string, unknown>, patch: Record<string, unknown>) {
  * confirmation post from Tibo takes over as the source (monitor/assemble.ts); this audit entry stays.
  */
 export async function reviewReceipt(id: string, input: { occurredOn?: string | null; reason: string; version: string }, actor: string) {
+  input = parse(z.object({ occurredOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), reason: Reason, version: Version }).strict(), input);
   const day = input.occurredOn || null;
-  if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error("occurredOn must be YYYY-MM-DD");
   const patch = { status: "confirmed", confirmationBasis: "receipt_review", ...(day ? { occurredOn: day } : {}) };
   return updateMonitorEvent(id, { patch, reason: input.reason, version: input.version }, actor);
 }
 
 export async function setWithdrawn(id: string, input: { withdrawn: boolean; reason: string; version: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
+  input = parse(z.object({ withdrawn: z.boolean(), reason: Reason, version: Version }).strict(), input);
   return sql.begin(async (tx) => {
     const before = await lockEvent(tx, id, input.version);
     if (!before) return null;
-    const [after] = await tx`UPDATE monitor_events SET withdrawn = ${input.withdrawn}, updated_at = now() WHERE id = ${id} RETURNING *`;
-    await audit(actor, input.withdrawn ? "monitor.withdraw" : "monitor.restore", `monitor-event:${id}`, input.reason, { withdrawn: before.withdrawn }, { withdrawn: input.withdrawn });
+    const [after] = await tx`UPDATE monitor_events SET withdrawn = ${input.withdrawn},
+      updated_at = greatest(clock_timestamp(), date_trunc('milliseconds', updated_at) + interval '1 millisecond') WHERE id = ${id} RETURNING *`;
+    await audit(actor, input.withdrawn ? "monitor.withdraw" : "monitor.restore", `monitor-event:${id}`, input.reason, { withdrawn: before.withdrawn }, { withdrawn: input.withdrawn }, undefined, tx);
     return after;
   });
 }
 
 /** Moves (or removes) one post's link; both events' versions change. */
 export async function relinkPost(input: { postId: string; fromEventId: string; toEventId: string | null; reason: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
+  input = parse(z.object({ postId: z.string().min(1), fromEventId: z.string().min(1), toEventId: z.string().min(1).nullable(), reason: Reason }).strict(), input);
+  if (input.fromEventId === input.toEventId) throw Object.assign(new Error("目标事件不能与原事件相同"), { statusCode: 400 });
   return sql.begin(async (tx) => {
+    await tx`SELECT id FROM monitor_posts WHERE id = ${input.postId} FOR UPDATE`;
+    const eventIds = [input.fromEventId, input.toEventId].filter((x): x is string => !!x).sort();
+    const events = await tx`SELECT id FROM monitor_events WHERE id IN ${tx(eventIds)} ORDER BY id FOR UPDATE`;
+    if (events.length !== eventIds.length) throw new Conflict("原事件或目标事件不存在，请刷新");
     const [link] = await tx`SELECT * FROM monitor_event_posts WHERE event_id = ${input.fromEventId} AND post_id = ${input.postId} FOR UPDATE`;
     if (!link) throw new Conflict("这条帖子不在原事件里");
     if (input.toEventId) {
-      const [to] = await tx`SELECT id FROM monitor_events WHERE id = ${input.toEventId}`;
-      if (!to) throw new Error(`event ${input.toEventId} not found`);
+      const [existing] = await tx`SELECT post_id FROM monitor_event_posts WHERE event_id = ${input.toEventId} AND post_id = ${input.postId}`;
+      if (existing) throw new Conflict("这条帖子已在目标事件里，请刷新后核对归属");
       await tx`
         INSERT INTO monitor_event_posts (event_id, post_id, stage, action, text, original_text)
-        VALUES (${input.toEventId}, ${input.postId}, ${link.stage}, ${link.action}, ${link.text}, ${link.original_text})
-        ON CONFLICT (event_id, post_id) DO NOTHING`;
+        VALUES (${input.toEventId}, ${input.postId}, ${link.stage}, ${link.action}, ${link.text}, ${link.original_text})`;
     }
     await tx`DELETE FROM monitor_event_posts WHERE event_id = ${input.fromEventId} AND post_id = ${input.postId}`;
-    await tx`UPDATE monitor_events SET updated_at = now() WHERE id IN ${tx([input.fromEventId, input.toEventId].filter((x): x is string => !!x))}`;
-    await audit(actor, "monitor.relink", `monitor-post:${input.postId}`, input.reason, { event: input.fromEventId }, { event: input.toEventId });
+    await tx`UPDATE monitor_events SET updated_at = greatest(clock_timestamp(), date_trunc('milliseconds', updated_at) + interval '1 millisecond') WHERE id IN ${tx(eventIds)}`;
+    await audit(actor, "monitor.relink", `monitor-post:${input.postId}`, input.reason, { event: input.fromEventId }, { event: input.toEventId }, undefined, tx);
     return { moved: true };
   });
 }
