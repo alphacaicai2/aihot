@@ -3,7 +3,7 @@
 // and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
 // new work only.
 import { sql } from "../db.ts";
-import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
+import { CAPABILITIES, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { MODELS } from "../providers/llm.ts";
 import { audit } from "./auth.ts";
 
@@ -94,20 +94,25 @@ export async function modelsOverview(days = 7) {
 export async function switchModel(capability: string, model: string | null, reason: string, actor: string) {
   const c = (CAPABILITIES as Record<string, Capability>)[capability];
   if (!c) throw Object.assign(new Error("unknown capability"), { statusCode: 400 });
-  if (!reason.trim()) throw Object.assign(new Error("a reason is required"), { statusCode: 400 });
+  if (typeof reason !== 'string' || !reason.trim()) throw Object.assign(new Error("a reason is required"), { statusCode: 400 });
+  if (model !== null && typeof model !== "string") throw Object.assign(new Error("a model or explicit null is required"), { statusCode: 400 });
   if (model !== null) {
     const spec = MODELS[model];
     if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
     if (!!c.vision !== !!spec.vision) throw Object.assign(new Error(c.vision ? "this capability needs a vision model" : "a vision-only model cannot do this"), { statusCode: 400 });
   }
-  const before = (await modelSources())[capability];
-  if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;
-  else {
-    await sql`INSERT INTO settings (key, value, updated_by) VALUES (${`models.${capability}`}, ${sql.json({ model })}, ${actor})
-              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
-  }
-  invalidateModelCache();
-  const after = (await modelSources())[capability];
-  await audit(actor, "models.switch", `capability:${capability}`, reason, before ?? null, after ?? null);
-  return { capability, before, after };
+  return sql.begin(async tx => {
+    const key = `models.${capability}`;
+    // The row may not exist yet; serialize the initial insert and reset as well as later updates.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`settings:${key}`}, 0))`;
+    const before = (await modelSources(tx))[capability];
+    if (model === null) await tx`DELETE FROM settings WHERE key = ${key}`;
+    else {
+      await tx`INSERT INTO settings (key, value, updated_by) VALUES (${key}, ${tx.json({ model })}, ${actor})
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
+    }
+    const after = (await modelSources(tx))[capability];
+    await audit(actor, "models.switch", `capability:${capability}`, reason, before ?? null, after ?? null, undefined, tx);
+    return { capability, before, after };
+  });
 }

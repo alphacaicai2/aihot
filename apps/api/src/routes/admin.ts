@@ -114,7 +114,7 @@ export function registerAdmin(app: FastifyInstance) {
   }));
   app.post("/api/admin/notify-targets/:key", adminHandler(async (req, reply, admin) => {
     const b = body<{ enabled: boolean; reason: string }>(req);
-    return orNotFound(req, reply, await setTargetEnabled(param(req, "key"), !!b.enabled, b.reason, actorOf(admin)));
+    return orNotFound(req, reply, await setTargetEnabled(param(req, "key"), b.enabled, b.reason, actorOf(admin)));
   }));
   app.put("/api/admin/budgets/:service", adminHandler(async (req, _reply, admin) => updateBudget(param(req, "service"), body(req) as never, actorOf(admin))));
 
@@ -123,7 +123,7 @@ export function registerAdmin(app: FastifyInstance) {
   app.get("/api/admin/models", adminHandler(async (req) => modelsOverview(Math.min(90, Number(q(req).days) || 7))));
   app.post("/api/admin/models/:capability", adminHandler(async (req, _reply, admin) => {
     const b = body<{ model: string | null; reason: string }>(req);
-    return switchModel(param(req, "capability"), b.model ?? null, String(b.reason ?? ""), actorOf(admin));
+    return switchModel(param(req, "capability"), b.model, b.reason, actorOf(admin));
   }));
 
   // SelectBench

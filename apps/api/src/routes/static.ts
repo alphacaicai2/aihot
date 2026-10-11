@@ -11,6 +11,7 @@ import { REPO_ROOT, config } from "@aihot/backend/config";
 import { applyPublicHeaders, sendTextWithEtag } from "../http/respond.ts";
 import { sitemapXml } from "@aihot/backend/publication/sitemap";
 import { llmsTxt, loadLlmsAvailability } from "@aihot/backend/publication/llms";
+import { contactImagePublished } from "@aihot/backend/site/contact";
 
 const REF = path.join(REPO_ROOT, "reference");
 const ASSETS = path.join(REPO_ROOT, "assets");
@@ -166,10 +167,11 @@ export function registerStatic(app: FastifyInstance) {
   app.get("/contact/:file", async (req, reply) => {
     const file = (req.params as { file: string }).file;
     if (!/^[\w.-]+\.(png|jpg|jpeg|webp)$/.test(file)) return reply.code(404).send();
-    const hashed = /-[0-9a-f]{8}\./.test(file);
+    const hashed = /-(?:[0-9a-f]{8}|[0-9a-f]{64})\./.test(file);
     const cacheControl = hashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
     const uploaded = path.join(config.dataDir, "uploads", file);
-    const target = (await stat(uploaded).then(() => true, () => false)) ? uploaded : path.join(BRAND, "contact", file);
+    const exists = await stat(uploaded).then(() => true, () => false);
+    const target = exists && await contactImagePublished(file) ? uploaded : path.join(BRAND, "contact", file);
     return sendFile(req, reply, target, { cacheControl });
   });
 }

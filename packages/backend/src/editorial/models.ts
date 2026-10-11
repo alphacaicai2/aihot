@@ -1,8 +1,8 @@
 // Model per capability: the code default (`default`, the deployment's own model), an environment
-// override, and an admin switch kept in settings (every switch is audited). Read at call time and
-// cached for a minute, so a switch applies to the next call without a restart; a changed model only
+// override, and an admin switch kept in settings (every switch is audited). Read committed settings
+// at call time, so a switch applies to the next call without a restart; a changed model only
 // affects work done from then on (history is not re-judged).
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { MODELS } from "../providers/llm.ts";
 
 export interface Capability {
@@ -30,19 +30,11 @@ export const CAPABILITIES = {
 
 export type CapabilityKey = keyof typeof CAPABILITIES;
 
-let cache: { at: number; overrides: Record<string, string> } | null = null;
-
-async function overrides(): Promise<Record<string, string>> {
-  if (cache && Date.now() - cache.at < 60_000) return cache.overrides;
-  const rows = await sql<{ key: string; value: { model?: string } }[]>`SELECT key, value FROM settings WHERE key LIKE 'models.%'`;
+async function overrides(db: Db = sql): Promise<Record<string, string>> {
+  const rows = await db<{ key: string; value: { model?: string } }[]>`SELECT key, value FROM settings WHERE key LIKE 'models.%'`;
   const map: Record<string, string> = {};
   for (const r of rows) if (r.value?.model && MODELS[r.value.model]) map[r.key.slice("models.".length)] = r.value.model;
-  cache = { at: Date.now(), overrides: map };
   return map;
-}
-
-export function invalidateModelCache() {
-  cache = null;
 }
 
 /** The model a capability uses now: admin switch, else environment, else the code default. */
@@ -53,8 +45,8 @@ export async function modelFor(capability: CapabilityKey): Promise<string> {
 }
 
 /** Where the current choice comes from, for the admin page. */
-export async function modelSources(): Promise<Record<string, { model: string; source: "admin" | "env" | "default" }>> {
-  const o = await overrides();
+export async function modelSources(db: Db = sql): Promise<Record<string, { model: string; source: "admin" | "env" | "default" }>> {
+  const o = await overrides(db);
   const out: Record<string, { model: string; source: "admin" | "env" | "default" }> = {};
   for (const [key, c] of Object.entries(CAPABILITIES) as Array<[string, Capability]>) {
     if (o[key]) out[key] = { model: o[key]!, source: "admin" };
