@@ -129,6 +129,11 @@ export async function processArticle(articleId: string, opts: { attemptTag?: str
   const publish=async (relevance:string)=>{
     await publishArticle(articleId);
     if (relevance==='pass' && !row.historical) await enqueue(QUEUES.group,{articleId},{singletonKey:articleId,priority:PRIORITY.live});
+    // A restarted publication handoff may have a fresh queue marker despite an already applied
+    // judgement. Clear only this generation; a newer manual request keeps its bookkeeping.
+    await sql`UPDATE articles SET processing_attempts=0,processing_retry_at=NULL,processing_queued_at=NULL
+      WHERE id=${articleId} AND revision=${input.revision} AND processing_generation=${input.generation}
+      AND processing_state IN ('analyzed','blocked')`;
     return {state:relevance};
   };
   try {

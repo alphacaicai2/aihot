@@ -156,9 +156,11 @@ test('a publication failure after analysis is retryable and reuses its completed
 test('restart after an analysis commit resumes publication without a paid request or duplicate judgement',async()=>{
   const f=await article(),hold=model();hold.answer.open();await analyzeArticle(f.id);
   assert.equal((await sql`SELECT article_id FROM publications WHERE article_id=${f.id}`).length,0);const hits=provider.hits();
+  await queueProcessing(f.id);assert.ok((await snapshot(f.id)).processing_queued_at);
   const [queued]=await sql`SELECT data FROM pgboss.job WHERE name=${QUEUES.analyze} AND singleton_key=${f.id} AND state='created'`;
   assert.equal((await handlers.get(QUEUES.analyze)!([{data:queued!.data}])).state,'block');
   assert.equal(provider.hits(),hits);assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${f.id}`)[0]!.n,1);
+  assert.equal((await snapshot(f.id)).processing_queued_at,null);
   assert.ok((await sql`SELECT article_id FROM publications WHERE article_id=${f.id}`)[0]);
 });
 test('shutdown during a failed extraction leaves article retries to the queue process',async()=>{
