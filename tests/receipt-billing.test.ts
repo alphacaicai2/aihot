@@ -53,12 +53,13 @@ test('zero billing confirmation preserves unknown outcome, errors, provider data
 
 test('concurrent confirmations record one review and one audit without overwriting its evidence', async () => {
   const a = await lost();
-  const results = await Promise.all([1,2].map(() => confirmZeroCostReceipts({ receiptIds: [a.id], note }, 'test:billing-concurrent')));
+  const actor = `test:billing-concurrent-${tag()}`;
+  const results = await Promise.all([1,2].map(() => confirmZeroCostReceipts({ receiptIds: [a.id], note }, actor)));
   assert.equal(results.reduce((n,r) => n + r.confirmed, 0), 1);
   const [original] = await sql`SELECT billing_review FROM receipts WHERE id=${a.id}`;
-  await confirmZeroCostReceipts({ receiptIds: [a.id], note: 'later note' }, 'test:billing-concurrent');
+  await confirmZeroCostReceipts({ receiptIds: [a.id], note: 'later note' }, actor);
   assert.deepEqual((await sql`SELECT billing_review FROM receipts WHERE id=${a.id}`)[0]!.billing_review, original!.billing_review);
-  assert.equal((await sql`SELECT count(*)::int n FROM audit_log WHERE actor='test:billing-concurrent' AND action='receipt.billing-confirm-zero'`)[0]!.n, 1);
+  assert.equal((await sql`SELECT count(*)::int n FROM audit_log WHERE actor=${actor} AND action='receipt.billing-confirm-zero'`)[0]!.n, 1);
 });
 
 test('a missing or settled receipt rejects the whole batch and creates no partial review', async () => {
