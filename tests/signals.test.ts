@@ -18,6 +18,8 @@ const SIGNAL = `test-sig-hs-${T}`;
 const TOPIC = `WL${T}`;
 /** Text of its own: close to nothing stored. */
 const ALONE = `ZZ${T}`;
+const CACHE_TOPIC = `CACHE${T}`;
+const REVISED_TOPIC = `REVISED${T}`;
 
 // Embeddings: texts about the topic point one way, everything else another. The judge calls the first
 // candidate the same occurrence.
@@ -26,7 +28,7 @@ const provider = await stub((_hit, req) => {
   if (body.input) {
     // The topic's axis is this run's own, so stored vectors of earlier runs never match it.
     const axis = 2 + (parseInt(T.slice(-4), 36) % 1000);
-    return { data: body.input.map((text, index) => ({ index, embedding: Array.from({ length: 1024 }, (_v, i) => (i === (text.includes(TOPIC) ? axis : text.includes(ALONE) ? axis + 1 : 1) ? 1 : 0)) })) };
+    return { data: body.input.map((text, index) => ({ index, embedding: Array.from({ length: 1024 }, (_v, i) => (i === (text.includes(REVISED_TOPIC) ? axis + 3 : text.includes(CACHE_TOPIC) ? axis + 2 : text.includes(TOPIC) ? axis : text.includes(ALONE) ? axis + 1 : 1) ? 1 : 0)) })) };
   }
   const answer = { query: "收购", decisions: [{ id: "C1", relation: "SAME_OCCURRENCE", confidence: 0.95, note: "" }] };
   return { id: "stub", choices: [{ message: { content: JSON.stringify(answer) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
@@ -61,6 +63,40 @@ after(async () => {
   await provider.close();
   await stopBoss();
   await closeDb();
+});
+
+test("corrected reports replace their cached embeddings before later recall", async () => {
+  const first=await report("cache-first",{title:`发布 ${CACHE_TOPIC}`});
+  const original=await groupArticle(first);
+  assert.equal(original.verdict,"new-story");
+  const second=await report("cache-second",{title:`发布 ${CACHE_TOPIC}`});
+  assert.equal((await groupArticle(second)).factId,original.factId);
+  await sql`UPDATE publications SET title=${`更正 ${REVISED_TOPIC}`},summary=${`更正 ${REVISED_TOPIC}`} WHERE article_id IN (${first},${second})`;
+  const next=await groupArticle(await report("cache-after-correction",{title:`发布 ${CACHE_TOPIC}`}));
+  assert.equal(next.verdict,"new-story","the former cached topic cannot recall corrected reports");
+  assert.notEqual(next.storyId,original.storyId);
+});
+
+test("a discussion signal and its grouping decision roll back together", async () => {
+  const reportId=await report("signal-rollback-report",{title:`Rollback ${CACHE_TOPIC}`});
+  const target=await groupArticle(reportId);
+  const tweetId=`8${Date.now()}`;
+  await sql`UPDATE articles SET identity_key=${`x:${tweetId}`} WHERE id=${reportId}`;
+  const {articleId:id}=await upsertMaterial({sourceId:SIGNAL,url:`https://example.com/sig-${T}-rollback`,title:"Discussion",via:"fetch",publishedAt:new Date(),
+    xPost:{tweetId:`7${Date.now()}`,authorName:"Test",handle:"test",text:"Discussion",replyTo:tweetId}});
+  await settleNonEditorial(id);
+  const fn=`signal_fail_${T}`;
+  await sql.unsafe(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.article_id='${id}' THEN RAISE EXCEPTION 'test signal commit failure'; END IF; RETURN NEW; END $$`);
+  await sql.unsafe(`CREATE TRIGGER ${fn} BEFORE INSERT ON grouping_decisions FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
+  try{
+    await assert.rejects(groupArticle(id,{signalOnly:true}),/test signal commit failure/);
+    assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${id}`).length,0);
+    assert.equal((await sql`SELECT 1 FROM grouping_decisions WHERE article_id=${id}`).length,0);
+  }finally{
+    await sql.unsafe(`DROP TRIGGER ${fn} ON grouping_decisions`);
+    await sql.unsafe(`DROP FUNCTION ${fn}()`);
+  }
+  assert.equal((await groupArticle(id,{signalOnly:true})).storyId,target.storyId);
 });
 
 test("a discussion post that came before any report is grouped again when a report founds its fact", async () => {

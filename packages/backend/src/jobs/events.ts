@@ -16,7 +16,7 @@ export async function registerEventJobs(boss: PgBoss) {
       const {revision,generation}=job.data;
       const input=revision!==undefined && generation!==undefined ? {revision,generation} : undefined;
       if (job.data.signalOnly && !job.data.force && !(await settleNonEditorial(job.data.articleId,input)).group) return { verdict: "skipped" };
-      const result = await groupArticle(job.data.articleId, { signalOnly: job.data.signalOnly, force: job.data.force });
+      const result = await groupArticle(job.data.articleId, { signalOnly: job.data.signalOnly, force: job.data.force, processingInput: input });
       if (result.storyId && !result.verdict.startsWith("signal")) {
         await enqueue(QUEUES.digest, { storyId: result.storyId }, { singletonKey: `story:${result.storyId}`, startAfter: 60 });
       }

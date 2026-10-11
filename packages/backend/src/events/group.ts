@@ -15,14 +15,16 @@
 // look when a report founds a fact close to them (rematchSignals); history (isHistorical) founds no
 // event. Runs serially (queue concurrency 1).
 import { modelFor } from "../editorial/models.ts";
-import { sql, type Db } from "../db.ts";
-import { newShortId, newUuid, sha256 } from "../lib/ids.ts";
+import { sql, type Db, type Tx } from "../db.ts";
+import { newShortId, newUuid, sha256, stableJson } from "../lib/ids.ts";
+import type { ProcessingInput } from "../content/processing.ts";
 import { chatJson } from "../providers/llm.ts";
 import { BudgetExceededError, ReceiptBusyError, completeReceipt } from "../providers/receipts.ts";
 import { embeddingsAvailable, ensureEmbeddings } from "../providers/embeddings.ts";
 import { isHistorical, STALE_ON_DISCOVERY_MS } from "../content/materials.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
-import { publishArticle } from "../publication/publish.ts";
+import { publishArticleTx } from "../publication/publish.ts";
+import { invalidateStoryDigests } from "./digest-invalidation.ts";
 import { mergeStoryInto } from "./merge.ts";
 import {
   BATCH_SYSTEM, BatchSchema, PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, SIGNAL_SYSTEM, STORY_REVIEW_MIN_CONFIDENCE, SignalSchema, TIE_MIN_CONFIDENCE,
@@ -44,6 +46,8 @@ const SIGNAL_TOP_FACTS = 4;
 
 interface ArticleRow {
   id: string;
+  revision: number;
+  processing_generation: number;
   title: string;
   url: string;
   published_at: Date | null;
@@ -57,6 +61,7 @@ interface ArticleRow {
   first_party: boolean;
   participation_mode: string;
   regroup_pending: boolean;
+  regroup_requested_at: Date | null;
   backfill: boolean;
 }
 
@@ -93,7 +98,7 @@ const trusted = (alias: string) =>
 const rootFactOf = (story: ReturnType<typeof sql> | number) => sql`(
   SELECT y.id FROM facts y
   JOIN fact_articles z ON z.fact_id = y.id AND z.role IN ('primary', 'report') AND ${trusted("z")}
-  JOIN publications q ON q.article_id = z.article_id
+  JOIN publications q ON q.article_id = z.article_id AND q.visibility='public' AND q.eligible
   WHERE y.story_id = ${story}
   ORDER BY coalesce(q.published_at, q.discovered_at), y.id
   LIMIT 1)`;
@@ -106,6 +111,7 @@ async function recallPool(withWaiting = false): Promise<PoolRow[]> {
     JOIN facts f ON f.id = fa.fact_id
     JOIN stories st ON st.id = f.story_id AND st.merged_into IS NULL
     JOIN articles a ON a.id = fa.article_id
+    JOIN publications p ON p.article_id=a.id AND p.visibility='public' AND p.eligible
     WHERE fa.role IN ('primary', 'report') AND ${withWaiting ? sql`true` : trusted("fa")} AND a.discovered_at > now() - make_interval(days => ${RECALL_DAYS})`;
 }
 
@@ -212,12 +218,10 @@ async function recallFacts(queryId: string, queryText: string, minScore: number,
         if (s >= 0.25) consider(r, s);
       }
     } else {
-      // Window members already in the cache keep their vector (a later revision of their text is
-      // picked up when the cache turns over); only new members and the query are embedded now.
+      // Compare current text hashes for every window member; vectorsFor embeds only changed texts.
       const ids = [...new Set(pool.map((r) => r.article_id))];
-      const uncached = ids.filter((id) => !vectorCache.has(id));
-      const texts = await reportTexts(uncached);
-      const fresh = await vectorsFor([{ id: queryId, text: queryText }, ...uncached.map((id) => ({ id, text: texts.get(id) ?? "" })).filter((x) => x.text)]);
+      const texts = await reportTexts(ids);
+      const fresh = await vectorsFor([{ id: queryId, text: queryText }, ...ids.map((id) => ({ id, text: texts.get(id) ?? "" })).filter((x) => x.text)]);
       const mine = fresh.get(queryId);
       if (mine) {
         for (const r of pool) {
@@ -237,19 +241,21 @@ async function recallFacts(queryId: string, queryText: string, minScore: number,
  * What the judge sees of a candidate fact: its representative report (first-party first, else the
  * earliest), its size, and whether it started its story (rootFactOf).
  */
-async function candidateViews(recalled: Recalled[]): Promise<CandidateView[]> {
+async function candidateViews(recalled: Recalled[], db: Db = sql): Promise<CandidateView[]> {
   if (recalled.length === 0) return [];
-  const rows = await sql<{
+  const rows = await db<{
     fact_id: number; story_id: number; fact_title: string; subject: string | null; action: string | null; object: string | null; occurred_at: Date | null;
     title: string; summary: string | null; source: string; first_party: boolean; at: Date; members: number; root_fact_id: number;
   }[]>`
     SELECT DISTINCT ON (fa.fact_id) fa.fact_id, f.story_id, f.title AS fact_title, f.subject, f.action, f.object, f.occurred_at,
            p.title, p.summary, s.name AS source, p.first_party, coalesce(p.published_at, p.discovered_at) AS at,
-           (SELECT count(*) FROM fact_articles x WHERE x.fact_id = fa.fact_id AND x.role IN ('primary', 'report') AND ${trusted("x")}) AS members,
+           (SELECT count(*) FROM fact_articles x JOIN publications q ON q.article_id=x.article_id AND q.visibility='public' AND q.eligible
+             WHERE x.fact_id = fa.fact_id AND x.role IN ('primary', 'report') AND ${trusted("x")}) AS members,
            ${rootFactOf(sql`f.story_id`)} AS root_fact_id
     FROM fact_articles fa
     JOIN facts f ON f.id = fa.fact_id
-    JOIN publications p ON p.article_id = fa.article_id
+    JOIN stories st ON st.id=f.story_id AND st.merged_into IS NULL
+    JOIN publications p ON p.article_id = fa.article_id AND p.visibility='public' AND p.eligible
     JOIN sources s ON s.id = p.source_id
     WHERE fa.fact_id = ANY(${recalled.map((r) => r.factId)}) AND fa.role IN ('primary', 'report') AND ${trusted("fa")}
     ORDER BY fa.fact_id, (fa.role = 'primary') DESC, p.timeline_at ASC`;
@@ -359,16 +365,15 @@ async function currentMembership(articleId: string): Promise<{ factId: number; s
  * An explicit regroup starts from a clean slate: automatic memberships and heat evidence go, manual
  * ones stay. Returns the stories the report was a report of.
  */
-async function resetAutomatic(articleId: string): Promise<number[]> {
-  return sql.begin(async (tx) => {
-    await tx`SELECT 1 FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    const left = await tx<{ story_id: number }[]>`
-      SELECT DISTINCT f.story_id FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id
-      WHERE fa.article_id = ${articleId} AND NOT fa.manual AND fa.role IN ('primary', 'report') AND f.story_id IS NOT NULL`;
-    await tx`DELETE FROM fact_articles WHERE article_id = ${articleId} AND NOT manual`;
-    await tx`DELETE FROM story_signals WHERE article_id = ${articleId}`;
-    return left.map((r) => Number(r.story_id));
-  });
+async function resetAutomatic(db: Db, articleId: string): Promise<number[]> {
+  const left = await db<{ story_id: number; fact_id: number }[]>`
+    SELECT f.story_id,fa.fact_id FROM fact_articles fa JOIN facts f ON f.id=fa.fact_id
+    WHERE fa.article_id=${articleId} AND NOT fa.manual AND fa.role IN ('primary','report') AND f.story_id IS NOT NULL`;
+  await db`DELETE FROM fact_articles WHERE article_id=${articleId} AND NOT manual`;
+  await db`DELETE FROM story_signals WHERE article_id=${articleId}`;
+  const stories=[...new Set(left.map(r=>Number(r.story_id)))];
+  await invalidateStoryDigests(db,stories,articleId,left.map(r=>Number(r.fact_id)));
+  return stories;
 }
 
 /**
@@ -388,22 +393,22 @@ async function redirectEmptiedStories(articleId: string, left: number[], storyId
   return redirected;
 }
 
-async function markGrouped(articleId: string) {
-  await sql`UPDATE articles SET grouped_at = coalesce(grouped_at, now()) WHERE id = ${articleId}`;
+async function markGrouped(db: Db, articleId: string) {
+  await db`UPDATE articles SET grouped_at = coalesce(grouped_at, now()) WHERE id = ${articleId}`;
 }
 
 /** The live fact another report of the same page, or the X post this one replies to or quotes, belongs to. */
-async function relatedPosts(a: ArticleRow): Promise<{ sameUrl: PoolRow | null; referenced: PoolRow[] }> {
-  const [sameUrl] = await sql<PoolRow[]>`
+async function relatedPosts(a: ArticleRow, db: Db = sql): Promise<{ sameUrl: PoolRow | null; referenced: PoolRow[] }> {
+  const [sameUrl] = await db<PoolRow[]>`
     SELECT fa.article_id, fa.fact_id, f.story_id, f.title AS fact_title
-    FROM articles b JOIN fact_articles fa ON fa.article_id = b.id AND fa.role IN ('primary', 'report')
+    FROM articles b JOIN publications p ON p.article_id=b.id AND p.visibility='public' AND p.eligible JOIN fact_articles fa ON fa.article_id = b.id AND fa.role IN ('primary', 'report')
     JOIN facts f ON f.id = fa.fact_id JOIN stories st ON st.id = f.story_id AND st.merged_into IS NULL
     WHERE b.url = ${a.url} AND b.id <> ${a.id} AND ${trusted("fa")} ORDER BY fa.created_at LIMIT 1`;
   const ids = [a.x_post?.replyTo ?? null, a.x_post?.quoted?.url ? (/\/status\/(\d+)/.exec(a.x_post.quoted.url)?.[1] ?? null) : null].filter((x): x is string => !!x);
   const referenced = ids.length
-    ? await sql<PoolRow[]>`
+    ? await db<PoolRow[]>`
         SELECT fa.article_id, fa.fact_id, f.story_id, f.title AS fact_title
-        FROM articles b JOIN fact_articles fa ON fa.article_id = b.id AND fa.role IN ('primary', 'report')
+        FROM articles b JOIN publications p ON p.article_id=b.id AND p.visibility='public' AND p.eligible JOIN fact_articles fa ON fa.article_id = b.id AND fa.role IN ('primary', 'report')
         JOIN facts f ON f.id = fa.fact_id JOIN stories st ON st.id = f.story_id AND st.merged_into IS NULL
         WHERE b.identity_key = ANY(${ids.map((id) => `x:${id}`)}) AND b.id <> ${a.id} AND ${trusted("fa")}`
     : [];
@@ -430,12 +435,12 @@ async function storyRoot(storyId: number): Promise<StoryRoot | null> {
   }[]>`
     SELECT f.subject, f.action, f.object, f.occurred_at, p.title, p.summary, s.name AS source, p.first_party,
            coalesce(p.published_at, p.discovered_at) AS at,
-           (SELECT min(coalesce(q.published_at, q.discovered_at)) FROM fact_articles z JOIN publications q ON q.article_id = z.article_id
+           (SELECT min(coalesce(q.published_at, q.discovered_at)) FROM fact_articles z JOIN publications q ON q.article_id = z.article_id AND q.visibility='public' AND q.eligible
             WHERE z.fact_id = f.id AND z.role IN ('primary', 'report') AND ${trusted("z")}) AS started_at,
            EXISTS (SELECT 1 FROM grouping_decisions d WHERE d.article_id = fa.article_id AND d.verdict = 'roundup') AS roundup
     FROM facts f
     JOIN fact_articles fa ON fa.fact_id = f.id AND fa.role IN ('primary', 'report') AND ${trusted("fa")}
-    JOIN publications p ON p.article_id = fa.article_id
+    JOIN publications p ON p.article_id = fa.article_id AND p.visibility='public' AND p.eligible
     JOIN sources s ON s.id = p.source_id
     WHERE f.id = ${rootFactOf(storyId)}
     ORDER BY (fa.role = 'primary') DESC, p.timeline_at ASC
@@ -571,7 +576,7 @@ export async function linkRelatedStories(): Promise<{ added: number }> {
 export interface GroupResult {
   verdict:
     | "same-fact" | "same-url" | "new-fact-in-story" | "new-story" | "roundup" | "kept" | "standalone" | "manual" | "skipped"
-    | "signal" | "signal-native" | "signal-unmatched" | "historical";
+    | "signal" | "signal-native" | "signal-unmatched" | "historical" | "stale";
   factId?: number;
   storyId?: number;
   /** Stories compared because this report tied them together (see consolidate). */
@@ -588,66 +593,135 @@ export interface GroupResult {
 }
 
 export interface GroupOptions {
+  processingInput?: ProcessingInput;
   /** Discussion evidence only (hot_signal sources): attach to a story, never create one. */
   signalOnly?: boolean;
   /** An explicit regroup: drop the automatic membership and decide again (manual decisions still win). A report waiting in regroup_pending is regrouped the same way. */
   force?: boolean;
 }
 
-export async function groupArticle(articleId: string, opts: GroupOptions = {}): Promise<GroupResult> {
-  const result = await decide(articleId, opts);
-  // Decided under the current rules: the report is evidence for others again. A failed decision
-  // throws before this, so the report keeps waiting and the retry decides it again.
-  await sql`DELETE FROM regroup_pending WHERE article_id = ${articleId}`;
-  return result;
+interface GroupAnalysis {
+  id: number;
+  input_revision: number;
+  relevance: string | null;
+  title_zh: string | null;
+  summary_zh: string | null;
+  output: Record<string, any> | null;
 }
 
-async function decide(articleId: string, opts: GroupOptions): Promise<GroupResult> {
-  const [a] = await sql<ArticleRow[]>`
-    SELECT a.id, a.title, a.url, a.published_at, a.discovered_at, a.grouped_at, a.body_text, a.x_post, a.backfill,
-           s.id AS source_id, s.name AS source_name, s.signal_group_id, s.first_party, s.participation_mode,
-           EXISTS (SELECT 1 FROM regroup_pending rp WHERE rp.article_id = a.id) AS regroup_pending
-    FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
-  if (!a) return { verdict: "skipped" };
-  const observedAt = a.published_at ?? a.discovered_at;
-  const source = { id: a.source_id, signal_group_id: a.signal_group_id };
+async function groupingInput(articleId: string, db: Db) {
+  const [a]=await db<ArticleRow[]>`
+    SELECT a.id,a.revision,a.processing_generation,a.title,a.url,a.published_at,a.discovered_at,a.grouped_at,a.body_text,a.x_post,a.backfill,
+      s.id AS source_id,s.name AS source_name,s.signal_group_id,s.first_party,s.participation_mode,
+      EXISTS(SELECT 1 FROM regroup_pending rp WHERE rp.article_id=a.id) AS regroup_pending,
+      (SELECT rp.requested_at FROM regroup_pending rp WHERE rp.article_id=a.id) AS regroup_requested_at
+    FROM articles a JOIN sources s ON s.id=a.source_id WHERE a.id=${articleId}`;
+  if(!a)return null;
+  const [an]=await db<GroupAnalysis[]>`SELECT id,input_revision,relevance,title_zh,summary_zh,output FROM analyses
+    WHERE article_id=${articleId} AND NOT superseded ORDER BY input_revision DESC,id DESC LIMIT 1`;
+  const [publication]=await db<{title:string;summary:string|null;visibility:string;eligible:boolean;fact_id:number|null;story_id:number|null}[]>`
+    SELECT title,summary,visibility,eligible,fact_id,story_id FROM publications WHERE article_id=${articleId}`;
+  const [override]=await db<{fields:Record<string,unknown>;visibility:string|null;version:number}[]>`
+    SELECT fields,visibility,version FROM editorial_overrides WHERE article_id=${articleId}`;
+  return {a,an:an??null,publication:publication??null,override:override??null};
+}
+type GroupInput=NonNullable<Awaited<ReturnType<typeof groupingInput>>>;
+type Related=Awaited<ReturnType<typeof relatedPosts>>;
 
-  // Manual decisions win over any model decision: a manual membership, or "keep standalone".
-  const manual = await manualDecision(sql, articleId);
-  if (manual) {
-    await markGrouped(articleId);
-    await publishArticle(articleId);
-    return { verdict: "manual", factId: manual.factId };
-  }
-  const left = opts.force || a.regroup_pending ? await resetAutomatic(articleId) : [];
+async function regroupCurrent(tx:Tx, input:GroupInput, opts:GroupOptions) {
+  const {a}=input;
+  await enqueue(QUEUES.group,{articleId:a.id,revision:a.revision,generation:a.processing_generation,
+    ...(opts.force?{force:true}:{}),...(opts.signalOnly?{signalOnly:true}:{})},
+    {singletonKey:`group:${a.id}:refresh`},tx);
+}
 
-  // History founds no event and adds no heat (isHistorical); a regroup takes it out of any it joined.
-  if (isHistorical(a)) {
-    await markGrouped(articleId);
-    await publishArticle(articleId);
-    return { verdict: "historical" };
-  }
+/** Freeze only the short commit. No database locks span embeddings or model requests. */
+async function commitGrouping(input: GroupInput, opts: GroupOptions, run: (tx:Tx)=>Promise<GroupResult>, evidence: {cands?:CandidateView[];related?:Related}={}): Promise<GroupResult> {
+  return sql.begin(async tx=>{
+    const id=input.a.id;
+    await tx`SELECT id FROM articles WHERE id=${id} FOR UPDATE`;
+    await tx`SELECT id FROM sources WHERE id=${input.a.source_id} FOR SHARE`;
+    await tx`SELECT article_id FROM regroup_pending WHERE article_id=${id} FOR SHARE`;
+    await tx`SELECT article_id FROM editorial_overrides WHERE article_id=${id} FOR SHARE`;
+    const current=await groupingInput(id,tx);
+    if(!current || current.a.revision!==input.a.revision || current.a.processing_generation!==input.a.processing_generation)return {verdict:'stale'};
+    // The editor's detach/place remains authoritative even after an answer has arrived.
+    const manual=await manualDecision(tx,id);
+    if(manual){
+      await markGrouped(tx,id);
+      await publishArticleTx(tx,id);
+      if(current.a.regroup_requested_at?.getTime()===input.a.regroup_requested_at?.getTime())await tx`DELETE FROM regroup_pending WHERE article_id=${id}`;
+      return {verdict:'manual',factId:manual.factId};
+    }
+    if(stableJson(current)!==stableJson(input)){
+      // A material/analysis handoff owns its next grouping job. An editorial correction at the
+      // same processing generation needs its own refresh when no newer grouping has settled.
+      if(current.a.revision===input.a.revision && current.a.processing_generation===input.a.processing_generation
+        && current.a.grouped_at?.getTime()===input.a.grouped_at?.getTime()
+        && (current.a.participation_mode!=='editorial' || (current.an?.input_revision===current.a.revision && current.an.relevance==='pass')))
+        await regroupCurrent(tx,current,opts);
+      return {verdict:'stale'};
+    }
+    const cands=evidence.cands??[];
+    const refs=evidence.related ? [evidence.related.sameUrl,...evidence.related.referenced].filter((x):x is PoolRow=>!!x) : [];
+    const [owned]=await tx<{ids:number[]}[]>`SELECT coalesce(array_agg(DISTINCT f.story_id),ARRAY[]::bigint[]) AS ids
+      FROM fact_articles fa JOIN facts f ON f.id=fa.fact_id WHERE fa.article_id=${id}`;
+    const stories=[...new Set([...(owned?.ids??[]),...cands.map(c=>c.storyId),...refs.map(r=>r.story_id)])];
+    if(stories.length){
+      await tx`SELECT id FROM stories WHERE id=ANY(${stories}::bigint[]) ORDER BY id FOR UPDATE`;
+      await tx`SELECT p.article_id FROM publications p WHERE EXISTS(SELECT 1 FROM fact_articles fa JOIN facts f ON f.id=fa.fact_id
+        WHERE fa.article_id=p.article_id AND f.story_id=ANY(${stories}::bigint[])) ORDER BY p.article_id FOR SHARE OF p`;
+      await tx`SELECT s.id FROM sources s WHERE EXISTS(SELECT 1 FROM publications p JOIN fact_articles fa ON fa.article_id=p.article_id
+        JOIN facts f ON f.id=fa.fact_id WHERE p.source_id=s.id AND f.story_id=ANY(${stories}::bigint[])) ORDER BY s.id FOR SHARE OF s`;
+    }
+    const refreshed=cands.length ? await candidateViews(cands.map(c=>({factId:c.factId,storyId:c.storyId,factTitle:c.factTitle,score:c.score})),tx) : [];
+    if(stableJson(refreshed)!==stableJson(cands) || (evidence.related && stableJson(await relatedPosts(current.a,tx))!==stableJson(evidence.related))){
+      // This article still owns the same input, but the candidate evidence changed. A distinct
+      // handoff survives the active job's short-queue deduplication; original paid answers stay saved.
+      await regroupCurrent(tx,current,opts);
+      return {verdict:'stale'};
+    }
+    const result=await run(tx);
+    await publishArticleTx(tx,id);
+    await tx`DELETE FROM regroup_pending WHERE article_id=${id}`;
+    return result;
+  });
+}
 
-  if (opts.signalOnly || a.participation_mode !== "editorial") return groupSignal(a, source, observedAt);
-
-  const kept = await currentMembership(articleId);
-  if (kept) {
-    await markGrouped(articleId);
-    await publishArticle(articleId);
-    return { verdict: "kept", factId: kept.factId, storyId: kept.storyId };
-  }
-
-  const [an] = await sql<{ relevance: string | null; title_zh: string | null; summary_zh: string | null; output: Record<string, any> | null }[]>`
-    SELECT relevance, title_zh, summary_zh, output FROM analyses WHERE article_id=${articleId} AND NOT superseded ORDER BY input_revision DESC, id DESC LIMIT 1`;
-  const frame = (an?.output?.fact ?? null) as Record<string, any> | null;
-  if (!an || an.relevance !== "pass") {
-    await markGrouped(articleId);
-    await publishArticle(articleId);
-    return { verdict: "standalone" };
-  }
-  const title = an.title_zh || a.title;
+export async function groupArticle(articleId: string, opts: GroupOptions = {}): Promise<GroupResult> {
+  const input=await sql.begin('isolation level repeatable read read only',tx=>groupingInput(articleId,tx));
+  if(!input)return {verdict:'skipped'};
+  const {a,an,publication,override}=input;
+  if(opts.processingInput && (a.revision!==opts.processingInput.revision || a.processing_generation!==opts.processingInput.generation))return {verdict:'stale'};
+  const observedAt=a.published_at??a.discovered_at;
+  const source={id:a.source_id,signal_group_id:a.signal_group_id};
+  const manual=await manualDecision(sql,articleId);
+  if(manual)return commitGrouping(input,opts,async ()=>({verdict:'manual',factId:manual.factId}));
+  const reset=!!opts.force || a.regroup_pending;
+  let left:number[]=[];
+  if(isHistorical(a))return commitGrouping(input,opts,async tx=>{
+    if(reset)await resetAutomatic(tx,articleId);
+    await markGrouped(tx,articleId);
+    return {verdict:'historical'};
+  });
+  if(opts.signalOnly || a.participation_mode!=='editorial')return groupSignal(input,opts,source,observedAt);
+  const kept=reset ? null : await currentMembership(articleId);
+  if(kept)return commitGrouping(input,opts,async tx=>{
+    await markGrouped(tx,articleId);
+    return {verdict:'kept',factId:kept.factId,storyId:kept.storyId};
+  });
+  const corrected=override && ('title' in override.fields || 'summary' in override.fields);
+  const frame=(corrected ? null : an?.output?.fact??null) as Record<string,any>|null;
+  if(an && an.input_revision!==a.revision)return {verdict:'stale'};
+  if(!an || an.relevance!=='pass' || (override?.visibility==='withdrawn' || (publication && (publication.visibility!=='public' || !publication.eligible))))return commitGrouping(input,opts,async tx=>{
+    if(reset)await resetAutomatic(tx,articleId);
+    await markGrouped(tx,articleId);
+    return {verdict:'standalone'};
+  });
+  const title = typeof override?.fields.title==='string' ? override.fields.title : publication?.title || an.title_zh || a.title;
+  const summary = typeof override?.fields.summary==='string' ? override.fields.summary : publication?.summary ?? an.summary_zh;
   const query: ReportView = {
-    title, source: a.source_name, firstParty: a.first_party, at: observedAt, summary: an.summary_zh,
+    title, source: a.source_name, firstParty: a.first_party, at: observedAt, summary,
     frame: frame ? { subject: frame.subject, action: frame.action, object: frame.object, occurredAt: frame.occurredAt } : null,
   };
   const newTitle = String(frame?.title || title).slice(0, 60);
@@ -666,7 +740,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
     storyId = sameUrl.story_id;
   } else {
     try {
-      cands = await candidateViews(await recallFacts(articleId, reportText(title, an.summary_zh), RECALL_MIN_COSINE, RECALL_TOP_FACTS, referenced));
+      cands = await candidateViews(await recallFacts(articleId, reportText(title, summary), RECALL_MIN_COSINE, RECALL_TOP_FACTS, referenced));
       if (cands.length) {
         const judged = await judgeBatch(articleId, query, cands);
         verdicts = judged.verdicts;
@@ -701,9 +775,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
         }
       }
     } catch (error) {
-      // A failed identity call must not block publication: the report stays standalone for now.
-      await markGrouped(articleId);
-      await publishArticle(articleId);
+      // Keep the existing membership/publication until the queue can retry this judgement.
       throw error;
     }
   }
@@ -715,36 +787,29 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
 
   // Written under the article's row lock after reading the manual state again: a detach or other
   // manual decision made while the model was answering wins (detachFromFact takes the same lock).
-  const written = await sql.begin(async (tx) => {
-    await tx`SELECT 1 FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    const late = await manualDecision(tx, articleId);
-    if (late) {
-      await tx`UPDATE articles SET grouped_at = coalesce(grouped_at, now()) WHERE id = ${articleId}`;
-      return { manual: late, factId: null, storyId: null };
-    }
-    const story = storyId ?? (await createStory(tx, newTitle, observedAt));
-    const fact = factId ?? (await createFact(tx, story, newTitle, frame, observedAt));
-    const [hasPrimary] = await tx<{ n: number }[]>`SELECT count(*) AS n FROM fact_articles WHERE fact_id = ${fact} AND role = 'primary'`;
-    const role = a.first_party && Number(hasPrimary?.n ?? 0) === 0 ? "primary" : "report";
-    await tx`INSERT INTO fact_articles (fact_id, article_id, role, created_at) VALUES (${fact}, ${articleId}, ${role}, ${observedAt}) ON CONFLICT (fact_id, article_id) DO NOTHING`;
-    await recordSignal(tx, story, articleId, source, "editorial", observedAt);
-    await recordDecision(tx, articleId, fact, story, verdict, decisionCandidates, receipts[0] ?? null);
-    await tx`UPDATE articles SET grouped_at = coalesce(grouped_at, now()) WHERE id = ${articleId}`;
-    return { manual: null, factId: fact, storyId: story };
-  });
-  for (const id of receipts) await completeReceipt(sql, id);
-  await publishArticle(articleId);
-  if (written.manual) return { verdict: "manual", factId: written.manual.factId };
-  const result: GroupResult = { verdict, factId: written.factId!, storyId: written.storyId! };
+  const result=await commitGrouping(input,opts,async tx=>{
+    if(reset)left=await resetAutomatic(tx,articleId);
+    const story=storyId??await createStory(tx,newTitle,observedAt);
+    const fact=factId??await createFact(tx,story,newTitle,frame,observedAt);
+    const [hasPrimary]=await tx<{n:number}[]>`SELECT count(*) AS n FROM fact_articles WHERE fact_id=${fact} AND role='primary'`;
+    const role=a.first_party && Number(hasPrimary?.n??0)===0 ? 'primary' : 'report';
+    await tx`INSERT INTO fact_articles(fact_id,article_id,role,created_at) VALUES(${fact},${articleId},${role},${observedAt}) ON CONFLICT(fact_id,article_id) DO NOTHING`;
+    await recordSignal(tx,story,articleId,source,'editorial',observedAt);
+    await recordDecision(tx,articleId,fact,story,verdict,decisionCandidates,receipts[0]??null);
+    await markGrouped(tx,articleId);
+    for(const id of receipts)await completeReceipt(tx,id);
+    return {verdict,factId:fact,storyId:story};
+  },{cands,related:{sameUrl,referenced}});
+  if(result.verdict==='stale' || result.verdict==='manual')return result;
 
   // Other stories this report is firmly tied to: one story may have grown two roots. Best effort:
   // the report's own decision is written; a failed comparison is reported in the job's result.
-  const tied = new Set<number>([written.storyId!]);
+  const tied = new Set<number>([result.storyId!]);
   for (const c of cands) if (firmlyTied(verdicts.get(c.factId)?.relation, verdicts.get(c.factId)?.confidence)) tied.add(c.storyId);
   if (tied.size > 1) {
     try {
       result.consolidated = await consolidate([...tied]);
-      result.storyId = (await liveStory(written.storyId!)) ?? written.storyId!;
+      result.storyId = (await liveStory(result.storyId!)) ?? result.storyId!;
     } catch (error) {
       result.consolidationError = String(error).slice(0, 300);
     }
@@ -763,7 +828,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
   // A new fact may be what discussion posts of the last hours were about before any report came.
   if (verdict === "new-story" || verdict === "new-fact-in-story") {
     try {
-      result.rematched = await rematchSignals(articleId, reportText(title, an.summary_zh));
+      result.rematched = await rematchSignals(articleId, reportText(title, summary));
     } catch (error) {
       result.rematchError = String(error).slice(0, 300);
     }
@@ -829,36 +894,31 @@ async function rematchSignals(articleId: string, queryText: string): Promise<num
  * Discussion evidence (hot_signal sources): the post the item replies to or quotes decides first;
  * otherwise clear candidates are judged, and a nearly identical report attaches without a call.
  */
-async function groupSignal(a: ArticleRow, source: { id: string; signal_group_id: string | null }, observedAt: Date): Promise<GroupResult> {
-  const { referenced } = await relatedPosts(a);
-  if (referenced.length) {
-    const target = referenced[0]!;
-    await recordSignal(sql, target.story_id, a.id, source, "signal", observedAt);
-    await recordDecision(sql, a.id, target.fact_id, target.story_id, "signal-native", [{ id: target.fact_id, score: 1, relation: "SAME_STORY", confidence: 1 }], null);
-    return { verdict: "signal-native", storyId: target.story_id };
+async function groupSignal(input:GroupInput, opts:GroupOptions, source:{id:string;signal_group_id:string|null}, observedAt:Date):Promise<GroupResult> {
+  const a=input.a;
+  const related=await relatedPosts(a);
+  const write=async (verdict:GroupResult['verdict'], target:{factId:number;storyId:number}|null, candidates:DecisionCandidate[], receiptId:number|null, cands:CandidateView[]=[])=>
+    commitGrouping(input,opts,async tx=>{
+      if(opts.force || a.regroup_pending)await resetAutomatic(tx,a.id);
+      if(target)await recordSignal(tx,target.storyId,a.id,source,'signal',observedAt);
+      await recordDecision(tx,a.id,target?.factId??null,target?.storyId??null,verdict,candidates,receiptId);
+      if(receiptId)await completeReceipt(tx,receiptId);
+      return {verdict,...(target?{storyId:target.storyId}:{})};
+    },{related,cands});
+  if(related.referenced.length){
+    const target=related.referenced[0]!;
+    return write('signal-native',{factId:target.fact_id,storyId:target.story_id},[{id:target.fact_id,score:1,relation:'SAME_STORY',confidence:1}],null);
   }
-  if (!embeddingsAvailable()) return { verdict: "signal-unmatched" };
-  const recalled = await recallFacts(a.id, signalText(a), SIGNAL_MIN_COSINE, SIGNAL_TOP_FACTS);
-  if (recalled.length === 0) {
-    // Recorded, so a post that found nothing is told apart from one never decided.
-    await recordDecision(sql, a.id, null, null, "signal-unmatched", [], null);
-    return { verdict: "signal-unmatched" };
-  }
-  const top = recalled[0]!;
-  const asCandidates = (verdicts?: Map<number, Verdict>): DecisionCandidate[] =>
-    recalled.map((r) => ({ id: r.factId, score: Math.round(r.score * 1000) / 1000, relation: verdicts?.get(r.factId)?.relation, confidence: verdicts?.get(r.factId)?.confidence }));
-  if (top.score >= SIGNAL_AUTO_COSINE) {
-    await recordSignal(sql, top.storyId, a.id, source, "signal", observedAt);
-    await recordDecision(sql, a.id, top.factId, top.storyId, "signal", asCandidates(), null);
-    return { verdict: "signal", storyId: top.storyId };
-  }
-  const cands = await candidateViews(recalled);
-  if (cands.length === 0) return { verdict: "signal-unmatched" };
-  const query: ReportView = { title: a.title, source: a.source_name, firstParty: false, at: observedAt, summary: a.body_text?.slice(0, 300) ?? null };
-  const { verdicts, receiptId } = await judgeSignal(a.id, query, cands);
-  const target = signalTarget(cands, verdicts);
-  if (target) await recordSignal(sql, target.storyId, a.id, source, "signal", observedAt);
-  await recordDecision(sql, a.id, target?.factId ?? null, target?.storyId ?? null, target ? "signal" : "signal-unmatched", asCandidates(verdicts), receiptId);
-  await completeReceipt(sql, receiptId);
-  return target ? { verdict: "signal", storyId: target.storyId } : { verdict: "signal-unmatched" };
+  if(!embeddingsAvailable())return write('signal-unmatched',null,[],null);
+  const recalled=await recallFacts(a.id,signalText(a),SIGNAL_MIN_COSINE,SIGNAL_TOP_FACTS);
+  if(recalled.length===0)return write('signal-unmatched',null,[],null);
+  const cands=await candidateViews(recalled);
+  if(cands.length===0)return write('signal-unmatched',null,[],null);
+  const asCandidates=(verdicts?:Map<number,Verdict>):DecisionCandidate[]=>recalled.map(r=>({id:r.factId,score:Math.round(r.score*1000)/1000,relation:verdicts?.get(r.factId)?.relation,confidence:verdicts?.get(r.factId)?.confidence}));
+  const top=cands[0]!;
+  if(top.score>=SIGNAL_AUTO_COSINE)return write('signal',top,asCandidates(),null,cands);
+  const query:ReportView={title:a.title,source:a.source_name,firstParty:false,at:observedAt,summary:a.body_text?.slice(0,300)??null};
+  const {verdicts,receiptId}=await judgeSignal(a.id,query,cands);
+  const target=signalTarget(cands,verdicts);
+  return write(target?'signal':'signal-unmatched',target??null,asCandidates(verdicts),receiptId,cands);
 }

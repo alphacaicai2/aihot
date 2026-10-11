@@ -9,6 +9,7 @@ import { extractArticleBody, pageFetchable } from "../content/extract.ts";
 import { analyzeArticle, AnalysisInterruptedError } from "../editorial/analyze.ts";
 import { isHistorical } from "../content/materials.ts";
 import { processingInput, type ProcessingInput } from "../content/processing.ts";
+import { queueGrouping } from "./grouping.ts";
 import { publishArticle } from "../publication/publish.ts";
 import { BudgetExceededError, ProviderRejectedError, ReceiptBusyError, ReceiptUnknownError } from "../providers/receipts.ts";
 import { ModelOutputError } from "../providers/llm.ts";
@@ -122,13 +123,13 @@ export async function processArticle(articleId: string, opts: { attemptTag?: str
   if (row.participation_mode !== "editorial") {
     // Normally queued straight for grouping (queueProcessing); an explicit re-evaluation lands here.
     const { group } = await settleNonEditorial(articleId,input);
-    if (group) await enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: PRIORITY.liveSignal });
+    if (group) await queueGrouping(articleId,input,{signalOnly:true,priority:PRIORITY.liveSignal});
     return { state: "skipped" };
   }
   let afterAnalysis=false;
   const publish=async (relevance:string)=>{
     await publishArticle(articleId);
-    if (relevance==='pass' && !row.historical) await enqueue(QUEUES.group,{articleId},{singletonKey:articleId,priority:PRIORITY.live});
+    if (relevance==='pass' && !row.historical) await queueGrouping(articleId,input,{priority:PRIORITY.live});
     // A restarted publication handoff may have a fresh queue marker despite an already applied
     // judgement. Clear only this generation; a newer manual request keeps its bookkeeping.
     await sql`UPDATE articles SET processing_attempts=0,processing_retry_at=NULL,processing_queued_at=NULL

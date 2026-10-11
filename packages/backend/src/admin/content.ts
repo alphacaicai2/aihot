@@ -163,8 +163,17 @@ export async function rerun(id: string, step: "extract" | "analyze" | "group", r
   let jobId: string | null;
   if (step === "group") {
     // An explicit regroup replaces an earlier manual "keep standalone" decision and the automatic membership.
-    await sql`DELETE FROM grouping_overrides WHERE article_id = ${id}`;
-    jobId = await enqueue(QUEUES.group, { articleId: id, force: true }, { singletonKey: `manual:group:${id}:${requestId}` });
+    jobId=await sql.begin(async tx=>{
+      const [input]=await tx<{revision:number;generation:number}[]>`SELECT revision,processing_generation AS generation FROM articles WHERE id=${id} FOR UPDATE`;
+      if(!input)return null;
+      const queued=await enqueue(QUEUES.group,{articleId:id,force:true,revision:input.revision,generation:input.generation},
+        {singletonKey:`manual:group:${id}:${requestId}`},tx);
+      if(queued){
+        await tx`DELETE FROM grouping_overrides WHERE article_id=${id}`;
+        await tx`INSERT INTO regroup_pending(article_id) VALUES(${id}) ON CONFLICT(article_id) DO UPDATE SET requested_at=now()`;
+      }
+      return queued;
+    });
   } else {
     jobId=await sql.begin(async tx=>{
       await tx`UPDATE articles SET processing_state='new',processing_error=NULL,processing_attempts=0,processing_retry_at=NULL,

@@ -3,16 +3,18 @@
 // report waiting for a regroup is not evidence for others until its own turn decides it again; a
 // story's root is its earliest fact that still holds reports; two stories a report ties together
 // merge only when both models see one story in their roots.
-import { gate, stub, tag } from "./setup.ts";
+import { gate, stub, tag, Reply } from "./setup.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { detachFromFact } from "@aihot/backend/admin/content";
+import { detachFromFact, overrideFields, rerun } from "@aihot/backend/admin/content";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { groupArticle, linkRelatedStories } from "@aihot/backend/events/group";
 import { stopBoss } from "@aihot/backend/jobs/queue";
+import { queueGrouping } from "@aihot/backend/jobs/grouping";
 import { publishArticle } from "@aihot/backend/publication/publish";
+import { mergeStoryInto } from "@aihot/backend/events/merge";
 
 const T = tag();
 const SOURCE = `test-events-${T}`;
@@ -28,9 +30,11 @@ let relation: Rel = "SAME_OCCURRENCE";
 let pairRelation: Rel | null = null;
 /** Answer every candidate of a batch prompt, not only the first. */
 let answerAll = false;
+let reject = false;
 const provider = await stub(async (_hit, req) => {
   asked.open();
   await hold.promise;
+  if (reject) return new Reply(503, { error: { message: "test grouping unavailable" } });
   const body = JSON.parse(req.body) as { messages: Array<{ content: string }> };
   const user = body.messages[1]!.content;
   const pair = user.includes("报道 A");
@@ -39,6 +43,154 @@ const provider = await stub(async (_hit, req) => {
     ? { a: "发布", b: "发布", relation: pairRelation ?? relation, difference: "", confidence: 0.95 }
     : { query: "发布新模型", decisions: ids.map((id) => ({ id, relation, confidence: 0.95, note: "" })) };
   return { id: "stub", choices: [{ message: { content: JSON.stringify(answer) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
+});
+
+test("a grouping answer for an older revision cannot change membership or clear a new regroup request", async () => {
+  hold=gate(); asked=gate();
+  const id=await report("revision-race");
+  const grouping=groupArticle(id);
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping finished without asking the judge"))]);
+  await sql`UPDATE articles SET revision=revision+1,processing_state='new',grouped_at=NULL WHERE id=${id}`;
+  await sql`INSERT INTO regroup_pending(article_id) VALUES (${id})`;
+  hold.open();
+  const result=await grouping;
+  assert.equal(result.verdict,"stale");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length,0);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${id}`).length,0);
+  assert.equal((await sql`SELECT 1 FROM grouping_decisions WHERE article_id=${id}`).length,0);
+  assert.equal((await sql`SELECT 1 FROM regroup_pending WHERE article_id=${id}`).length,1);
+  const [a]=await sql`SELECT grouped_at FROM articles WHERE id=${id}`;
+  assert.equal(a!.grouped_at,null);
+});
+
+test("a new processing generation invalidates an in-flight grouping answer even at the same revision", async () => {
+  hold=gate(); asked=gate();
+  const id=await report("generation-race",`${FACT_TITLE} generation`,"generation");
+  const grouping=groupArticle(id);
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping finished without asking the judge"))]);
+  await sql`UPDATE articles SET processing_generation=processing_generation+1 WHERE id=${id}`;
+  hold.open();
+  assert.equal((await grouping).verdict,"stale");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length,0);
+});
+
+test("an obsolete queued grouping input is rejected before any paid request or write", async () => {
+  const id=await report("old-job",`${FACT_TITLE} old queued job`);
+  const hits=provider.hits();
+  const result=await groupArticle(id,{processingInput:{revision:1,generation:42}});
+  assert.equal(result.verdict,"stale");
+  assert.equal(provider.hits(),hits);
+  assert.equal((await sql`SELECT 1 FROM grouping_decisions WHERE article_id=${id}`).length,0);
+});
+
+test("a new analysis promotes an existing pending grouping job to its current input", async () => {
+  const id=await report("promoted-job",`${FACT_TITLE} promoted job`);
+  const old=await queueGrouping(id,{revision:1,generation:0});
+  await sql`UPDATE articles SET processing_generation=1 WHERE id=${id}`;
+  const current=await queueGrouping(id,{revision:1,generation:1});
+  assert.equal(current,old);
+  const [j]=await sql`SELECT data FROM pgboss.job WHERE id=${current!}`;
+  assert.deepEqual(j!.data,{articleId:id,revision:1,generation:1});
+  assert.equal(await queueGrouping(id,{revision:1,generation:0}),null);
+  assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name='events.group' AND state='created' AND data->>'articleId'=${id}`).length,1);
+});
+
+test("manual regroup enqueues its current input and replaces standalone once per pending request", async () => {
+  hold=gate(); hold.open();
+  const id=await report("manual-regroup",`${FACT_TITLE} manual regroup`);
+  await detachFromFact(id,"keep standalone","test");
+  const requestId=`regroup-${T}`;
+  const first=await rerun(id,"group",requestId,"test");
+  const [pending]=await sql`SELECT requested_at FROM regroup_pending WHERE article_id=${id}`;
+  assert.ok(first?.jobId);
+  assert.equal((await sql`SELECT 1 FROM grouping_overrides WHERE article_id=${id}`).length,0);
+  const duplicate=await rerun(id,"group",requestId,"test");
+  assert.equal(duplicate!.jobId,null);
+  assert.equal((await sql`SELECT requested_at FROM regroup_pending WHERE article_id=${id}`)[0]!.requested_at.getTime(),pending!.requested_at.getTime());
+  const [job]=await sql`SELECT data FROM pgboss.job WHERE id=${first!.jobId!}`;
+  assert.deepEqual(job!.data,{articleId:id,force:true,revision:1,generation:0});
+  const result=await groupArticle(id,{force:true,processingInput:{revision:1,generation:0}});
+  assert.notEqual(result.verdict,"manual");
+  assert.equal((await sql`SELECT 1 FROM regroup_pending WHERE article_id=${id}`).length,0);
+});
+
+test("a newer regroup request survives an earlier answer", async () => {
+  hold=gate(); asked=gate();
+  const id=await report("new-regroup",`${FACT_TITLE} regroup request`);
+  await sql`INSERT INTO regroup_pending(article_id,requested_at) VALUES(${id},'2026-01-01')`;
+  const grouping=groupArticle(id,{force:true});
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping ended before the request"))]);
+  await sql`UPDATE regroup_pending SET requested_at='2026-01-02' WHERE article_id=${id}`;
+  hold.open();
+  assert.equal((await grouping).verdict,"stale");
+  const [pending]=await sql`SELECT requested_at FROM regroup_pending WHERE article_id=${id}`;
+  assert.equal(pending!.requested_at.toISOString(),"2026-01-02T00:00:00.000Z");
+});
+
+test("a candidate merged during a judgement cannot receive the old membership or signal", async () => {
+  hold=gate(); asked=gate();
+  const text=randomText();
+  const from=await storyWithRoot(text,"candidate-merged");
+  const into=await storyWithRoot(randomText(),"candidate-survivor");
+  const id=await report("candidate-merged-query",text,text);
+  const grouping=groupArticle(id);
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping ended before the merge"))]);
+  await mergeStoryInto(from.storyId,into.storyId,"test concurrent merge","test");
+  hold.open();
+  assert.equal((await grouping).verdict,"stale");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length,0);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${id}`).length,0);
+});
+
+test("a candidate edited while the judge answers cannot receive the stale decision", async () => {
+  hold=gate(); asked=gate();
+  const text=randomText();
+  const target=await storyWithRoot(text,"candidate-edit");
+  const id=await report("candidate-edit-query",text,text);
+  const grouping=groupArticle(id);
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping finished without asking the judge"))]);
+  await sql`UPDATE publications SET title='Corrected unrelated report',summary='Different event' WHERE article_id=${target.articleId}`;
+  hold.open();
+  assert.equal((await grouping).verdict,"stale");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length,0);
+  const jobs=await sql`SELECT data FROM pgboss.job WHERE name='events.group' AND state='created' AND data->>'articleId'=${id}`;
+  assert.equal(jobs.length,1,"the current inputs get another grouping handoff");
+});
+
+test("an editorial correction while grouping answers invalidates the query and hands off its current input", async () => {
+  hold=gate(); asked=gate();
+  const id=await report("own-correction",`${FACT_TITLE} own correction`);
+  const grouping=groupArticle(id);
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping ended before the correction"))]);
+  await overrideFields(id,{fields:{title:"更正后的不同事件",summary:"更正后的不同内容"},reason:"test correction",version:0},"test");
+  hold.open();
+  assert.equal((await grouping).verdict,"stale");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length,0);
+  assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name='events.group' AND state='created' AND data->>'articleId'=${id}`).length,1);
+  const [p]=await sql`SELECT title FROM publications WHERE article_id=${id}`;
+  assert.equal(p!.title,"更正后的不同事件");
+});
+
+test("a forced regroup keeps the old membership and heat until a successful decision commits", async () => {
+  hold=gate(); asked=gate(); reject=true;
+  const text=randomText();
+  const previous=await storyWithRoot(text,"force-failure-old");
+  await storyWithRoot(text,"force-failure-candidate");
+  await sql`INSERT INTO story_signals(story_id,article_id,participant_key,source_id,kind,observed_at)
+    VALUES (${previous.storyId},${previous.articleId},${`source:${SOURCE}`},${SOURCE},'editorial',now())`;
+  await sql`INSERT INTO regroup_pending(article_id) VALUES (${previous.articleId})`;
+  const grouping=groupArticle(previous.articleId,{force:true});
+  const observed=grouping.catch(e=>e);
+  await Promise.race([asked.promise,grouping.then(()=>assert.fail("grouping finished without asking the judge"))]);
+  const before=await sql`SELECT fact_id FROM fact_articles WHERE article_id=${previous.articleId}`;
+  hold.open();
+  const error=await observed;
+  reject=false;
+  assert.ok(error instanceof Error);
+  assert.equal(before.length,1,"no membership is removed during model wait");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${previous.articleId} AND fact_id=${previous.factId}`).length,1);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${previous.articleId}`).length,1);
+  assert.equal((await sql`SELECT 1 FROM regroup_pending WHERE article_id=${previous.articleId}`).length,1);
 });
 process.env.DEEPSEEK_BASE_URL = `${provider.url}/v1`;
 process.env.DEEPSEEK_API_KEY = "test-key";
@@ -78,7 +230,8 @@ after(async () => {
 });
 
 test("a detach made while the model is deciding the report's fact stands", async () => {
-  const id = await report("race");
+  hold=gate(); asked=gate();
+  const id = await report("race",`${FACT_TITLE} detach race`);
   const grouping = groupArticle(id);
   await Promise.race([asked.promise, grouping.then(() => assert.fail("grouping ended without asking the model"))]);
   await detachFromFact(id, "wrong fact", "test");
@@ -92,6 +245,31 @@ test("a detach made while the model is deciding the report's fact stands", async
   assert.equal(signals.length, 0, "no heat evidence is written back to the story");
   const [publication] = await sql<{ fact_id: number | null; story_id: number | null }[]>`SELECT fact_id, story_id FROM publications WHERE article_id = ${id}`;
   assert.deepEqual({ ...publication }, { fact_id: null, story_id: null }, "it is shown on its own");
+});
+
+test("a failed grouping commit rolls back the old reset, signals, decision and publication together", async () => {
+  hold=gate(); hold.open();
+  const text=randomText();
+  const previous=await storyWithRoot(text,"commit-rollback-old");
+  await storyWithRoot(text,"commit-rollback-candidate");
+  await sql`INSERT INTO story_signals(story_id,article_id,participant_key,source_id,kind,observed_at)
+    VALUES(${previous.storyId},${previous.articleId},${`source:${SOURCE}`},${SOURCE},'editorial',now())`;
+  await sql`INSERT INTO regroup_pending(article_id) VALUES(${previous.articleId})`;
+  const [before]=await sql`SELECT md5(to_jsonb(p)::text) AS hash FROM publications p WHERE article_id=${previous.articleId}`;
+  const fn=`grouping_fail_${T}`;
+  await sql.unsafe(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.article_id='${previous.articleId}' THEN RAISE EXCEPTION 'test grouping commit failure'; END IF; RETURN NEW; END $$`);
+  await sql.unsafe(`CREATE TRIGGER ${fn} BEFORE INSERT ON grouping_decisions FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
+  try{
+    await assert.rejects(groupArticle(previous.articleId,{force:true}),/test grouping commit failure/);
+    assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${previous.articleId} AND fact_id=${previous.factId}`).length,1);
+    assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${previous.articleId} AND story_id=${previous.storyId}`).length,1);
+    assert.equal((await sql`SELECT 1 FROM regroup_pending WHERE article_id=${previous.articleId}`).length,1);
+    const [after]=await sql`SELECT md5(to_jsonb(p)::text) AS hash FROM publications p WHERE article_id=${previous.articleId}`;
+    assert.equal(after!.hash,before!.hash);
+  }finally{
+    await sql.unsafe(`DROP TRIGGER ${fn} ON grouping_decisions`);
+    await sql.unsafe(`DROP FUNCTION ${fn}()`);
+  }
 });
 
 test("a report joins the fact the model names, and a revision keeps that membership without asking again", async () => {
