@@ -28,7 +28,7 @@ const orNotFound = <T>(req: FastifyRequest, reply: FastifyReply, value: T | null
 const page = (req: FastifyRequest) => Math.max(1, Number(q(req).page) || 1);
 const recoveryRequestId = (req: FastifyRequest) => {
   const id=req.headers['idempotency-key'];
-  if(typeof id!=="string" || !/^[\w-]{8,80}$/.test(id)) throw Object.assign(new Error("请刷新页面后重新提交恢复操作"),{statusCode:400});
+  if(typeof id!=="string" || !/^[\w-]{8,80}$/.test(id)) throw Object.assign(new Error("请刷新页面后重新提交操作"),{statusCode:400});
   return id;
 };
 
@@ -152,11 +152,13 @@ export function registerAdmin(app: FastifyInstance) {
   app.get("/api/admin/selectbench", adminHandler(async () => ({ runs: await listSelectBenchRuns() })));
   app.get("/api/admin/selectbench/:id", adminHandler(async (req, reply) => {
     const f = q(req);
-    return orNotFound(req, reply, await selectBenchRun(param(req, "id"), { model: f.model, outcome: f.outcome, stratum: f.stratum, disagree: f.disagree === "1" }));
+    if(f.disagree!==undefined && !['0','1'].includes(f.disagree))throw Object.assign(new Error('分歧筛选需要 0 或 1'),{statusCode:400});
+    if(f.unstratified!==undefined && !['0','1'].includes(f.unstratified))throw Object.assign(new Error('未分层筛选需要 0 或 1'),{statusCode:400});
+    return orNotFound(req, reply, await selectBenchRun(param(req, "id"), { model: f.model, outcome: f.outcome, stratum: f.stratum,unstratified:f.unstratified==='1', disagree: f.disagree === "1",page:f.page===undefined ? 1 : Number(f.page) }));
   }));
   app.post("/api/admin/selectbench/import", adminHandler(async (req, _reply, admin) => {
     const b = body<{ label: string; report: unknown }>(req);
-    return importSelectBenchRun(b.report, String(b.label || "导入的对比运行"), actorOf(admin));
+    return importSelectBenchRun(b.report, b.label ?? "导入的对比运行", actorOf(admin),{requestId:recoveryRequestId(req)});
   }));
 
   // Attention counts for the navigation.

@@ -2,7 +2,7 @@
 // heartbeats, and the receipts and deliveries whose outcome needs an operator.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { sql, type Tx } from "../db.ts";
+import { sql } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { audit } from "./auth.ts";
 import { Conflict } from "./sources.ts";
@@ -13,6 +13,7 @@ import { pendingBillingReview } from "../providers/billing-review.ts";
 import { backupOverview } from "../operations/backup.ts";
 import { config, credential } from "../config.ts";
 import { queueDelivery } from "../notify/deliver.ts";
+import {previousAdminCommand as previousRecoveryCommand} from './commands.ts';
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
 const Reason = z.string().trim().min(1).max(2000);
@@ -22,16 +23,6 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result=schema.safeParse(input);
   if(!result.success) throw Object.assign(new Error(result.error.message),{statusCode:400});
   return result.data;
-}
-
-/** The audit outlives queue jobs, so a lost HTTP reply cannot submit the same recovery twice. */
-async function previousRecoveryCommand<T>(tx: Tx, actor: string, action: string, subject: string, requestId: string, fingerprint: string): Promise<T | null> {
-  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`admin-recovery:${actor}:${action}:${requestId}`},0))`;
-  const [saved]=await tx<{subject:string;after:{command?:{fingerprint:string;result:T}}}[]>`SELECT subject,after FROM audit_log
-    WHERE actor=${actor} AND action=${action} AND request_id=${requestId} ORDER BY id LIMIT 1`;
-  if(!saved) return null;
-  if(saved.subject!==subject || saved.after?.command?.fingerprint!==fingerprint) throw new Conflict("这次操作的参数已改变，请刷新页面后重新提交");
-  return saved.after.command.result;
 }
 
 export async function runsOverview() {

@@ -19,6 +19,7 @@ interface RunRow {
   created_at: string;
   imported_by: string | null;
   cases: number;
+  cases_verified:boolean;
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -45,15 +46,21 @@ export default function SelectBench({ loaderData }: Route.ComponentProps) {
               const f = e.target.files?.[0];
               e.target.value = "";
               if (!f) return;
-              try {
-                const report = JSON.parse(await f.text());
-                await run("POST", "/api/admin/selectbench/import", { label: f.name.replace(/\.json$/, ""), report }, { label: "import", success: "已导入" });
-              } catch {
-                toast("文件不是合法的报告 JSON", "error");
+              if(f.size>9*1024*1024){toast('报告文件最大 9MB','error');return;}
+              let report:unknown;
+              try {report=JSON.parse(await f.text());} catch {toast('文件不是合法的报告 JSON','error');return;}
+              const label=f.name.replace(/\.json$/, ''),body={label,report};
+              const encoded=new TextEncoder().encode(JSON.stringify(body));
+              let hash:string;
+              if(crypto.subtle)hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',encoded)),b=>b.toString(16).padStart(2,'0')).join('');
+              else {
+                // This local action label also works on HTTP; the server verifies a full SHA-256.
+                let n=14695981039346656037n;for(const byte of encoded)n=BigInt.asUintN(64,(n^BigInt(byte))*1099511628211n);hash=n.toString(16);
               }
+              await run('POST','/api/admin/selectbench/import',body,{label:`import:${hash}`,success:'已导入'});
             }}
           />
-          <Button busy={pending === "import"} onClick={() => file.current?.click()}>导入报告</Button>
+          <Button busy={pending?.startsWith('import:')} onClick={() => file.current?.click()}>导入报告</Button>
         </>
       }
     >
@@ -80,7 +87,7 @@ export default function SelectBench({ loaderData }: Route.ComponentProps) {
                         const s = r.summary[m] ?? {};
                         return (
                           <tr key={m} className="border-b border-line/70 last:border-0">
-                            <td className="px-3 py-2 font-medium text-ink">{m} {m === best && r.models.length > 1 && <Badge tone="accent">F1 最高</Badge>}</td>
+                            <td className="px-3 py-2 font-medium text-ink">{m} {m === best && r.models.length > 1 && <Badge tone="accent">{r.cases_verified ? 'F1 最高' : '报告 F1 最高'}</Badge>}</td>
                             <td className="num px-3 py-2">{pct(s.accuracy)}</td>
                             <td className="num px-3 py-2">{pct(s.precision)}</td>
                             <td className="num px-3 py-2">{pct(s.recall)}</td>
@@ -97,7 +104,7 @@ export default function SelectBench({ loaderData }: Route.ComponentProps) {
                   </table>
                 </div>
                 <div className="flex items-center justify-between border-t border-line px-4 py-2 text-[12.5px] text-ink-3">
-                  <span>{r.cases ? `${num(r.cases)} 条逐条结果` : "只有汇总（旧格式报告）"}</span>
+                  <span>{r.cases ? `${num(r.cases)} 条逐条结果` : "只有汇总"} · {r.cases_verified ? '汇总已与逐条样本核对' : '尚未核对逐条样本'}</span>
                   {r.cases > 0 && <Link className="text-accent" to={`/admin/selectbench/${r.id}`}>逐条浏览</Link>}
                 </div>
               </Card>

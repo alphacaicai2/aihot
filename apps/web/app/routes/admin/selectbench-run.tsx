@@ -5,7 +5,7 @@ import { CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
 import type { Route } from "./+types/selectbench-run";
 import { adminGet } from "../../lib/admin.server";
 import { bj, num, pct } from "../../features/admin/format";
-import { AdminPage, Badge, Card, Empty, FilterChips, Select } from "../../features/admin/ui";
+import { AdminPage, Badge, Card, Empty, FilterChips, Pager, Select } from "../../features/admin/ui";
 
 interface Decision {
   decision: "select" | "reject" | null;
@@ -17,9 +17,11 @@ interface Decision {
   receiptId: number | null;
 }
 interface Data {
-  run: { id: string; label: string; split: string | null; sample_size: number; prompt_version: string | null; models: string[]; summary: Record<string, Record<string, number>>; created_at: string };
+  run: { id: string; label: string; split: string | null; sample_size: number; prompt_version: string | null; models: string[]; summary: Record<string, Record<string, number>>; created_at: string;cases_verified:boolean };
   rows: Array<{ case_id: string; title: string; stratum: string | null; gold: "select" | "reject" | "either"; by_model: Record<string, Decision> }>;
   strata: Array<{ stratum: string | null; n: number }>;
+  page:number;
+  hasMore:boolean;
 }
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -49,6 +51,9 @@ export default function SelectBenchRun({ loaderData: d }: Route.ComponentProps) 
   const model = sp.get("model") ?? d.run.models[0]!;
   const set = (k: string, v: string | null) => {
     const next = new URLSearchParams(sp);
+    next.delete('page');
+    if(k==='stratum')next.delete('unstratified');
+    if(k==='unstratified')next.delete('stratum');
     if (v) next.set(k, v);
     else next.delete(k);
     navigate(`?${next}`, { preventScrollReset: true });
@@ -56,7 +61,7 @@ export default function SelectBenchRun({ loaderData: d }: Route.ComponentProps) 
   return (
     <AdminPage
       title={d.run.label}
-      subtitle={<>{bj(d.run.created_at, true)} · {d.run.split ?? "—"} · {num(d.run.sample_size)} 条 · 提示 {d.run.prompt_version ?? "未记录"} · <Link className="text-accent" to="/admin/selectbench">全部运行</Link></>}
+      subtitle={<>{bj(d.run.created_at, true)} · {d.run.split ?? "—"} · {num(d.run.sample_size)} 条 · 提示 {d.run.prompt_version ?? "未记录"} · {d.run.cases_verified ? '汇总已与样本核对' : '尚未核对逐条样本'} · <Link className="text-accent" to="/admin/selectbench">全部运行</Link></>}
     >
       <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {d.run.models.map((m) => {
@@ -84,15 +89,15 @@ export default function SelectBenchRun({ loaderData: d }: Route.ComponentProps) 
             { value: "error", label: "失败" },
           ]}
         />
-        <Select className="!w-auto" aria-label="样本分层" value={sp.get("stratum") ?? ""} onChange={(e) => set("stratum", e.target.value || null)}>
+        <Select className="!w-auto" aria-label="样本分层" value={sp.get('unstratified')==='1' ? 'u:1' : sp.has('stratum') ? `s:${sp.get('stratum')}` : ''} onChange={(e) => e.target.value==='u:1' ? set('unstratified','1') : set('stratum',e.target.value.startsWith('s:') ? e.target.value.slice(2) : null)}>
           <option value="">全部分层</option>
-          {d.strata.map((s) => <option key={s.stratum ?? "none"} value={s.stratum ?? ""}>{s.stratum ?? "未分层"}（{s.n}）</option>)}
+          {d.strata.map((s) => <option key={s.stratum===null ? 'u:1' : `s:${s.stratum}`} value={s.stratum===null ? 'u:1' : `s:${s.stratum}`}>{s.stratum ?? "未分层"}（{s.n}）</option>)}
         </Select>
         <label className="inline-flex items-center gap-2 text-[13px] text-ink-2">
           <input type="checkbox" className="size-4 accent-[var(--accent)]" checked={sp.get("disagree") === "1"} onChange={(e) => set("disagree", e.target.checked ? "1" : null)} />
           只看模型之间有分歧的
         </label>
-        <span className="text-[12.5px] text-ink-4">{d.rows.length === 400 ? "仅显示前 400 条" : `${d.rows.length} 条`} · 筛选按 {model}</span>
+        <span className="text-[12.5px] text-ink-4">本页 {d.rows.length} 条 · 筛选按 {model}</span>
       </div>
       <Card pad={false}>
         {d.rows.length ? (
@@ -143,6 +148,7 @@ export default function SelectBenchRun({ loaderData: d }: Route.ComponentProps) 
           <Empty>没有符合条件的样本</Empty>
         )}
       </Card>
+      <Pager page={d.page} hasMore={d.hasMore} />
     </AdminPage>
   );
 }

@@ -6,13 +6,16 @@
 // Usage: node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl [--models default,deepseek-flash] [--n 200] [--label "..."]
 // Receipts make re-runs free; "either" cases are excluded from decisive metrics. Each run is also
 // imported into SelectBench (admin → SelectBench) with every case, unless --no-import is given.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync,accessSync,constants } from "node:fs";
+import {randomUUID} from 'node:crypto';
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { REPO_ROOT } from "@aihot/backend/config";
+import { REPO_ROOT,config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { ANALYZE_PROMPT_VERSION, normalizeAnalysis, runAnalysis, type AnalyzeInputArticle } from "@aihot/backend/editorial/analyze";
 import { importSelectBenchRun } from "@aihot/backend/admin/selectbench";
+import {parseGoldJsonl,selectionMetrics,type GoldRow} from '@aihot/backend/editorial/evaluation';
+import {MODELS} from '@aihot/backend/providers/llm';
 
 const { values } = parseArgs({
   options: {
@@ -27,27 +30,29 @@ const { values } = parseArgs({
   },
 });
 
-interface GoldRow {
-  caseId: string;
-  material: { title: string; originalTitle: string | null; publishedAt: string | null; sourceName: string; bodyZh: string | null; bodyOriginal: string | null };
-  sourceFacts: { sourceKind: string; sourceTier?: string; firstParty?: boolean; language?: string | null };
-  /** Optional: a split (e.g. development / holdout) and a stratum for reading the mistakes. */
-  samplingContext?: { benchmarkSplit?: string; samplingStratum?: string };
-  gold: { decision: "select" | "reject" | "either" };
-}
+const rows=parseGoldJsonl(readFileSync(path.resolve(REPO_ROOT,values.gold!),'utf8'));
+const n=Number(values.n),concurrency=Number(values.concurrency),seed=Number(values.seed),models=values.models!.split(',').map(m=>m.trim());
+if(!Number.isInteger(n) || n<1 || n>10000)throw new Error('--n 需要 1–10000 的整数');
+if(!Number.isInteger(concurrency) || concurrency<1 || concurrency>32)throw new Error('--concurrency 需要 1–32 的整数');
+if(!Number.isInteger(seed) || seed<-2147483648 || seed>2147483647)throw new Error('--seed 超出整数范围');
+if(!models.length || models.length>32 || new Set(models).size!==models.length || models.some(m=>!Object.hasOwn(MODELS,m)))throw new Error('--models 需要不重复的已配置模型名称');
+if(values.label!==undefined && (!values.label.trim() || values.label.length>300))throw new Error('--label 需要 1–300 字符');
 
-const rows: GoldRow[] = readFileSync(path.resolve(REPO_ROOT, values.gold!), "utf8")
-  .split("\n").filter((l) => l.trim() && !l.trim().startsWith("//")).map((l) => JSON.parse(l));
-
-// Deterministic stratified sample.
+// Deterministic sampling from the selected split; strata are retained for reviewing results.
 function rng(seed: number) {
   let s = seed >>> 0;
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
-const rand = rng(Number(values.seed));
+const rand = rng(seed);
 const pool = values.split === "all" ? rows : rows.filter((r) => r.samplingContext?.benchmarkSplit === values.split);
 const shuffled = pool.map((r) => ({ r, k: rand() })).sort((a, b) => a.k - b.k).map((x) => x.r);
-const sample = shuffled.slice(0, Number(values.n));
+const sample = shuffled.slice(0,n);
+if(!sample.length)throw new Error('所选 split 没有样本');
+const label=values.label ?? `${values.split} ${sample.length} 条 · ${models.join(' / ')}`.slice(0,300);
+const outDir=path.join(config.dataDir,'eval');
+mkdirSync(outDir,{recursive:true,mode:0o700});accessSync(outDir,constants.W_OK);
+const splitName=values.split!.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,80);
+const file=path.join(outDir,`selection-${splitName}-${sample.length}-${Date.now()}-${randomUUID()}.json`);
 
 function toInput(r: GoldRow): AnalyzeInputArticle {
   const m = r.material;
@@ -82,9 +87,9 @@ async function pmap<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): 
 }
 
 const report: Record<string, unknown> = {};
-for (const model of values.models!.split(",")) {
+for (const model of models) {
   const started = Date.now();
-  const results = await pmap(sample, Number(values.concurrency), async (r) => {
+  const results = await pmap(sample,concurrency,async (r) => {
     try {
       const res = await runAnalysis(toInput(r), { scoreModel: model, stages: "selection" });
       const out = normalizeAnalysis(res);
@@ -93,17 +98,14 @@ for (const model of values.models!.split(",")) {
       return { r, out: null, receiptIds: [] as number[], error: String(error).slice(0, 200) };
     }
   });
-  let tp = 0, fp = 0, fn = 0, tn = 0, either = 0, errors = 0;
+  const statistics=selectionMetrics(results.map(x=>({gold:x.r.gold.decision,decision:x.out ? x.out.selected ? 'select':'reject' : null})));
   const mistakes: Array<Record<string, unknown>> = [];
   for (const x of results) {
-    if (!x.out) { errors++; continue; }
+    if (!x.out) continue;
     const pred = x.out.selected ? "select" : "reject";
     const gold = x.r.gold.decision;
-    if (gold === "either") { either++; continue; }
-    if (pred === "select" && gold === "select") tp++;
-    else if (pred === "select" && gold === "reject") { fp++; mistakes.push({ kind: "FP", title: x.r.material.title, score: x.out.score, reason: x.out.reasonZh, stratum: x.r.samplingContext?.samplingStratum ?? null }); }
-    else if (pred === "reject" && gold === "select") { fn++; mistakes.push({ kind: "FN", title: x.r.material.title, score: x.out.score, relevance: x.out.relevance, stratum: x.r.samplingContext?.samplingStratum ?? null }); }
-    else tn++;
+    if (pred === "select" && gold === "reject") mistakes.push({ kind: "FP", title: x.r.material.title, score: x.out.score, reason: x.out.reasonZh, stratum: x.r.samplingContext?.samplingStratum ?? null });
+    else if (pred === "reject" && gold === "select") mistakes.push({ kind: "FN", title: x.r.material.title, score: x.out.score, relevance: x.out.relevance, stratum: x.r.samplingContext?.samplingStratum ?? null });
   }
   const receiptIds = results.flatMap((x) => x.receiptIds);
   const [usage] = receiptIds.length
@@ -112,15 +114,8 @@ for (const model of values.models!.split(",")) {
                avg((response->>'_latencyMs')::int) AS latency
         FROM receipts WHERE id IN ${sql(receiptIds)}`
     : [{ tin: 0, tout: 0, latency: 0 }];
-  const precision = tp / Math.max(1, tp + fp);
-  const recall = tp / Math.max(1, tp + fn);
-  const f1 = (2 * precision * recall) / Math.max(1e-9, precision + recall);
   const summary = {
-    model, n: sample.length, decisive: tp + fp + fn + tn, either, errors, tp, fp, fn, tn,
-    accuracy: +((tp + tn) / Math.max(1, tp + fp + fn + tn)).toFixed(3),
-    precision: +precision.toFixed(3), recall: +recall.toFixed(3), f1: +f1.toFixed(3),
-    selectedRate: +((tp + fp) / Math.max(1, tp + fp + fn + tn)).toFixed(3),
-    goldSelectRate: +((tp + fn) / Math.max(1, tp + fp + fn + tn)).toFixed(3),
+    model,...statistics,
     tokensIn: Number(usage?.tin ?? 0), tokensOut: Number(usage?.tout ?? 0), avgLatencyMs: Math.round(Number(usage?.latency ?? 0)),
     wallSeconds: Math.round((Date.now() - started) / 1000),
   };
@@ -128,15 +123,8 @@ for (const model of values.models!.split(",")) {
   // Threshold sweep on the raw attention score (selection rule = relevance pass && score >= t).
   const sweep: Array<Record<string, number>> = [];
   for (let t = 40; t <= 90; t += 2) {
-    let a = 0, b = 0, c = 0, d = 0;
-    for (const x of results) {
-      if (!x.out || x.r.gold.decision === "either") continue;
-      const pred = x.out.relevance === "pass" && x.out.score !== null && x.out.score >= t;
-      const g = x.r.gold.decision === "select";
-      if (pred && g) a++; else if (pred) b++; else if (g) c++; else d++;
-    }
-    const P = a / Math.max(1, a + b), R = a / Math.max(1, a + c);
-    sweep.push({ t, acc: +((a + d) / Math.max(1, a + b + c + d)).toFixed(3), P: +P.toFixed(3), R: +R.toFixed(3), F1: +((2 * P * R) / Math.max(1e-9, P + R)).toFixed(3), sel: +((a + b) / Math.max(1, a + b + c + d)).toFixed(3) });
+    const s=selectionMetrics(results.map(x=>({gold:x.r.gold.decision,decision:!x.out ? null : x.out.relevance==='pass' && x.out.score!==null && x.out.score>=t ? 'select':'reject'})));
+    sweep.push({t,acc:s.accuracy,P:s.precision,R:s.recall,F1:s.f1,sel:s.selectedRate});
   }
   console.log(sweep.map((s) => `  t=${s.t} acc=${s.acc} P=${s.P} R=${s.R} F1=${s.F1} sel=${s.sel}`).join("\n"));
   const cases = results.map((x) => ({
@@ -154,14 +142,11 @@ for (const model of values.models!.split(",")) {
   }));
   report[model] = { summary, sweep, mistakes, cases };
 }
-const outDir = path.join(REPO_ROOT, ".data/eval");
-mkdirSync(outDir, { recursive: true });
-const file = path.join(outDir, `selection-${values.split}-${values.n}-${Date.now()}.json`);
-const meta = { split: values.split, n: sample.length, seed: Number(values.seed), promptVersion: ANALYZE_PROMPT_VERSION, createdAt: new Date().toISOString() };
-writeFileSync(file, JSON.stringify({ meta, models: report }, null, 2));
+const meta = { split: values.split, n: sample.length, seed, promptVersion: ANALYZE_PROMPT_VERSION, createdAt: new Date().toISOString() };
+writeFileSync(file,JSON.stringify({meta,models:report},null,2),{flag:'wx',mode:0o600});
 console.log(`report: ${file}`);
 if (!values["no-import"]) {
-  const run = await importSelectBenchRun({ meta, models: report }, values.label ?? `${values.split} ${sample.length} 条 · ${Object.keys(report).join(" / ")}`, "script:eval-selection");
+  const run = await importSelectBenchRun({ meta, models: report },label,"script:eval-selection");
   console.log(`SelectBench run: ${run.id}`);
 }
 await closeDb();
