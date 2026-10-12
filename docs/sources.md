@@ -117,6 +117,8 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 对原生 RSS、网页列表和 JSON 列表，可以在配置的 `_aihot` 中设置 `skipInitialRemainder: true`：第一次成功采集建立当前列表基线，只导入 `initialBackfillLimit` 限定的历史条目；其余未变化的存量不会在下次轮询进入站内。此后出现的新网址正常采集，基线中的旧条目发生变化时按历史更新采集。抓取或存储失败不推进基线。此选项不适用于 Miniflux 和 X 搜索，默认关闭，已有订阅保持原行为。已初始化的来源需重新建立基线后再启用此规则。
 
+公开站点拒绝默认请求标识时，可以为原生 RSS、网页列表和 JSON 列表单独配置 `userAgent`，使用明确的采集器名称及站点说明地址。列表、详情和后续正文提取保持同一标识；其他来源和付费 API 保持原请求方式。通过 Miniflux 读取的列表请求由 Miniflux 管理。
+
 ## 外部推送接口
 
 自己写脚本抓的内容，可以推进站里，走和普通采集一样的判重、精选和归组。

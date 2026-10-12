@@ -152,7 +152,8 @@ function embeddedJson(html: string, source: SourceRow): unknown {
 export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
   const c = source.config;
   const url = String(c.url ?? "");
-  const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9", ...(c.headers ?? {}) };
+  const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9",
+    ...(c.userAgent ? { "user-agent": String(c.userAgent) } : {}), ...(c.headers ?? {}) };
   if (/^https:\/\/api\.github\.com\//.test(url)) {
     const token = credential("collectors", "GITHUB_TOKEN");
     if (token) headers.authorization = `Bearer ${token}`;
