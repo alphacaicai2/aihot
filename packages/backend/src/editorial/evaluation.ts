@@ -2,7 +2,7 @@ import {z} from 'zod';
 
 const nullableText=(max:number)=>z.string().max(max).nullable().default(null);
 const Gold=z.object({
-  caseId:z.string().regex(/^[a-zA-Z0-9_-]{1,75}$/),
+  caseId:z.string().min(1).max(200).refine(s=>!!s.trim()),
   material:z.object({title:z.string().min(1).max(4000),originalTitle:nullableText(4000),publishedAt:z.string().datetime({offset:true}).nullable().default(null),sourceName:z.string().min(1).max(200),bodyZh:nullableText(1000000),bodyOriginal:nullableText(1000000)}),
   sourceFacts:z.object({sourceKind:z.enum(['rss','web_list','json_list','x_search','mp','external']),sourceTier:z.string().min(1).max(100).optional(),firstParty:z.boolean().optional(),language:z.string().max(40).nullable().optional()}),
   samplingContext:z.object({benchmarkSplit:z.string().min(1).max(200).optional(),samplingStratum:z.string().max(200).optional()}).optional(),

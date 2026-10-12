@@ -8,10 +8,19 @@ import os from 'node:os';
 import path from 'node:path';
 import {parseGoldJsonl,selectionMetrics} from '@aihot/backend/editorial/evaluation';
 import {sql,closeDb} from '@aihot/backend/db';
+import {importSelectBenchRun,selectBenchRun} from '@aihot/backend/admin/selectbench';
 const example=await readFile(new URL('../industry/gold.example.jsonl',import.meta.url),'utf8'),first=example.trim().split('\n')[0]!;
 after(closeDb);
 test('the documented gold set parses without changing human labels',()=>{
  const rows=parseGoldJsonl(example);assert.equal(rows.length,2);assert.deepEqual(rows.map(r=>r.gold.decision),['select','reject']);assert.equal(rows[0]!.sourceFacts.sourceTier,'T1');
+});
+test('gold identifiers preserve Unicode and existing logical request identity',async()=>{
+ const row=JSON.parse(first),ids=['样本-001',' case ','case'],actor=`test:gold-ids-${tag()}`;
+ const rows=parseGoldJsonl(ids.map(caseId=>JSON.stringify({...row,caseId})).join('\n'));assert.deepEqual(rows.map(r=>r.caseId),ids);
+ try{
+  const r=await importSelectBenchRun({models:{model:{summary:{n:3},cases:rows.map(r=>({caseId:r.caseId,title:r.material.title,gold:r.gold.decision,decision:'select'}))}}},'identifier fixture',actor);
+  assert.deepEqual(new Set((await selectBenchRun(r.id,{}))!.rows.map(r=>r.case_id)),new Set(ids));
+ }finally{await sql`DELETE FROM audit_log WHERE actor=${actor}`;await sql`DELETE FROM selectbench_runs WHERE imported_by=${actor}`;}
 });
 test('duplicate gold IDs are rejected across the entire file',()=>assert.throws(()=>parseGoldJsonl(`${first}\n${first}`),/重复编号/));
 test('invalid gold fields and dates are rejected before evaluation',()=>{
