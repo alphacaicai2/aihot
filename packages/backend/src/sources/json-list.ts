@@ -66,6 +66,32 @@ function findKey(obj: unknown, key: string, depth = 0): unknown {
   return undefined;
 }
 
+/** Flight arrays can contain nested arrays and brackets inside JSON strings. */
+function flightArray(decoded: string, key: string): unknown[] | null {
+  const property = `${JSON.stringify(key)}:`;
+  let at = decoded.indexOf(property);
+  while (at >= 0) {
+    const start = at + property.length;
+    const match = /^\s*\[/.exec(decoded.slice(start));
+    if (match) {
+      const arrayStart = start + match[0].length - 1;
+      let depth = 0, inString = false, escaped = false;
+      for (let i = arrayStart; i < decoded.length; i++) {
+        const ch = decoded[i]!;
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === "\\") escaped = true;
+          else if (ch === '"') inString = false;
+        } else if (ch === '"') inString = true;
+        else if (ch === "[") depth++;
+        else if (ch === "]" && --depth === 0) return JSON.parse(decoded.slice(arrayStart, i + 1));
+      }
+    }
+    at = decoded.indexOf(property, at + property.length);
+  }
+  return null;
+}
+
 function embeddedJson(html: string, source: SourceRow): unknown {
   const mode = source.config.mode;
   if (mode === "html_window_var") {
@@ -113,13 +139,8 @@ function embeddedJson(html: string, source: SourceRow): unknown {
     if (flight) {
       try {
         const decoded = JSON.parse(`"${flight[1]}"`) as string;
-        const idx = decoded.indexOf(`"${key}"`);
-        if (idx >= 0) {
-          const objStart = decoded.lastIndexOf("{", idx);
-          const parsed = JSON.parse(decoded.slice(objStart, decoded.indexOf("]", idx) + 1) + "}");
-          const found = findKey(parsed, key);
-          if (found) return { [key]: found };
-        }
+        const found = flightArray(decoded, key);
+        if (found) return { [key]: found };
       } catch {
         // keep scanning
       }

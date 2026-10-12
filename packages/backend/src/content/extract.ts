@@ -21,8 +21,42 @@ export interface ExtractedBody {
 
 const MIN_BODY_CHARS = 200;
 
+/** Restore React's streamed HTML fragments without executing the page's scripts. */
+function restoreStreamedHtml(document: ReturnType<typeof parseHTML>["document"]): void {
+  for (const script of document.querySelectorAll("script")) {
+    for (const m of (script.textContent ?? "").matchAll(/\$(RS|RC)\("([BSP]:[0-9a-f]+)","([BSP]:[0-9a-f]+)"\)/g)) {
+      const source = document.getElementById(m[1] === "RS" ? m[2]! : m[3]!);
+      const target = document.getElementById(m[1] === "RS" ? m[3]! : m[2]!);
+      if (!source?.hasAttribute("hidden") || source.tagName !== "DIV" || target?.tagName !== "TEMPLATE") continue;
+      let end = target.nextSibling;
+      if (m[1] === "RC") {
+        let depth = 0;
+        end = target.nextSibling;
+        while (end) {
+          if (end.nodeType === 8) {
+            const mark = end.textContent;
+            if (["$", "$?", "$~", "$!", "&"].includes(mark ?? "")) depth++;
+            if (["/$", "/&"].includes(mark ?? "")) {
+              if (depth === 0) break;
+              depth--;
+            }
+          }
+          end = end.nextSibling;
+        }
+        // A truncated response must not remove unrelated visible content.
+        if (!end) continue;
+        while (target.nextSibling !== end) target.parentNode!.removeChild(target.nextSibling!);
+      } else end = target;
+      while (source.firstChild) end.parentNode!.insertBefore(source.firstChild, end);
+      source.remove();
+      target.remove();
+    }
+  }
+}
+
 export function readable(html: string, url: string): ExtractedBody | null {
   const { document } = parseHTML(html);
+  restoreStreamedHtml(document);
   try {
     const base = document.createElement("base");
     base.setAttribute("href", url);
