@@ -49,6 +49,7 @@ Miniflux 的 `content` 默认作为订阅摘要保存，不声称是完整正文
 ```
 
 可选：`summaryIsBody`（订阅里的摘要就是全文）、`allowCategories` / `denyCategories`（按订阅里的分类过滤）。
+如果订阅的 `content:encoded` / Atom `content` 实际也只有摘要，设置 `feedContentIsSummary:true`，保留摘要并让正文提取任务读取原文；默认仍使用订阅提供的正文。
 读取默认最多 8 MiB；确实提供较大 XML 的源可单独配置 `rssMaxBytes`（字节，最多 32 MiB），不影响其他源。
 
 #### 批量导入 OPML

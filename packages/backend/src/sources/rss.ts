@@ -94,6 +94,9 @@ function feedText(bodyHtml: string | null, summaryHtml: string, source: SourceRo
   const bodyText = bodyHtml ? stripTags(bodyHtml) : null;
   const teaser = !!bodyText && source.participation_mode === "editorial" && isTeaser(bodyText);
   const excerpt = summaryHtml ? collapseWhitespace(stripTags(summaryHtml)).slice(0, 2000) : teaser ? collapseWhitespace(bodyText!) : null;
+  if (source.config.feedContentIsSummary === true) {
+    return { excerpt: excerpt ?? (collapseWhitespace(bodyText ?? "").slice(0, 2000) || null), bodyHtml: null, bodyText: null, bodyStatus: "pending" };
+  }
   return bodyText && bodyText.length > 280 && !teaser
     ? { excerpt, bodyHtml, bodyText, bodyStatus: "ok" }
     : { excerpt, bodyHtml: null, bodyText: null, bodyStatus: "pending" };
