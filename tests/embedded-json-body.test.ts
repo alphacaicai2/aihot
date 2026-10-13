@@ -2,7 +2,7 @@ import "./setup.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { unsupportedConfig } from "@aihot/backend/sources/config-keys";
-import { readable } from "@aihot/backend/content/extract";
+import { readable, markdownDocument, bodyDocumentUrl } from "@aihot/backend/content/extract";
 
 const prose = "Original investment research examines deployment economics and the infrastructure supporting real customers. ".repeat(30);
 const rule = { selector: 'script#__NEXT_DATA__[type="application/json"]', path: "props.pageProps.post.content", format: "markdown" as const };
@@ -71,4 +71,46 @@ test("JSON HTML scoping excludes related stories and refuses missing or ambiguou
 test("article JSON extraction does not claim the existing JSON request-body option", () => {
   assert.deepEqual(unsupportedConfig("json_list", { url: "https://example.org/api", method: "POST", bodyJson: { query: "query { posts { title } }", variables: { limit: 10 } }, bodyExtractionJson: { urlTemplate: "https://example.org/posts/{slug}", path: "content", format: "html", bodySelector: ".copy-body" } }), []);
   assert.deepEqual(unsupportedConfig("rss", { bodyExtractionJson: { typo: true } }), ["bodyExtractionJson.typo"]);
+});
+
+test("Sanity article blocks preserve complete ordered prose, links and image captions without CMS metadata", () => {
+  const block = (text: string) => ({ _type: "block", style: "normal", children: [{ _type: "span", text, marks: [] }], markDefs: [] });
+  const linked = { ...block(prose), children: [{ _type: "span", text: prose, marks: ["primary", "strong"] }], markDefs: [{ _key: "primary", _type: "link", href: "https://example.org/primary" }] };
+  const components = [{ _type: "markdownComponent", _updatedAt: "2099-01-01", text: [block("FIRST " + prose), linked, { _type: "image", _imageUrl: "https://example.org/figure.png", caption: "Original figure caption" }, { _type: "file", _imageUrl: "https://example.org/diagram.gif" }, { ...block("SECOND " + prose), listItem: "number", level: 1 }, { ...block("ALPHA ONE"), listItem: "alpha", level: 2 }, { ...block("ALPHA TWO"), listItem: "alpha", level: 2 }, { ...block("THIRD"), listItem: "number", level: 1 }] }];
+  const sanityRule = { ...rule, path: "article.content", format: "html" as const, adapter: "sanity_article" as const };
+  const body = readable(page({ article: { content: components, description: "SUMMARY ONLY", related: prose } }), "https://example.org/article", null, null, sanityRule);
+  assert.ok(body?.text.startsWith("FIRST"));
+  assert.ok(body?.text.includes("SECOND"));
+  assert.ok(body?.text.includes("Original figure caption"));
+  assert.ok(body?.html.includes('href="https://example.org/primary"'));
+  assert.ok(body?.html.includes('src="https://example.org/diagram.gif"'));
+  assert.match(body!.html, /<ol type="a"><li>ALPHA ONE\s*<\/li><li>ALPHA TWO\s*<\/li><\/ol>/);
+  assert.match(body!.html, /<\/ol>\s*<\/li><li>THIRD\s*<\/li><\/ol>/);
+  assert.ok(!body?.text.includes("2099"));
+  assert.ok(!body?.text.includes("SUMMARY ONLY"));
+  for (const invalid of [
+    [...components, { _type: "unknownComponent", text: prose }],
+    [{ _type: "markdownComponent", text: [{ _type: "file", _imageUrl: "https://example.org/unparsed.pdf" }] }],
+    [{ _type: "markdownComponent", text: [{ _type: "unknownInline", text: prose }] }],
+    [{ _type: "markdownComponent", text: [{ ...block(prose), children: [{ _type: "span", text: prose, marks: ["missingReference"] }] }] }],
+    [{ _type: "markdownComponent", text: [{ ...block(prose), children: [{ _type: "span", text: prose, marks: ["constructor"] }] }] }],
+    [{ _type: "markdownComponent", text: [{ ...block(prose), markDefs: [{ _key: "unknown", _type: "unknownReference", href: "https://example.org" }] }] }],
+  ]) assert.equal(readable(page({ article: { content: invalid } }), "https://example.org/article", null, null, sanityRule), null);
+});
+
+test("native Markdown requires an explicit document response and never confirms HTML, JSON, errors or previews", () => {
+  const md = `# Original article\n\nJanuary 14, 2026\n\n${prose}\n\n[Primary source](https://example.org/primary)`;
+  const body = markdownDocument(md, "https://example.org/articles/original", "text/markdown; charset=utf-8");
+  assert.equal(body?.via, "markdown-document");
+  assert.ok(body?.text.includes(prose.trim()));
+  assert.ok(body?.html.includes('href="https://example.org/primary"'));
+  assert.equal(markdownDocument(md, "https://example.org/article", "text/html"), null);
+  assert.equal(markdownDocument(`<html><body>${md}</body></html>`, "https://example.org/article", "text/plain"), null);
+  assert.equal(markdownDocument(JSON.stringify({ content: prose }), "https://example.org/article", "text/plain"), null);
+  assert.equal(markdownDocument("# Missing page", "https://example.org/article", "text/markdown"), null);
+  assert.equal(bodyDocumentUrl("https://example.org/insights/original", "https://example.org{path}.md"), "https://example.org/insights/original.md");
+  assert.equal(bodyDocumentUrl("https://example.org/insights/original", "https://example.org/articles/{slug}.md"), "https://example.org/articles/original.md");
+  assert.equal(bodyDocumentUrl("https://example.org/insights/original", "https://example.org/{unknown}.md"), null);
+  assert.deepEqual(unsupportedConfig("web_list", { bodyExtractionMarkdown: { urlTemplate: "https://example.org{path}.md" } }), []);
+  assert.deepEqual(unsupportedConfig("rss", { bodyExtractionMarkdown: { typo: true } }), ["bodyExtractionMarkdown.typo"]);
 });

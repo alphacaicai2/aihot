@@ -4,7 +4,7 @@
 import type { SourceRow } from "./types.ts";
 
 // Rules applied in collect.ts to every kind read through collectSource.
-const COLLECTED = ["_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "userAgent", "bodySelector", "bodyJsonLdType", "bodyExtractionJson"];
+const COLLECTED = ["_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "userAgent", "bodySelector", "bodyJsonLdType", "bodyExtractionJson", "bodyExtractionMarkdown"];
 
 const KEYS: Record<SourceRow["kind"], string[]> = {
   rss: [...COLLECTED, "feedUrl", "summaryIsBody", "feedContentIsSummary", "preserveUrlFragment", "allowCategories", "denyCategories", "minifluxFeedId", "minifluxLookbackDays", "rssMaxBytes"],
@@ -26,6 +26,7 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
 // Objects with fixed keys (headers and bodyJson are request data, free-form).
 const NESTED: Record<string, string[]> = {
   bodyExtractionJson: ["selector", "urlTemplate", "path", "format", "adapter", "bodySelector"],
+  bodyExtractionMarkdown: ["urlTemplate"],
   _aihot: ["initialBackfillLimit", "initialBackfillMonths", "skipInitialRemainder"],
   ingestNoiseFilter: ["dropMarkers", "dropMarkersTitleOnly", "keepIfMatches"],
   itemUrlPrefixRewrite: ["from", "to"],

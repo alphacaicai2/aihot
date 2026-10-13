@@ -30,6 +30,10 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     }
     if (path === "/json") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify([{ title: "AI research", link: "https://example.org/research" }])); return; }
     if (path.startsWith("/body-api/")) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ content: `<p>${paragraph}</p><script>unsafe()</script>`, createdAt: "2026-10-13" })); return; }
+    if (path.startsWith("/markdown/")) {
+      res.writeHead(200, { "content-type": path.endsWith("invalid") ? "text/html" : "text/markdown" });
+      res.end(`# Original research\n\nJanuary 14, 2026\n\n${paragraph}`); return;
+    }
     res.writeHead(200, { "content-type": "text/html" });
     if (path === "/report") {
       res.end(`<html><head><script type="application/ld+json">${JSON.stringify({ "@type": "CreativeWork", text: paragraph })}</script></head><body>Unrelated viewer navigation</body></html>`); return;
@@ -73,6 +77,21 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     assert.equal(storedApi.body_text, paragraph.trim());
     assert.equal(storedApi.published_at, null);
     assert.ok(hits.some(h => h.path === "/body-api/insurance"));
+    const bodyExtractionMarkdown = { urlTemplate: base + "/markdown/{slug}" };
+    const markdownSource = { ...web, config: { url: base + "/list", userAgent, bodyExtractionMarkdown, detail: { titleRegex: "^# (.+)", publishedAtRegex: "(January \\d{1,2}, \\d{4})", publishedAtAuthoritative: true, publishedAtUtcOffset: "+00:00" } } };
+    const nativeDetail = await fetchDetail(base + "/articles/native", markdownSource, { date: true, title: true, summary: false, body: true });
+    assert.equal(nativeDetail.title, "Original research");
+    assert.equal(nativeDetail.publishedAt?.toISOString(), "2026-01-14T00:00:00.000Z");
+    assert.ok(nativeDetail.body?.text.includes(paragraph.trim()));
+    const invalid = await fetchDetail(base + "/articles/invalid", markdownSource, { date: true, title: true, summary: false, body: true });
+    assert.deepEqual(invalid, { publishedAt: null, title: null, summary: null, body: null });
+    await sql`UPDATE sources SET config = ${sql.json({ feedUrl: base + "/redirect", userAgent, bodyExtractionMarkdown })} WHERE id = ${source.id}`;
+    const nativeArticle = await upsertMaterial({ sourceId: source.id, url: base + "/articles/native", title: "Native research", via: "fetch" });
+    assert.equal(await extractArticleBody(nativeArticle.articleId, false), "ok");
+    const [storedNative] = await sql`SELECT body_text,published_at FROM articles WHERE id=${nativeArticle.articleId}`;
+    assert.ok(storedNative.body_text.includes(paragraph.trim()));
+    assert.equal(storedNative.published_at, null);
+    assert.ok(hits.some(h => h.path === "/markdown/native"));
   } finally {
     config.allowPrivateNetworkFetch = previous;
     await new Promise<void>(resolve => server.close(() => resolve()));

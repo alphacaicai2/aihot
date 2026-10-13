@@ -90,6 +90,10 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 `path` 指定正文的固定字段路径，`format` 为 `html` 或 `markdown`。HTML 片段包含周边内容时，可用嵌套的 `bodySelector` 限定唯一文章容器。经核实的 Magnolia 页面可指定 `adapter: "magnolia_article"`，只按组件顺序读取正文与问答，遇到未知组件则保留未确认状态。
 
+公开 Sanity API 的文章组件可指定 `adapter: "sanity_article"` 和 `format: "html"`，`path` 必须指向文章本身的组件数组。只读取已支持的段落、链接、列表和图片；遇到未知组件或缺失引用时保留未确认状态，不拼接描述、相关报道或 CMS 元数据。
+
+发布者另有原生 Markdown 全文时，可配置 `bodyExtractionMarkdown: { "urlTemplate": "https://example.org{path}.md" }`，模板须包含 `{path}` 或 `{slug}`。只接受公开 `text/markdown` 或 `text/plain` 响应中的 Markdown 原文，网页、JSON、错误页和过短文本不算正文。该规则与 CSS、JSON-LD、JSON 正文规则互斥，失败后不付费回退。网页列表的详情也从这一原文读取，可用 `detail.publishedAtRegex`、`detail.titleRegex` 指定原文中的主日和标题；未配置该规则的来源行为不变。
+
 此配置不改变 JSON 列表请求的 `bodyJson` 参数，也不从创建时间推断文章发布日期。字段缺失、正文过短或选择结果不唯一时，不会回退到页面导航或付费正文服务。不能与顶层 `bodySelector` 或 `bodyJsonLdType` 同时配置。
 
 ### x_search

@@ -2,7 +2,7 @@
 import * as cheerio from "cheerio";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { readable, type ExtractedBody } from "../content/extract.ts";
+import { readable, bodyDocumentUrl, markdownDocument, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
 import { jinaRead } from "../providers/jina.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
@@ -331,18 +331,26 @@ export interface DetailNeed {
  */
 export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<{ publishedAt: Date | null; title: string | null; summary: string | null; body: ExtractedBody | null }> {
   const d = source.config.detail ?? {};
+  const markdownRule = source.config.bodyExtractionMarkdown;
+  if (markdownRule && (source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson)) return { publishedAt: null, title: null, summary: null, body: null };
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
   const dateInJina = need.date && jinaListing && !!d.publishedAtRegex;
   const titleInJina = need.title && jinaListing && !!d.titleRegex;
   const jina = dateInJina || titleInJina ? (await jinaRead(url, { purpose: "source_detail", subject: `source:${source.id}` })).raw : null;
   let html: string | null = null;
   let body: ExtractedBody | null = null;
-  if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary) {
-    const res = await guardedFetch(url, { timeoutMs: 20_000,
+  if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary || (need.body && markdownRule)) {
+    const target = markdownRule ? bodyDocumentUrl(url, markdownRule.urlTemplate) : url;
+    if (!target) return { publishedAt: null, title: null, summary: null, body: null };
+    const res = await guardedFetch(target, { timeoutMs: 20_000,
       headers: source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : undefined });
     if (res.status === 200) {
       html = res.text();
-      if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
+      if (markdownRule) {
+        const extracted = markdownDocument(html, url, res.headers.get("content-type") ?? "");
+        if (!extracted) html = null;
+        else if (need.body) body = extracted;
+      } else if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
         try { body = readable(html, res.url, source.config.bodySelector, source.config.bodyJsonLdType, source.config.bodyExtractionJson); }
         catch { /* A failed extraction must not discard the detail metadata. */ }
       }
