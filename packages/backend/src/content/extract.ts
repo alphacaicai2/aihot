@@ -12,12 +12,13 @@ import { getArticle } from "../providers/socialdata.ts";
 import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
 import { contentHash } from "./materials.ts";
+import { pdfDocument } from "./pdf.ts";
 
 export interface ExtractedBody {
   html: string;
   text: string;
   images: Array<{ kind: "image"; url: string; width: number | null; height: number | null }>;
-  via: "readability" | "jsonld" | "embedded-json" | "json-api" | "markdown-document" | "jina";
+  via: "readability" | "jsonld" | "embedded-json" | "json-api" | "markdown-document" | "pdf-text" | "jina";
 }
 
 export interface BodyJsonConfig {
@@ -306,7 +307,15 @@ export function markdownDocument(text: string, url: string, contentType: string)
   return body.length >= MIN_BODY_CHARS ? { html, text: body, images: [], via: "markdown-document" } : null;
 }
 
-export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null; bodyJsonLdType?: string | null; bodyExtractionJson?: BodyJsonConfig | null; bodyExtractionMarkdown?: BodyMarkdownConfig | null }): Promise<ExtractedBody | null> {
+export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null; bodyJsonLdType?: string | null; bodyExtractionJson?: BodyJsonConfig | null; bodyExtractionMarkdown?: BodyMarkdownConfig | null; bodyExtractionPdf?: boolean | null }): Promise<ExtractedBody | null> {
+  if (opts.bodyExtractionPdf === true) {
+    if (opts.bodySelector || opts.bodyJsonLdType || opts.bodyExtractionJson || opts.bodyExtractionMarkdown) return null;
+    try {
+      const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 12 * 1024 * 1024,
+        headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
+      return res.status === 200 ? await pdfDocument(res.body, res.headers.get("content-type") ?? "") : null;
+    } catch { return null; }
+  }
   if (opts.bodyExtractionMarkdown) {
     if (opts.bodySelector || opts.bodyJsonLdType || opts.bodyExtractionJson) return null;
     try {
@@ -368,12 +377,12 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
 export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null; body_jsonld_type: string | null; body_json: BodyJsonConfig | null; body_markdown: BodyMarkdownConfig | null }[]>`
-    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector, s.config->>'bodyJsonLdType' AS body_jsonld_type, s.config->'bodyExtractionJson' AS body_json, s.config->'bodyExtractionMarkdown' AS body_markdown
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null; body_jsonld_type: string | null; body_json: BodyJsonConfig | null; body_markdown: BodyMarkdownConfig | null; body_pdf: boolean | null }[]>`
+    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector, s.config->>'bodyJsonLdType' AS body_jsonld_type, s.config->'bodyExtractionJson' AS body_json, s.config->'bodyExtractionMarkdown' AS body_markdown, (s.config->>'bodyExtractionPdf')::boolean AS body_pdf
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
   if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId);
-  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector, bodyJsonLdType: a.body_jsonld_type, bodyExtractionJson: a.body_json, bodyExtractionMarkdown: a.body_markdown });
+  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector, bodyJsonLdType: a.body_jsonld_type, bodyExtractionJson: a.body_json, bodyExtractionMarkdown: a.body_markdown, bodyExtractionPdf: a.body_pdf });
   if (!got) {
     await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
     return "unconfirmed";

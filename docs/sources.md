@@ -94,6 +94,8 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 发布者另有原生 Markdown 全文时，可配置 `bodyExtractionMarkdown: { "urlTemplate": "https://example.org{path}.md" }`，模板须包含 `{path}` 或 `{slug}`。只接受公开 `text/markdown` 或 `text/plain` 响应中的 Markdown 原文，网页、JSON、错误页和过短文本不算正文。该规则与 CSS、JSON-LD、JSON 正文规则互斥，失败后不付费回退。网页列表的详情也从这一原文读取，可用 `detail.publishedAtRegex`、`detail.titleRegex` 指定原文中的主日和标题；未配置该规则的来源行为不变。
 
+已核实的公开 PDF 报告可设置 `bodyExtractionPdf: true`，列表应直接指向报告文件。只接受 `application/pdf` 与 PDF 文件头一致的响应，按全部页面顺序提取可搜索文字；缺少可搜索文字的页面、损坏、需要密码或超过 12 MiB、150 页、50 万字符、30 秒解析限制时不确认正文。解析在单独线程内进行，不执行 PDF 脚本、不做 OCR、不付费回退。该规则与其他正文规则互斥；日期和标题可用详情的正则从报告文字读取，不使用 PDF 创建时间、文件名或上传路径猜首发日期。图表图像不作为文字识别，全文展示开关仍遵守来源授权。
+
 此配置不改变 JSON 列表请求的 `bodyJson` 参数，也不从创建时间推断文章发布日期。字段缺失、正文过短或选择结果不唯一时，不会回退到页面导航或付费正文服务。不能与顶层 `bodySelector` 或 `bodyJsonLdType` 同时配置。
 
 ### x_search
