@@ -30,6 +30,9 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     }
     if (path === "/json") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify([{ title: "AI research", link: "https://example.org/research" }])); return; }
     res.writeHead(200, { "content-type": "text/html" });
+    if (path === "/report") {
+      res.end(`<html><head><script type="application/ld+json">${JSON.stringify({ "@type": "CreativeWork", text: paragraph })}</script></head><body>Unrelated viewer navigation</body></html>`); return;
+    }
     res.end(path === "/list" ? '<article><a href="/body">AI research</a></article>' : `<html><title>AI research</title><body><article><section id="research"><h1>AI research</h1><p>${paragraph}</p></section><p>${"Unrelated portfolio content. ".repeat(100)}</p></article></body></html>`);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -55,6 +58,12 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     const [stored] = await sql`SELECT body_text FROM articles WHERE id=${articleId}`;
     assert.ok(stored.body_text.includes(paragraph.trim()));
     assert.ok(!stored.body_text.includes("Unrelated portfolio"));
+    await sql`UPDATE sources SET config = ${sql.json({ feedUrl: base + "/redirect", userAgent, bodyJsonLdType: "CreativeWork" })} WHERE id = ${source.id}`;
+    const report = await upsertMaterial({ sourceId: source.id, url: base + "/report", title: "Education report", via: "fetch" });
+    assert.equal(await extractArticleBody(report.articleId, false), "ok");
+    const [storedReport] = await sql`SELECT body_text, published_at FROM articles WHERE id=${report.articleId}`;
+    assert.equal(storedReport.body_text, paragraph.trim());
+    assert.equal(storedReport.published_at, null);
   } finally {
     config.allowPrivateNetworkFetch = previous;
     await new Promise<void>(resolve => server.close(() => resolve()));

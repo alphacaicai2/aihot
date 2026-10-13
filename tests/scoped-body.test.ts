@@ -19,3 +19,9 @@ test("an explicit publisher body container preserves research placed inside a he
 test("a missing publisher body container never falls back to unrelated page content", () => {
   assert.equal(readable(html, "https://example.org/research", ".removed-research"), null);
 });
+
+test("a valid HTML comment terminator cannot hide the publisher body container", () => {
+  const malformed = `<html><body><!-- <style>x</style> --!><div class="research"><p>${prose}</p></div><p>Unrelated navigation</p></body></html>`;
+  const body = readable(malformed, "https://example.org/research", ".research");
+  assert.equal(body?.text, prose.trim());
+});

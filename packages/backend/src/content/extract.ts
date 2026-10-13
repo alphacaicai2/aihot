@@ -2,6 +2,7 @@
 // Jina Reader is the budgeted fallback for pages that only render in a browser.
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import * as cheerio from "cheerio";
 import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
@@ -16,7 +17,7 @@ export interface ExtractedBody {
   html: string;
   text: string;
   images: Array<{ kind: "image"; url: string; width: number | null; height: number | null }>;
-  via: "readability" | "jina";
+  via: "readability" | "jsonld" | "jina";
 }
 
 const MIN_BODY_CHARS = 200;
@@ -54,11 +55,37 @@ function restoreStreamedHtml(document: ReturnType<typeof parseHTML>["document"])
   }
 }
 
-export function readable(html: string, url: string, bodySelector?: string | null): ExtractedBody | null {
+export function readable(html: string, url: string, bodySelector?: string | null, bodyJsonLdType?: string | null): ExtractedBody | null {
   let { document } = parseHTML(html);
   restoreStreamedHtml(document);
+  let structuredText: string | undefined;
+  if (bodyJsonLdType) {
+    // Opt in only for verified report publishers. Never select a description or arbitrary nested text.
+    if (bodySelector) return null;
+    const texts = new Set<string>();
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) { for (const node of value) visit(node); return; }
+      if (!value || typeof value !== "object") return;
+      const node = value as Record<string, unknown>;
+      const types = Array.isArray(node["@type"]) ? node["@type"] : [node["@type"]];
+      if (types.includes(bodyJsonLdType) && typeof node.text === "string" && node.text.trim()) texts.add(node.text.trim());
+      if (node["@graph"]) visit(node["@graph"]);
+    };
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try { visit(JSON.parse(script.textContent ?? "")); } catch { /* ignore malformed metadata */ }
+    }
+    // Multiple different documents are ambiguous; missing metadata cannot fall back to page chrome.
+    if (texts.size !== 1) return null;
+    structuredText = [...texts][0]!;
+  }
   if (bodySelector) {
-    const nodes = document.querySelectorAll(bodySelector);
+    let nodes = document.querySelectorAll(bodySelector);
+    if (!nodes.length) {
+      // HTML's --!> comment terminator is valid, but linkedom can swallow the rest of the page.
+      document = parseHTML(cheerio.load(html).html()).document;
+      restoreStreamedHtml(document);
+      nodes = document.querySelectorAll(bodySelector);
+    }
     if (!nodes.length) return null;
     const content = document.createElement("article");
     for (const node of nodes) content.appendChild(node.cloneNode(true));
@@ -73,9 +100,9 @@ export function readable(html: string, url: string, bodySelector?: string | null
   } catch {
     // no head
   }
-  const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse();
-  if (!article?.content) return null;
-  const clean = trimTrailingChrome(sanitizeBody(article.content, url));
+  const content = structuredText ?? new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse()?.content;
+  if (!content) return null;
+  const clean = trimTrailingChrome(sanitizeBody(content, url));
   const text = stripTags(clean);
   if (text.length < MIN_BODY_CHARS) return null;
   const images: ExtractedBody["images"] = [];
@@ -85,7 +112,7 @@ export function readable(html: string, url: string, bodySelector?: string | null
     images.push({ kind: "image", url: m[1]!.replace(/&amp;/g, "&"), width: w ? Number(w[1]) : null, height: h ? Number(h[1]) : null });
     if (images.length >= 12) break;
   }
-  return { html: clean, text, images, via: "readability" };
+  return { html: clean, text, images, via: structuredText ? "jsonld" : "readability" };
 }
 
 function markdownToHtml(md: string): string {
@@ -111,20 +138,20 @@ function markdownToHtml(md: string): string {
     .join("");
 }
 
-export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null }): Promise<ExtractedBody | null> {
+export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null; bodyJsonLdType?: string | null }): Promise<ExtractedBody | null> {
   try {
     const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
       headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
     const type = res.headers.get("content-type") ?? "";
     if (res.status === 200 && /html/.test(type)) {
-      const got = readable(res.text(), res.url, opts.bodySelector);
+      const got = readable(res.text(), res.url, opts.bodySelector, opts.bodyJsonLdType);
       if (got) return got;
     }
   } catch {
     // fall through to Jina
   }
   // CSS scope cannot be carried into a markdown fallback without losing the publisher boundary.
-  if (!opts.allowJina || opts.bodySelector) return null;
+  if (!opts.allowJina || opts.bodySelector || opts.bodyJsonLdType) return null;
   try {
     const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject });
     const html = trimTrailingChrome(sanitizeBody(markdownToHtml(page.markdown), url));
@@ -150,12 +177,12 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
 export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null }[]>`
-    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null; body_jsonld_type: string | null }[]>`
+    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector, s.config->>'bodyJsonLdType' AS body_jsonld_type
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
   if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId);
-  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector });
+  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector, bodyJsonLdType: a.body_jsonld_type });
   if (!got) {
     await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
     return "unconfirmed";
