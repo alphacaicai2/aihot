@@ -30,13 +30,13 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     }
     if (path === "/json") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify([{ title: "AI research", link: "https://example.org/research" }])); return; }
     res.writeHead(200, { "content-type": "text/html" });
-    res.end(path === "/list" ? '<article><a href="/body">AI research</a></article>' : `<html><title>AI research</title><body><article><h1>AI research</h1><p>${paragraph}</p></article></body></html>`);
+    res.end(path === "/list" ? '<article><a href="/body">AI research</a></article>' : `<html><title>AI research</title><body><article><section id="research"><h1>AI research</h1><p>${paragraph}</p></section><p>${"Unrelated portfolio content. ".repeat(100)}</p></article></body></html>`);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const previous = config.allowPrivateNetworkFetch;
   config.allowPrivateNetworkFetch = true;
-  const source: SourceRow = { id: `crawler-${tag()}`, name: "Research", kind: "rss", config: { feedUrl: base + "/redirect", userAgent },
+  const source: SourceRow = { id: `crawler-${tag()}`, name: "Research", kind: "rss", config: { feedUrl: base + "/redirect", userAgent, bodySelector: "#research" },
     tier: "T2", participation_mode: "editorial", first_party: false, interval_minutes: 60, enabled: true, cursor: null, fail_count: 0 };
   try {
     const first = await fetchRss(source);
@@ -52,6 +52,9 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     await sql`INSERT INTO sources (id,name,kind,config) VALUES (${source.id},'Research','rss',${sql.json(source.config)})`;
     const { articleId } = await upsertMaterial({ sourceId: source.id, url: base + "/body", title: "AI research", via: "fetch" });
     assert.equal(await extractArticleBody(articleId, false), "ok");
+    const [stored] = await sql`SELECT body_text FROM articles WHERE id=${articleId}`;
+    assert.ok(stored.body_text.includes(paragraph.trim()));
+    assert.ok(!stored.body_text.includes("Unrelated portfolio"));
   } finally {
     config.allowPrivateNetworkFetch = previous;
     await new Promise<void>(resolve => server.close(() => resolve()));

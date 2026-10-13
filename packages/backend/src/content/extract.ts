@@ -54,9 +54,18 @@ function restoreStreamedHtml(document: ReturnType<typeof parseHTML>["document"])
   }
 }
 
-export function readable(html: string, url: string): ExtractedBody | null {
-  const { document } = parseHTML(html);
+export function readable(html: string, url: string, bodySelector?: string | null): ExtractedBody | null {
+  let { document } = parseHTML(html);
   restoreStreamedHtml(document);
+  if (bodySelector) {
+    const nodes = document.querySelectorAll(bodySelector);
+    if (!nodes.length) return null;
+    const content = document.createElement("article");
+    for (const node of nodes) content.appendChild(node.cloneNode(true));
+    const scoped = parseHTML("<html><head></head><body></body></html>").document;
+    scoped.body.appendChild(content);
+    document = scoped;
+  }
   try {
     const base = document.createElement("base");
     base.setAttribute("href", url);
@@ -102,19 +111,20 @@ function markdownToHtml(md: string): string {
     .join("");
 }
 
-export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null }): Promise<ExtractedBody | null> {
+export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null }): Promise<ExtractedBody | null> {
   try {
     const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
       headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
     const type = res.headers.get("content-type") ?? "";
     if (res.status === 200 && /html/.test(type)) {
-      const got = readable(res.text(), res.url);
+      const got = readable(res.text(), res.url, opts.bodySelector);
       if (got) return got;
     }
   } catch {
     // fall through to Jina
   }
-  if (!opts.allowJina) return null;
+  // CSS scope cannot be carried into a markdown fallback without losing the publisher boundary.
+  if (!opts.allowJina || opts.bodySelector) return null;
   try {
     const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject });
     const html = trimTrailingChrome(sanitizeBody(markdownToHtml(page.markdown), url));
@@ -140,12 +150,12 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
 export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null }[]>`
-    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null }[]>`
+    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
   if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId);
-  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent });
+  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector });
   if (!got) {
     await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
     return "unconfirmed";
