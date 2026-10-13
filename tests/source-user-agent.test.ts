@@ -29,6 +29,7 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
       res.end(`<rss><channel><item><title>AI research</title><link>https://example.org${path}</link></item></channel></rss>`); return;
     }
     if (path === "/json") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify([{ title: "AI research", link: "https://example.org/research" }])); return; }
+    if (path.startsWith("/body-api/")) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ content: `<p>${paragraph}</p><script>unsafe()</script>`, createdAt: "2026-10-13" })); return; }
     res.writeHead(200, { "content-type": "text/html" });
     if (path === "/report") {
       res.end(`<html><head><script type="application/ld+json">${JSON.stringify({ "@type": "CreativeWork", text: paragraph })}</script></head><body>Unrelated viewer navigation</body></html>`); return;
@@ -64,6 +65,14 @@ test("a source crawler identity reaches listings, redirected RSS retries, detail
     const [storedReport] = await sql`SELECT body_text, published_at FROM articles WHERE id=${report.articleId}`;
     assert.equal(storedReport.body_text, paragraph.trim());
     assert.equal(storedReport.published_at, null);
+    const bodyExtractionJson = { urlTemplate: base + "/body-api/{slug}", path: "content", format: "html" };
+    await sql`UPDATE sources SET config = ${sql.json({ feedUrl: base + "/redirect", userAgent, bodyExtractionJson })} WHERE id = ${source.id}`;
+    const apiArticle = await upsertMaterial({ sourceId: source.id, url: base + "/articles/insurance", title: "Insurance research", via: "fetch" });
+    assert.equal(await extractArticleBody(apiArticle.articleId, false), "ok");
+    const [storedApi] = await sql`SELECT body_text,published_at FROM articles WHERE id=${apiArticle.articleId}`;
+    assert.equal(storedApi.body_text, paragraph.trim());
+    assert.equal(storedApi.published_at, null);
+    assert.ok(hits.some(h => h.path === "/body-api/insurance"));
   } finally {
     config.allowPrivateNetworkFetch = previous;
     await new Promise<void>(resolve => server.close(() => resolve()));

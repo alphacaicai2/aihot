@@ -17,7 +17,16 @@ export interface ExtractedBody {
   html: string;
   text: string;
   images: Array<{ kind: "image"; url: string; width: number | null; height: number | null }>;
-  via: "readability" | "jsonld" | "jina";
+  via: "readability" | "jsonld" | "embedded-json" | "json-api" | "jina";
+}
+
+export interface BodyJsonConfig {
+  selector?: string;
+  urlTemplate?: string;
+  path: string;
+  format: "html" | "markdown";
+  adapter?: "magnolia_article";
+  bodySelector?: string;
 }
 
 const MIN_BODY_CHARS = 200;
@@ -55,9 +64,76 @@ function restoreStreamedHtml(document: ReturnType<typeof parseHTML>["document"])
   }
 }
 
-export function readable(html: string, url: string, bodySelector?: string | null, bodyJsonLdType?: string | null): ExtractedBody | null {
+/** Only the article area's ordered writing components; related stories and CMS chrome are excluded. */
+function magnoliaArticle(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const root = value as Record<string, unknown>, order = root["@nodes"];
+  if (!Array.isArray(order) || order.some(k => typeof k !== "string") || new Set(order).size !== order.length) return null;
+  const parts: string[] = [];
+  const chrome = new Set(["insightDetails", "imageComponent", "bannerButtonsComponent", "halfImage", "insightsRelated", "bannerLocation", "newsletterSubcriptionCTA"]);
+  for (const key of order) {
+    const node = root[key];
+    if (!node || typeof node !== "object") return null;
+    const component = node as Record<string, unknown>;
+    const kind = String(component["mgnl:template"] ?? "").replace(/^site-lm:components\//, "");
+    if (kind === "richText") {
+      if (typeof component.richText !== "string") return null;
+      parts.push(component.richText);
+    } else if (kind === "unorderedList") {
+      const items = component.unorderedListItems as Record<string, unknown> | undefined;
+      if (!items || !Array.isArray(items["@nodes"])) return null;
+      for (const itemKey of items["@nodes"]) {
+        if (typeof itemKey !== "string") return null;
+        const item = items[itemKey] as Record<string, unknown> | undefined;
+        if (!item || typeof item.itemText !== "string") return null;
+        if (typeof item.itemTitle === "string" && item.itemTitle.trim()) parts.push(markdownToHtml(`### ${item.itemTitle}`));
+        parts.push(item.itemText);
+      }
+    } else if (!chrome.has(kind)) return null;
+  }
+  return parts.length ? parts.join("\n") : null;
+}
+
+function jsonBody(value: unknown, url: string, rule: BodyJsonConfig, via: "embedded-json" | "json-api"): ExtractedBody | null {
+  if (!rule.path || !["html", "markdown"].includes(rule.format)) return null;
+  for (const key of rule.path.split(".")) {
+    if (!value || typeof value !== "object" || !Object.hasOwn(value, key)) return null;
+    value = (value as Record<string, unknown>)[key];
+  }
+  if (rule.adapter) {
+    if (rule.adapter !== "magnolia_article" || rule.format !== "html") return null;
+    value = magnoliaArticle(value);
+  }
+  if (typeof value !== "string" || !value.trim()) return null;
+  let html = rule.format === "markdown" ? markdownToHtml(value) : value;
+  if (rule.bodySelector) {
+    if (rule.format !== "html") return null;
+    const $ = cheerio.load(html);
+    const nodes = $(rule.bodySelector);
+    // A verified article container must be unique; never merge related story containers.
+    if (nodes.length !== 1) return null;
+    html = nodes.html() ?? "";
+  }
+  const clean = trimTrailingChrome(sanitizeBody(html, url));
+  const text = stripTags(clean);
+  return text.length >= MIN_BODY_CHARS ? { html: clean, text, images: [], via } : null;
+}
+
+export function readable(html: string, url: string, bodySelector?: string | null, bodyJsonLdType?: string | null, bodyExtractionJson?: BodyJsonConfig | null): ExtractedBody | null {
   let { document } = parseHTML(html);
   restoreStreamedHtml(document);
+  if (bodyExtractionJson) {
+    if (bodySelector || bodyJsonLdType || bodyExtractionJson.urlTemplate || !bodyExtractionJson.selector) return null;
+    const scripts = document.querySelectorAll(bodyExtractionJson.selector);
+    const values = new Set<string>();
+    for (const script of scripts) {
+      if (script.tagName !== "SCRIPT" || script.getAttribute("type") !== "application/json") return null;
+      values.add(script.textContent ?? "");
+    }
+    if (values.size !== 1) return null;
+    try { return jsonBody(JSON.parse([...values][0]!), url, bodyExtractionJson, "embedded-json"); }
+    catch { return null; }
+  }
   let structuredText: string | undefined;
   if (bodyJsonLdType) {
     // Opt in only for verified report publishers. Never select a description or arbitrary nested text.
@@ -138,20 +214,34 @@ function markdownToHtml(md: string): string {
     .join("");
 }
 
-export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null; bodyJsonLdType?: string | null }): Promise<ExtractedBody | null> {
+export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; userAgent?: string | null; bodySelector?: string | null; bodyJsonLdType?: string | null; bodyExtractionJson?: BodyJsonConfig | null }): Promise<ExtractedBody | null> {
+  if (opts.bodyExtractionJson?.urlTemplate) {
+    if (opts.bodySelector || opts.bodyJsonLdType || opts.bodyExtractionJson.selector) return null;
+    if (!/\{(?:path|slug)\}/.test(opts.bodyExtractionJson.urlTemplate)) return null;
+    try {
+      const path = new URL(url).pathname;
+      const slug = path.split("/").filter(Boolean).at(-1) ?? "";
+      const target = opts.bodyExtractionJson.urlTemplate.replaceAll("{path}", path).replaceAll("{slug}", slug);
+      if (/[{}]/.test(target)) return null;
+      const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
+        headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
+      if (res.status !== 200 || !/json/.test(res.headers.get("content-type") ?? "")) return null;
+      return jsonBody(JSON.parse(res.text()), url, opts.bodyExtractionJson, "json-api");
+    } catch { return null; }
+  }
   try {
     const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
       headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
     const type = res.headers.get("content-type") ?? "";
     if (res.status === 200 && /html/.test(type)) {
-      const got = readable(res.text(), res.url, opts.bodySelector, opts.bodyJsonLdType);
+      const got = readable(res.text(), res.url, opts.bodySelector, opts.bodyJsonLdType, opts.bodyExtractionJson);
       if (got) return got;
     }
   } catch {
     // fall through to Jina
   }
   // CSS scope cannot be carried into a markdown fallback without losing the publisher boundary.
-  if (!opts.allowJina || opts.bodySelector || opts.bodyJsonLdType) return null;
+  if (!opts.allowJina || opts.bodySelector || opts.bodyJsonLdType || opts.bodyExtractionJson) return null;
   try {
     const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject });
     const html = trimTrailingChrome(sanitizeBody(markdownToHtml(page.markdown), url));
@@ -177,12 +267,12 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
 export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null; body_jsonld_type: string | null }[]>`
-    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector, s.config->>'bodyJsonLdType' AS body_jsonld_type
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; user_agent: string | null; body_selector: string | null; body_jsonld_type: string | null; body_json: BodyJsonConfig | null }[]>`
+    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config->>'userAgent' AS user_agent, s.config->>'bodySelector' AS body_selector, s.config->>'bodyJsonLdType' AS body_jsonld_type, s.config->'bodyExtractionJson' AS body_json
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
   if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId);
-  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector, bodyJsonLdType: a.body_jsonld_type });
+  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}`, userAgent: a.user_agent, bodySelector: a.body_selector, bodyJsonLdType: a.body_jsonld_type, bodyExtractionJson: a.body_json });
   if (!got) {
     await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
     return "unconfirmed";

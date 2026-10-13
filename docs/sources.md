@@ -84,6 +84,14 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 - `detail`：列表缺日期、标题或摘要时抓详情页补齐（`publishedAtSelector`、`titleSelector`、`summarySelector` 等）。
 - `allowUrlPrefixes` / `denyUrlPrefixes`：只收某些路径下的文章。
 
+### 结构化正文
+
+对已经核实正文位置的站点，可配置 `bodyExtractionJson`。从文章页读取时，用 `selector` 指向唯一的 `application/json` 脚本；从公开 JSON 接口读取时，用 `urlTemplate` 指定包含 `{path}` 或 `{slug}` 的地址。两种入口只选一种。
+
+`path` 指定正文的固定字段路径，`format` 为 `html` 或 `markdown`。HTML 片段包含周边内容时，可用嵌套的 `bodySelector` 限定唯一文章容器。经核实的 Magnolia 页面可指定 `adapter: "magnolia_article"`，只按组件顺序读取正文与问答，遇到未知组件则保留未确认状态。
+
+此配置不改变 JSON 列表请求的 `bodyJson` 参数，也不从创建时间推断文章发布日期。字段缺失、正文过短或选择结果不唯一时，不会回退到页面导航或付费正文服务。不能与顶层 `bodySelector` 或 `bodyJsonLdType` 同时配置。
+
 ### x_search
 
 ```json
