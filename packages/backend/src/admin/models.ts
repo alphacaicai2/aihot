@@ -9,6 +9,7 @@ import { audit } from "./auth.ts";
 
 interface UsageRow {
   purpose: string;
+  score_slot: number | null;
   model: string | null;
   prompt_version: string | null;
   calls: number;
@@ -29,7 +30,9 @@ export async function modelsOverview(days = 7) {
   const [sources, usage, prices, history, benches] = await Promise.all([
     modelSources(),
     sql<UsageRow[]>`
-      SELECT r.purpose, a.model, r.request->>'promptVersion' AS prompt_version, count(*)::int AS calls,
+      SELECT r.purpose, a.model, r.request->>'promptVersion' AS prompt_version,
+             CASE WHEN r.purpose = 'score_article' THEN CASE WHEN r.logical_key LIKE '%:score-2' THEN 2 ELSE 1 END END AS score_slot,
+             count(*)::int AS calls,
              count(*) FILTER (WHERE a.status = 'received')::int AS ok,
              count(*) FILTER (WHERE a.status = 'failed')::int AS failed,
              count(*) FILTER (WHERE a.status = 'unknown')::int AS unknown,
@@ -41,7 +44,7 @@ export async function modelsOverview(days = 7) {
                FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash')) AS official_estimate
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
       WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
-      GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC`,
+      GROUP BY 1, 2, 3, 4 ORDER BY 1, 5 DESC`,
     sql<{ service: string; model: string; currency: string; input_per_mtok: string | null; output_per_mtok: string | null }[]>`
       SELECT service, model, currency, input_per_mtok, output_per_mtok FROM service_prices`,
     sql<{ at: Date; actor: string; subject: string; reason: string | null; before: unknown; after: unknown }[]>`
@@ -68,7 +71,7 @@ export async function modelsOverview(days = 7) {
     vision: !!c.vision,
     current: sources[key]!,
     usage: usage
-      .filter((u) => c.purposes.includes(u.purpose))
+      .filter((u) => c.purposes.includes(u.purpose) && (key === "score" ? u.score_slot === 1 : key === "scoreSecond" ? u.score_slot === 2 : true))
       .map((u) => ({
         purpose: u.purpose,
         model: u.model,

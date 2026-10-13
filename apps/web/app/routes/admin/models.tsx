@@ -26,7 +26,7 @@ interface Usage {
 
 interface Models {
   days: number;
-  capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" }; usage: Usage[] }>;
+  capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" | "inherited" }; usage: Usage[] }>;
   choices: Array<{ key: string; service: string; vision: boolean }>;
   history: Array<{ at: string; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;
   benches: Array<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; created_at: string }>;
@@ -39,7 +39,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export const meta: Route.MetaFunction = () => [{ title: `模型与评测 · ${SITE.name} 后台` }];
 
-const SOURCE_LABEL = { admin: "后台切换", env: "环境变量", default: "代码默认" } as const;
+const SOURCE_LABEL = { admin: "后台切换", env: "环境变量", default: "代码默认", inherited: "沿用第一次评分" } as const;
 const secs = (ms: number | null) => (ms == null ? "—" : ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`);
 
 export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
@@ -182,7 +182,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                   {x.key}（{x.service}）
                 </option>
               ))}
-            <option value="__default">恢复默认（{target?.env} 或 {target?.defaultModel}）</option>
+            <option value="__default">恢复默认（{target?.env} 或 {target?.key === "scoreSecond" ? "第一次评分模型" : target?.defaultModel}）</option>
           </Select>
         </Field>
       </ReasonDialog>

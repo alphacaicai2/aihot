@@ -82,3 +82,5 @@ node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --split d
 ## 换模型
 
 后台“模型与评测”页能看到每一步当前用哪个模型、近期的成功率、耗时和 token 用量，也能直接切换（只影响之后的新任务）。换评分模型之前，先用 `--models` 在同一批样本上比一比。
+
+两次评分可以分别选模型：第一次使用 `SCORE_MODEL`，第二次使用 `SCORE_SECOND_MODEL`，后台也有各自的切换项。第二次未配置时沿用第一次，兼容原来的同模型双评分。比如第一次选 `deepseek-flash`，第二次选 `openrouter-qwen3.7-flash`；两次仍用同一份原文和评分标准，门槛与平均分算法不变。配置为不同模型时，评分不自动切到备用模型，避免实际变成同一模型打两次分；失败步骤保留回执保护，重试时复用已完成步骤。SelectBench 的 `--models` 仍对每个指定模型独立打两次分。

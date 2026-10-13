@@ -16,7 +16,7 @@ import { sql } from "../db.ts";
 import { chatJson, MODELS, type ContentPart } from "../providers/llm.ts";
 import { completeReceipt, ProviderRejectedError } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
-import { modelFor } from "./models.ts";
+import { modelFor, modelSources } from "./models.ts";
 import { buildMaterial, firstImagePart, loadAnalyzeInput, type AnalyzeInputArticle } from "./input.ts";
 import { pageFetchable } from "../content/extract.ts";
 import type { ProcessingInput } from "../content/processing.ts";
@@ -157,7 +157,7 @@ export interface AnalysisRun {
    * The independent score calls and the tier threshold they are held against; absent when the material
    * is not scored. `refused`: the model's content filter declined it, so it is not selected.
    */
-  scores: { model: string; threshold: number; values: number[]; receiptIds: number[]; reused: boolean; refused?: boolean } | null;
+  scores: { model: string; models?: string[]; threshold: number; values: number[]; receiptIds: number[]; reused: boolean; refused?: boolean } | null;
   /** The reader-facing copy: `understand` (selected, near-selected), `summarize`, `verbatim` (a Chinese short post), `none`. */
   writing: {
     kind: "understand" | "summarize" | "verbatim" | "none";
@@ -214,20 +214,27 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Ana
 }
 
 async function runScores(a: AnalyzeInputArticle, threshold: number, opts: StepOpts): Promise<NonNullable<AnalysisRun["scores"]>> {
-  const model = opts.scoreModel ?? (await modelFor("score"));
-  const call = scoreCall(model);
+  // Resolve both slots from one committed settings snapshot. A benchmark's explicit model still
+  // runs twice; production may use two different providers against exactly the same input.
+  const sources = opts.scoreModel ? null : await modelSources();
+  const scoreModels = opts.scoreModel ? [opts.scoreModel, opts.scoreModel] : [sources!.score!.model, sources!.scoreSecond!.model];
+  // A mixed pair must keep its two judges: global fallback/probe mode must not silently turn it
+  // into two calls to the fallback model. Failed steps retain their receipt and retry protection.
+  const fallback = scoreModels[0] === scoreModels[1] ? opts.fallback : false;
   const input = buildScoreInput(a);
   const values: number[] = [];
   const receiptIds: number[] = [];
   const models: string[] = [];
   let reused = true;
-  // One after the other: the second call reuses the provider's cached prompt.
+  // One after the other, without feeding the first result into the second request.
   for (let i = 0; i < SCORE_CALLS; i++) {
     checkAnalysisRunning();
+    const model = scoreModels[i]!;
+    const call = scoreCall(model);
     try {
       const res = await chatJson({
         model, purpose: "score_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.score, system: SCORE_SYSTEM, user: input,
-        fallback: opts.fallback,
+        fallback,
         schema: ScoreSchema, temperature: call.temperature, maxTokens: call.maxTokens, timeoutMs: call.timeoutMs,
         // Each call is its own paid request; an explicit re-evaluation gets new ones.
         attemptTag: tagged(opts.attemptTag, `score-${i + 1}`),
@@ -238,11 +245,11 @@ async function runScores(a: AnalyzeInputArticle, threshold: number, opts: StepOp
       reused &&= res.reused;
     } catch (error) {
       // The model's content filter declines the material (Zhipu 1301): not scored, so not selected.
-      if (isContentFilter(error)) return { model, threshold, values, receiptIds, reused: false, refused: true };
+      if (isContentFilter(error)) return { model: [...new Set([...models, model])].join("+"), models, threshold, values, receiptIds, reused: false, refused: true };
       throw error;
     }
   }
-  return { model: [...new Set(models)].join("+") || model, threshold, values, receiptIds, reused };
+  return { model: [...new Set(models)].join("+"), models, threshold, values, receiptIds, reused };
 }
 
 async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["structure"]>> {
@@ -441,7 +448,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
   const w = run.writing;
   const detail = {
     prefilter: { label: run.prefilter.label, reason: run.prefilter.reason },
-    scores: out.scores, scoreModel: out.scoreModel, threshold: out.threshold, ...(out.scoreRefused ? { scoreRefused: true } : {}),
+    scores: out.scores, scoreModel: out.scoreModel, scoreModels: run.scores?.models ?? null, threshold: out.threshold, ...(out.scoreRefused ? { scoreRefused: true } : {}),
     ...(w ? { writer: w.kind, writerModel: w.model, itemType: w.itemType ?? null, authorRole: w.authorRole ?? null } : {}),
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
     fact: out.fact,

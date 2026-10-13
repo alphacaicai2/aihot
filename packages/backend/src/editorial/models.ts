@@ -16,7 +16,8 @@ export interface Capability {
 
 export const CAPABILITIES = {
   prefilter: { label: "精选预筛（是否属于这个行业，宽召回）", env: "PREFILTER_MODEL", default: "default", purposes: ["prefilter_article"] },
-  score: { label: "精选评分（两次独立评分，按信源分级门槛）", env: "SCORE_MODEL", default: "default", purposes: ["score_article"] },
+  score: { label: "精选评分 · 第一次（按信源分级门槛）", env: "SCORE_MODEL", default: "default", purposes: ["score_article"] },
+  scoreSecond: { label: "精选评分 · 第二次（独立评分，未配置时沿用第一次）", env: "SCORE_SECOND_MODEL", default: "default", purposes: ["score_article"] },
   understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由、标签，能看图时看首图）", env: "UNDERSTAND_MODEL", default: "default", purposes: ["understand_article"] },
   summarize: { label: "标题摘要（其余文章的中文标题与摘要）", env: "SUMMARIZE_MODEL", default: "default", purposes: ["summarize_article"] },
   structure: { label: "结构抽取（分类、标签、主体公司、事件事实，不写读者文字）", env: "STRUCTURE_MODEL", default: "default", purposes: ["structure_article"] },
@@ -39,18 +40,17 @@ async function overrides(db: Db = sql): Promise<Record<string, string>> {
 
 /** The model a capability uses now: admin switch, else environment, else the code default. */
 export async function modelFor(capability: CapabilityKey): Promise<string> {
-  const c: Capability = CAPABILITIES[capability];
-  const chosen = (await overrides())[capability] ?? process.env[c.env] ?? c.default;
-  return MODELS[chosen] ? chosen : c.default;
+  return (await modelSources())[capability]!.model;
 }
 
 /** Where the current choice comes from, for the admin page. */
-export async function modelSources(db: Db = sql): Promise<Record<string, { model: string; source: "admin" | "env" | "default" }>> {
+export async function modelSources(db: Db = sql): Promise<Record<string, { model: string; source: "admin" | "env" | "default" | "inherited" }>> {
   const o = await overrides(db);
-  const out: Record<string, { model: string; source: "admin" | "env" | "default" }> = {};
+  const out: Record<string, { model: string; source: "admin" | "env" | "default" | "inherited" }> = {};
   for (const [key, c] of Object.entries(CAPABILITIES) as Array<[string, Capability]>) {
     if (o[key]) out[key] = { model: o[key]!, source: "admin" };
     else if (process.env[c.env] && MODELS[process.env[c.env]!]) out[key] = { model: process.env[c.env]!, source: "env" };
+    else if (key === "scoreSecond") out[key] = { model: out.score!.model, source: "inherited" };
     else out[key] = { model: c.default, source: "default" };
   }
   return out;
