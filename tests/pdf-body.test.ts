@@ -66,6 +66,7 @@ test("PDF opt-in reaches guarded detail/body requests, stores the body and reads
     hits++;
     if (req.headers["user-agent"] !== ua) { res.writeHead(403); res.end(); return; }
     if (req.url === "/viewer") { res.writeHead(200, { "content-type": "text/html" }); res.end(`<article>${prose.join(" ")}</article>`); return; }
+    if (req.url === "/date-example.pdf") { res.writeHead(200, { "content-type": "application/pdf" }); res.end(pdf([['API example: "datePublished":"2099-01-01"', ...prose]])); return; }
     res.writeHead(200, { "content-type": "application/pdf" }); res.end(bytes);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -79,6 +80,13 @@ test("PDF opt-in reaches guarded detail/body requests, stores the body and reads
     assert.equal(detail.title, "Original Research Q4");
     assert.equal(detail.publishedAt?.toISOString(), "2026-02-09T00:00:00.000Z");
     assert.ok(detail.body?.text.endsWith("END OF ORIGINAL REPORT"));
+    const withoutRule = { ...source, config: { ...source.config, detail: {} } };
+    assert.equal((await fetchDetail(base + "/report.pdf", withoutRule, { date: true, title: false, summary: false, body: true })).publishedAt, null);
+    assert.equal((await fetchDetail(base + "/date-example.pdf", withoutRule, { date: true, title: false, summary: false, body: true })).publishedAt, null);
+    const jinaListing = { ...source, config: { ...source.config, url: "https://r.jina.ai/https://example.org/reports" } };
+    const nativeDetail = await fetchDetail(base + "/report.pdf", jinaListing, { date: true, title: true, summary: false, body: true });
+    assert.equal(nativeDetail.title, "Original Research Q4");
+    assert.equal(nativeDetail.publishedAt?.toISOString(), "2026-02-09T00:00:00.000Z");
     assert.equal(await extractFromUrl(base + "/viewer", { allowJina: true, subject: source.id, userAgent: ua, bodyExtractionPdf: true }), null);
     const before = hits;
     assert.equal(await extractFromUrl(base + "/report.pdf", { allowJina: true, subject: source.id, userAgent: ua, bodyExtractionPdf: true, bodySelector: "article" }), null);

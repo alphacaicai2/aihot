@@ -336,8 +336,8 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   const pdfRule = source.config.bodyExtractionPdf === true;
   if ((markdownRule || pdfRule) && (source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson || (markdownRule && pdfRule))) return { publishedAt: null, title: null, summary: null, body: null };
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
-  const dateInJina = need.date && jinaListing && !!d.publishedAtRegex;
-  const titleInJina = need.title && jinaListing && !!d.titleRegex;
+  const dateInJina = need.date && jinaListing && !!d.publishedAtRegex && !pdfRule;
+  const titleInJina = need.title && jinaListing && !!d.titleRegex && !pdfRule;
   const jina = dateInJina || titleInJina ? (await jinaRead(url, { purpose: "source_detail", subject: `source:${source.id}` })).raw : null;
   let html: string | null = null;
   let body: ExtractedBody | null = null;
@@ -375,7 +375,7 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
     // An authoritative rule is the only source of the date: when its byline is missing, no other
     // timestamp on the page (an update time, a related post) stands in for it.
     const authoritative = d.publishedAtAuthoritative === true && !!(d.publishedAtSelector || d.publishedAtRegex);
-    if (!publishedAt && $ && !dateInJina && !authoritative) {
+    if (!publishedAt && $ && !dateInJina && !authoritative && !pdfRule) {
       const meta = $('meta[property="article:published_time"], meta[name="pubdate"], meta[itemprop="datePublished"]').attr("content");
       publishedAt = parseLooseDate(meta) ?? parseLooseDate(jsonLdPublished($, html!)) ?? parseLooseDate($("time[datetime]").first().attr("datetime"));
     }
