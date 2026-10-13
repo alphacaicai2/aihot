@@ -53,7 +53,7 @@ test("wrong responses, corrupt documents, image-only pages and exceeded limits c
   assert.equal(await pdfDocument(pdf([[], []]), "application/pdf"), null);
   assert.equal(await pdfDocument(pdf([prose, [], prose]), "application/pdf"), null);
   assert.equal(await pdfDocument(pdf(Array.from({ length: 151 }, () => prose)), "application/pdf"), null);
-  const tooLarge = Buffer.alloc(12 * 1024 * 1024 + 1); tooLarge.write("%PDF-");
+  const tooLarge = Buffer.alloc(16 * 1024 * 1024 + 1); tooLarge.write("%PDF-");
   assert.equal(await pdfDocument(tooLarge, "application/pdf"), null);
   assert.deepEqual(unsupportedConfig("web_list", { bodyExtractionPdf: true }), []);
   assert.deepEqual(unsupportedConfig("rss", { bodyExtractionPdf: "yes" }), ["bodyExtractionPdf=boolean required"]);

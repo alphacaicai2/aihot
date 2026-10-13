@@ -311,7 +311,7 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
   if (opts.bodyExtractionPdf === true) {
     if (opts.bodySelector || opts.bodyJsonLdType || opts.bodyExtractionJson || opts.bodyExtractionMarkdown) return null;
     try {
-      const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 12 * 1024 * 1024,
+      const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 16 * 1024 * 1024,
         headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
       return res.status === 200 ? await pdfDocument(res.body, res.headers.get("content-type") ?? "") : null;
     } catch { return null; }

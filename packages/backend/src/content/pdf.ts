@@ -4,7 +4,7 @@ import type { ExtractedBody } from "./extract.ts";
 
 /** Explicit PDF responses only; no OCR, viewer HTML or parser fallback is implied. */
 export async function pdfDocument(bytes: Uint8Array, contentType: string): Promise<ExtractedBody | null> {
-  if (!/^application\/pdf\b/i.test(contentType) || bytes.length > 12 * 1024 * 1024 || Buffer.from(bytes.subarray(0, 5)).toString() !== "%PDF-") return null;
+  if (!/^application\/pdf\b/i.test(contentType) || bytes.length > 16 * 1024 * 1024 || Buffer.from(bytes.subarray(0, 5)).toString() !== "%PDF-") return null;
   const data = Uint8Array.from(bytes).buffer;
   const pages = await new Promise<string[] | null>((resolve) => {
     const worker = new Worker(new URL("./pdf-worker.ts", import.meta.url), {

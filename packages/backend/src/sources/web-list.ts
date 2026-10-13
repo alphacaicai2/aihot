@@ -344,7 +344,7 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary || (need.body && (markdownRule || pdfRule))) {
     const target = markdownRule ? bodyDocumentUrl(url, markdownRule.urlTemplate) : url;
     if (!target) return { publishedAt: null, title: null, summary: null, body: null };
-    const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: pdfRule ? 12 * 1024 * 1024 : undefined,
+    const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: pdfRule ? 16 * 1024 * 1024 : undefined,
       headers: source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : undefined });
     if (res.status === 200) {
       html = res.text();
