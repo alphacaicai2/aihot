@@ -10,6 +10,7 @@ import { audit } from "./auth.ts";
 interface UsageRow {
   purpose: string;
   score_slot: number | null;
+  service: string;
   model: string | null;
   prompt_version: string | null;
   calls: number;
@@ -21,16 +22,21 @@ interface UsageRow {
   tokens_in: string | null;
   tokens_out: string | null;
   actual_cost: string | null;
+  actual_calls: number;
   currency: string | null;
   official_estimate: string | null;
+  estimated_calls: number;
 }
 
-export async function modelsOverview(days = 7) {
-  const since = new Date(Date.now() - days * 86400_000);
+export async function modelsOverview(days = 7, period: "rolling" | "today" | "yesterday" = "rolling") {
+  const now = new Date();
+  const bjDay = Math.floor((now.getTime() + 8 * 3600_000) / 86400_000) * 86400_000 - 8 * 3600_000;
+  const since = new Date(period === "rolling" ? now.getTime() - days * 86400_000 : bjDay - (period === "yesterday" ? 86400_000 : 0));
+  const until = period === "yesterday" ? new Date(bjDay) : now;
   const [sources, usage, prices, history, benches] = await Promise.all([
     modelSources(),
     sql<UsageRow[]>`
-      SELECT r.purpose, a.model, r.request->>'promptVersion' AS prompt_version,
+      SELECT r.purpose, a.service, a.model, r.request->>'promptVersion' AS prompt_version,
              CASE WHEN r.purpose = 'score_article' THEN CASE WHEN r.logical_key LIKE '%:score-2' THEN 2 ELSE 1 END END AS score_slot,
              count(*)::int AS calls,
              count(*) FILTER (WHERE a.status = 'received')::int AS ok,
@@ -39,12 +45,15 @@ export async function modelsOverview(days = 7) {
              percentile_disc(0.5) WITHIN GROUP (ORDER BY a.latency_ms) AS p50,
              percentile_disc(0.95) WITHIN GROUP (ORDER BY a.latency_ms) AS p95,
              sum((a.usage->>'prompt_tokens')::bigint) AS tokens_in, sum((a.usage->>'completion_tokens')::bigint) AS tokens_out,
-             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, max(a.currency) AS currency,
-             sum(estimate_deepseek_v41_flash(a.usage, a.started_at))
-               FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash')) AS official_estimate
+             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, a.currency,
+             count(a.cost) FILTER (WHERE a.cost_basis = 'actual')::int AS actual_calls,
+             sum(estimate_deepseek_v41_flash_cny(a.usage, a.started_at))
+               FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash')) AS official_estimate,
+             count(estimate_deepseek_v41_flash_cny(a.usage, a.started_at))
+               FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash'))::int AS estimated_calls
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
-      WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
-      GROUP BY 1, 2, 3, 4 ORDER BY 1, 5 DESC`,
+      WHERE a.started_at >= ${since} AND a.started_at < ${until} AND a.origin = 'live' AND a.model IS NOT NULL
+      GROUP BY 1, 2, 3, 4, 5, a.currency ORDER BY 1, 6 DESC`,
     sql<{ service: string; model: string; currency: string; input_per_mtok: string | null; output_per_mtok: string | null }[]>`
       SELECT service, model, currency, input_per_mtok, output_per_mtok FROM service_prices`,
     sql<{ at: Date; actor: string; subject: string; reason: string | null; before: unknown; after: unknown }[]>`
@@ -56,7 +65,7 @@ export async function modelsOverview(days = 7) {
   ]);
   const serviceOf = (model: string) => Object.values(MODELS).find((m) => m.model === model || m.key === model)?.service ?? null;
   const priced = (u: UsageRow) => {
-    if (u.official_estimate !== null) return { amount: Number(u.official_estimate), currency: "USD", note: "DeepSeek 官方估算：按缓存命中和请求时间分峰谷（含 2026 中国节假日）；缓存数据缺失按未命中算。", sourceUrl: "https://api-docs.deepseek.com/quick_start/pricing/" };
+    if (u.official_estimate !== null) return { amount: Number(u.official_estimate), currency: "CNY", note: "DeepSeek 人民币官方估算：按缓存命中和请求时间分峰谷（含 2026 中国节假日）；缓存数据缺失按未命中算，缺少用量的请求不计入。代理通道估值不代表官方账户扣费。", sourceUrl: "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/" };
     if (u.model === "deepseek-v4.1-flash" || u.model === "deepseek-flash") return null;
     const service = u.model ? serviceOf(u.model) : null;
     const p = prices.find((x) => x.service === service && x.model === u.model) ?? prices.find((x) => x.service === service && x.model === "");
@@ -74,6 +83,7 @@ export async function modelsOverview(days = 7) {
       .filter((u) => c.purposes.includes(u.purpose) && (key === "score" ? u.score_slot === 1 : key === "scoreSecond" ? u.score_slot === 2 : true))
       .map((u) => ({
         purpose: u.purpose,
+        service: u.service,
         model: u.model,
         promptVersion: u.prompt_version,
         calls: u.calls,
@@ -87,10 +97,38 @@ export async function modelsOverview(days = 7) {
         actualCost: u.actual_cost === null ? null : Number(u.actual_cost),
         currency: u.currency,
         estimate: priced(u),
+        unestimatedCalls: u.calls - u.estimated_calls,
       })),
   }));
   const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
-  return { days, capabilities, choices, history, benches };
+  // Include every purpose, not only the capabilities displayed below. Never include proxy estimates.
+  const official = usage.filter((u) => u.service === "deepseek" && u.model === "deepseek-flash");
+  const estimatedCalls = official.reduce((n, u) => n + u.estimated_calls, 0);
+  const deepseek = {
+    calls: official.reduce((n, u) => n + u.calls, 0),
+    tokensIn: official.reduce((n, u) => n + Number(u.tokens_in ?? 0), 0),
+    tokensOut: official.reduce((n, u) => n + Number(u.tokens_out ?? 0), 0),
+    estimatedCalls,
+    amount: estimatedCalls ? official.reduce((n, u) => n + Number(u.official_estimate ?? 0), 0) : null,
+    currency: "CNY",
+  };
+  const currencies = new Map<string, { currency: string; actual: number; estimated: number; amount: number }>();
+  let unpricedCalls = 0;
+  for (const u of usage) {
+    const actual = u.actual_cost !== null && u.currency !== null;
+    const estimate = !actual && u.service === "deepseek" && u.model === "deepseek-flash" && u.official_estimate !== null;
+    const pricedCalls = actual ? u.actual_calls : estimate ? u.estimated_calls : 0;
+    unpricedCalls += u.calls - pricedCalls;
+    if (!actual && !estimate) continue;
+    const currency = actual ? u.currency! : "CNY";
+    const total = currencies.get(currency) ?? { currency, actual: 0, estimated: 0, amount: 0 };
+    if (actual) total.actual += Number(u.actual_cost);
+    else total.estimated += Number(u.official_estimate);
+    total.amount = total.actual + total.estimated;
+    currencies.set(currency, total);
+  }
+  const costs = { currencies: [...currencies.values()].sort((a, b) => a.currency.localeCompare(b.currency)), unpricedCalls };
+  return { days, period, since, until, costs, deepseek, capabilities, choices, history, benches };
 }
 
 /** Switches a capability to another registered model (or back to the environment/default when null). */
