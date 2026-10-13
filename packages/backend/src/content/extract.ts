@@ -79,6 +79,16 @@ function magnoliaArticle(value: unknown): string | null {
     if (kind === "richText") {
       if (typeof component.richText !== "string") return null;
       parts.push(component.richText);
+    } else if (kind === "cardsInformative") {
+      const cards = component.cardsInformativeSection as Record<string, unknown> | undefined;
+      if (!cards || !Array.isArray(cards["@nodes"]) || new Set(cards["@nodes"]).size !== cards["@nodes"].length) return null;
+      if (typeof component.cardsInformativeTitle1 === "string") parts.push(markdownToHtml(`### ${component.cardsInformativeTitle1}`));
+      for (const cardKey of cards["@nodes"]) {
+        if (typeof cardKey !== "string") return null;
+        const card = cards[cardKey] as Record<string, unknown> | undefined;
+        if (!card || typeof card.cardInformativeText !== "string") return null;
+        parts.push(card.cardInformativeText);
+      }
     } else if (kind === "unorderedList") {
       const items = component.unorderedListItems as Record<string, unknown> | undefined;
       if (!items || !Array.isArray(items["@nodes"])) return null;

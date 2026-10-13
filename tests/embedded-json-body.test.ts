@@ -40,7 +40,8 @@ test("structured HTML is sanitized and a script with an executable type is refus
 
 test("ordered CMS article components retain all writing and FAQ entries without related-article content", () => {
   const rich = (text: string) => ({ "mgnl:template": "site-lm:components/richText", richText: `<p>${text}</p>` });
-  const main = { "@nodes": ["second", "first", "faq", "related"], first: rich("FIRST " + prose), second: rich("SECOND " + prose),
+  const main = { "@nodes": ["second", "first", "cards", "faq", "related"], first: rich("FIRST " + prose), second: rich("SECOND " + prose),
+    cards: { "mgnl:template": "site-lm:components/cardsInformative", cardsInformativeTitle1: "Startup highlights", cardsInformativeSection: { "@nodes": ["one"], one: { cardInformativeText: `<p>MEMORY CHIP ${prose}</p>` } } },
     faq: { "mgnl:template": "site-lm:components/unorderedList", unorderedListItems: { "@nodes": ["one"], one: { itemTitle: "A real question", itemText: `<p>FAQ ${prose}</p>` } } },
     related: { "mgnl:template": "site-lm:components/insightsRelated", richText: "Unrelated material. ".repeat(100) } };
   const cmsRule = { ...rule, path: "main", format: "html" as const, adapter: "magnolia_article" as const };
@@ -49,6 +50,8 @@ test("ordered CMS article components retain all writing and FAQ entries without 
   assert.ok(body?.text.includes("FIRST"));
   assert.ok(body?.text.includes("A real question"));
   assert.ok(body?.text.includes("FAQ"));
+  assert.ok(body?.text.includes("Startup highlights"));
+  assert.ok(body?.text.includes("MEMORY CHIP"));
   assert.ok(!body?.text.includes("Unrelated"));
   assert.ok(!body?.text.includes("Footer"));
   assert.equal(readable(page({ main: { ...main, unexpected: rich(prose), "@nodes": [...main["@nodes"], "unexpected-type"], "unexpected-type": { "mgnl:template": "site-lm:components/unknown", text: prose } } }), "https://example.org/article", null, null, cmsRule), null);
