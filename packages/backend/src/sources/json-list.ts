@@ -3,6 +3,7 @@ import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { htmlScriptArray, javascriptArray, JAVASCRIPT_MAX_BYTES, textBlocks } from "./javascript-array.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
@@ -51,6 +52,23 @@ function toDate(v: unknown, unit: string | undefined): Date | null {
   }
   const t = Date.parse(String(v));
   return Number.isFinite(t) ? new Date(t) : null;
+}
+
+function staticDate(v: unknown, unit: string | undefined): Date | null {
+  if (unit) return toDate(v, unit);
+  const text = String(v ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}(?:$|T|\s)/.test(text)) {
+    const day = toDate(`${text.slice(0, 10)}T00:00:00Z`, undefined);
+    return day?.toISOString().startsWith(text.slice(0, 10)) ? toDate(text, undefined) : null;
+  }
+  // Human-readable calendar days have no publisher timezone; use a stable UTC day anchor.
+  const human = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(text);
+  if (human) {
+    const month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(human[1]!.slice(0, 3).toLowerCase());
+    const day = toDate(`${text} UTC`, undefined);
+    return day && day.getUTCMonth() === month && day.getUTCDate() === Number(human[2]) && day.getUTCFullYear() === Number(human[3]) ? day : null;
+  }
+  return null;
 }
 
 function findKey(obj: unknown, key: string, depth = 0): unknown {
@@ -163,10 +181,13 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     headers: c.bodyJson ? { ...headers, "content-type": "application/json" } : headers,
     body: c.bodyJson ? JSON.stringify(c.bodyJson) : undefined,
     timeoutMs: 25_000,
+    ...(c.mode === "javascript_array" || c.mode === "html_script_array" ? { maxBytes: JAVASCRIPT_MAX_BYTES } : {}),
   });
   if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
   let data: unknown;
-  if (c.mode === "html_json_key" || c.mode === "html_window_var") data = embeddedJson(res.text(), source);
+  if (c.mode === "javascript_array") data = await javascriptArray(res.text(), c.arrayMatchKeys, c.arrayProjectionKeys, undefined, c.collectionKind);
+  else if (c.mode === "html_script_array") data = await htmlScriptArray(res.text(), res.url, c, headers);
+  else if (c.mode === "html_json_key" || c.mode === "html_window_var") data = embeddedJson(res.text(), source);
   else {
     try {
       data = JSON.parse(res.text());
@@ -186,7 +207,7 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     const url = (c.urlTemplate && renderTemplate(c.urlTemplate, item)) || (c.urlTemplateFallback && renderTemplate(c.urlTemplateFallback, item));
     if (!title || !url) continue;
     const externalId = c.externalIdPath ? getPath(item, c.externalIdPath) : null;
-    const summary = firstString(item, c.summaryPaths);
+    const summary = c.summaryBlocksPath ? textBlocks(getPath(item, c.summaryBlocksPath)) : firstString(item, c.summaryPaths);
     const raw = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : { value: item };
     for (const k of c.rawDropKeys ?? []) delete (raw as Record<string, unknown>)[k];
     const summaryIsBody = c.summaryIsBody === true && !!summary;
@@ -194,9 +215,12 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
       url,
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
-      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
-      excerpt: summary ? collapseWhitespace(stripTags(summary)).slice(0, 2000) : null,
-      bodyText: summaryIsBody ? stripTags(summary!) : null,
+      // A month-only static newsletter label is not a publication day. Never substitute fetch time.
+      publishedAt: (c.mode === "javascript_array" || c.mode === "html_script_array")
+        ? staticDate(getPath(item, c.publishedAtPath), c.publishedAtUnit)
+        : toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
+      excerpt: summary ? collapseWhitespace(c.summaryBlocksPath ? summary : stripTags(summary)).slice(0, 2000) : null,
+      bodyText: summaryIsBody ? (c.summaryBlocksPath ? summary! : stripTags(summary!)) : null,
       bodyStatus: summaryIsBody ? "ok" : "pending",
       raw: { externalId: externalId ?? null },
     });

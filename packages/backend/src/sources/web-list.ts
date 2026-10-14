@@ -1,3 +1,4 @@
+import { linkedHtmlDocument } from "../content/linked-html.ts";
 // Web list pages: HTML with selectors, Markdown through Jina Reader, and Docusaurus changelogs.
 import * as cheerio from "cheerio";
 import { guardedFetch } from "../lib/http-fetch.ts";
@@ -334,6 +335,8 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   const d = source.config.detail ?? {};
   const markdownRule = source.config.bodyExtractionMarkdown;
   const pdfRule = source.config.bodyExtractionPdf === true;
+  const linkedRule = source.config.bodyExtractionLinkedHtml;
+  if (linkedRule && (markdownRule || pdfRule || source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson)) return { publishedAt: null, title: null, summary: null, body: null };
   if ((markdownRule || pdfRule) && (source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson || (markdownRule && pdfRule))) return { publishedAt: null, title: null, summary: null, body: null };
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
   const dateInJina = need.date && jinaListing && !!d.publishedAtRegex && !pdfRule;
@@ -341,7 +344,7 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   const jina = dateInJina || titleInJina ? (await jinaRead(url, { purpose: "source_detail", subject: `source:${source.id}` })).raw : null;
   let html: string | null = null;
   let body: ExtractedBody | null = null;
-  if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary || (need.body && (markdownRule || pdfRule))) {
+  if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary || (need.body && (markdownRule || pdfRule || linkedRule))) {
     const target = markdownRule ? bodyDocumentUrl(url, markdownRule.urlTemplate) : url;
     if (!target) return { publishedAt: null, title: null, summary: null, body: null };
     const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: pdfRule ? 16 * 1024 * 1024 : undefined,
@@ -357,7 +360,7 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
         if (!extracted) html = null;
         else if (need.body) body = extracted;
       } else if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
-        try { body = readable(html, res.url, source.config.bodySelector, source.config.bodyJsonLdType, source.config.bodyExtractionJson); }
+        try { body = linkedRule ? await linkedHtmlDocument(html, res.url, linkedRule, readable, source.config.userAgent) : readable(html, res.url, source.config.bodySelector, source.config.bodyJsonLdType, source.config.bodyExtractionJson); }
         catch { /* A failed extraction must not discard the detail metadata. */ }
       }
     }

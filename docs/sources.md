@@ -98,6 +98,30 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 此配置不改变 JSON 列表请求的 `bodyJson` 参数，也不从创建时间推断文章发布日期。字段缺失、正文过短或选择结果不唯一时，不会回退到页面导航或付费正文服务。不能与顶层 `bodySelector` 或 `bodyJsonLdType` 同时配置。
 
+### json_list 中的公开静态 JavaScript 数据
+
+发布者把文章文字放在公开客户端脚本中时，可使用 `mode: "javascript_array"` 直接读取脚本，或 `mode: "html_script_array"` 从网页的唯一 `scriptSelector` 找到当前公开脚本，避免固定部署 hash。后者可配置 `assetNameIncludes`，从脚本的静态导入中找到唯一文章 chunk，按模块地址解析相对路径；没有导入时只接受唯一绝对地址或根路径。裸依赖表字符串的地址基准不明确时拒绝读取，不猜路径。最多读取入口及一个 chunk，所有脚本必须同源，经过普通抓取的地址检查，不执行任何发布者代码。
+
+```json
+{
+  "url": "https://example.org/insights",
+  "mode": "html_script_array",
+  "scriptSelector": "script[type=module][src]",
+  "assetNameIncludes": "insights-",
+  "arrayMatchKeys": ["slug", "title", "blocks"],
+  "arrayProjectionKeys": ["slug", "title", "blocks", "dateLabel"],
+  "titlePaths": ["title"],
+  "publishedAtPath": "dateLabel",
+  "summaryBlocksPath": "blocks",
+  "summaryIsBody": true,
+  "urlTemplate": "https://example.org/insights/{slug}"
+}
+```
+
+`arrayMatchKeys` 是 2–20 个稳定字段名，用来选出唯一文章集合，不依赖混淆后的变量名。默认读取对象数组；真实出版结构为静态键到文章对象的字典时，显式配置 `collectionKind: "object"` 和 `itemsObjectValues: true`。`arrayProjectionKeys` 限定读取的顶层字段，须包含全部用于匹配、正文、日期、作者和网址映射的字段。未消费的图片字段可忽略，正文中的调用、变量、插值模板仍拒绝；对象中的动态键、展开、方法、重复键和原型相关键同样拒绝。
+
+正文为 HTML 字符串时沿用 `summaryPaths`；正文为已核验的纯文字块数组时用 `summaryBlocksPath`，只接受 `{type,text}` 结构的 `heading`、`paragraph`、`quote`，未知块会使整次读取失败，不确认残缺正文。仅有月份或年份的日期保留为未知日，不用抓取时间代替首发；完整文字日使用稳定 UTC 日锚点。解析在单独线程进行，限制 4 MiB 响应、128 MiB 主堆、5 秒、50 万语法节点、256 层语法深度、32 层数据深度和 2,000 个集合条目，超限或不唯一时失败，已有 JSON 读取方式保持不变。
+
 ### x_search
 
 ```json
@@ -158,3 +182,9 @@ Content-Type: application/json
 - 返回 `{"ok": true, "created": <新建条数>}`。缺标题或网址的条目会被跳过，同一请求里重复的网址只取第一条。
 - `sourceId` 不存在时会自动建一个 `external` 信源，默认不进公开页面：到后台把它的参与方式改成 `editorial` 才会出现在站上。
 - 条目的 `raw._aihot.backfill` 为 `true` 时按历史回灌处理（不进入“今天”、不推送）。
+
+### 官方嵌入的另一份 HTML 正文
+
+`bodyExtractionLinkedHtml` 只适用于已经核实的出版链接，例如官方页静态声明的 Shorthand `embed.js`。它不运行脚本：用 `selector` 和 `attribute`（`href` 或 `src`）选出唯一目标，按明确的 `stripPathSuffix` 去掉路径后缀，再以 `allowedOrigins` 限定出版者。目标必须是 HTML；`bodySelector` 仅限定目标文档的正文。规范原文 URL、标题、日期仍来自官方列表／外层页。
+
+这项规则与其他正文规则互斥；缺失、歧义、域名不匹配、跳转到其他域或正文不确认均失败，不回退为外层导航，也不使用付费阅读器。官方页与目标页都经过同一个出站访问和体积限制。
