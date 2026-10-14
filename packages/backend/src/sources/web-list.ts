@@ -5,7 +5,7 @@ import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
 import { readable, extractFromUrl, bodyDocumentUrl, markdownDocument, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
-import { pdfDocument } from "../content/pdf.ts";
+import { pdfDocument, validatedPdfOptions } from "../content/pdf.ts";
 import { jinaRead } from "../providers/jina.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
@@ -368,6 +368,8 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   const d = source.config.detail ?? {};
   const markdownRule = source.config.bodyExtractionMarkdown;
   const pdfRule = source.config.bodyExtractionPdf === true;
+  const pdfOptions = validatedPdfOptions(source.config.bodyExtractionPdfOptions);
+  if (!pdfOptions || (source.config.bodyExtractionPdfOptions !== undefined && !pdfRule)) return { publishedAt: null, title: null, summary: null, body: null };
   const linkedRule = source.config.bodyExtractionLinkedHtml;
   if (linkedRule && (markdownRule || pdfRule || source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson)) return { publishedAt: null, title: null, summary: null, body: null };
   if ((markdownRule || pdfRule) && (source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson || (markdownRule && pdfRule))) return { publishedAt: null, title: null, summary: null, body: null };
@@ -386,12 +388,12 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary || (need.body && (markdownRule || pdfRule || linkedRule))) {
     const target = markdownRule ? bodyDocumentUrl(url, markdownRule.urlTemplate) : url;
     if (!target) return { publishedAt: null, title: null, summary: null, body: null };
-    const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: pdfRule ? 16 * 1024 * 1024 : undefined,
+    const res = await guardedFetch(target, { timeoutMs: pdfRule ? pdfOptions.timeoutMs : 20_000, maxBytes: pdfRule ? pdfOptions.maxBytes : undefined,
       headers: source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : undefined });
     if (res.status === 200) {
       html = res.text();
       if (pdfRule) {
-        const extracted = await pdfDocument(res.body, res.headers.get("content-type") ?? "");
+        const extracted = await pdfDocument(res.body, res.headers.get("content-type") ?? "", source.config.bodyExtractionPdfOptions);
         html = extracted?.html ?? null;
         if (need.body) body = extracted;
       } else if (markdownRule) {

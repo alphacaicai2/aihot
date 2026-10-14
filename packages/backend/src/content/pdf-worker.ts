@@ -7,7 +7,7 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 const require = createRequire(import.meta.url);
 const root = path.dirname(require.resolve("pdfjs-dist/package.json"));
 const task = getDocument({
-  data: new Uint8Array(workerData as ArrayBuffer),
+  data: new Uint8Array(workerData.data as ArrayBuffer),
   isEvalSupported: false,
   disableFontFace: true,
   useSystemFonts: false,
@@ -38,7 +38,12 @@ try {
     }
     const text = parts.join("").replace(/[ \t]+\n/g, "\n").trim();
     // Image-only interior pages can contain missing writing; do not confirm a partial report.
-    if (text.replace(/[\s\d]/g, "").length < 20) throw new Error("PDF page has no searchable writing");
+    if (text.replace(/[\s\d]/g, "").length < 20) {
+      const normalize = (s: string) => s.replace(/\s/g, "").toLowerCase();
+      const verifiedCover = n === 1 && text.replace(/[\s\d]/g, "").length > 0 &&
+        (workerData.options.shortCoverTexts as string[]).some(cover => normalize(cover) === normalize(text));
+      if (!verifiedCover) throw new Error("PDF page has no searchable writing");
+    }
     if (text.includes("\uFFFD")) throw new Error("PDF character decoding failed");
     size += text.length;
     if (size > 500_000) throw new Error("PDF text limit");

@@ -96,7 +96,7 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 发布者另有原生 Markdown 全文时，可配置 `bodyExtractionMarkdown: { "urlTemplate": "https://example.org{path}.md" }`，模板须包含 `{path}` 或 `{slug}`。只接受公开 `text/markdown` 或 `text/plain` 响应中的 Markdown 原文，网页、JSON、错误页和过短文本不算正文。该规则与 CSS、JSON-LD、JSON 正文规则互斥，失败后不付费回退。网页列表的详情也从这一原文读取，可用 `detail.publishedAtRegex`、`detail.titleRegex` 指定原文中的主日和标题；未配置该规则的来源行为不变。
 
-已核实的公开 PDF 报告可设置 `bodyExtractionPdf: true`，列表应直接指向报告文件。只接受 `application/pdf` 与 PDF 文件头一致的响应，按全部页面顺序提取可搜索文字；缺少可搜索文字的页面、损坏、需要密码或超过 16 MiB、150 页、50 万字符、30 秒解析限制时不确认正文。解析在单独线程内进行，不执行 PDF 脚本、不做 OCR、不付费回退。该规则与其他正文规则互斥；日期和标题可用详情的正则从报告文字读取，不使用 PDF 创建时间、文件名或上传路径猜首发日期。图表图像不作为文字识别，全文展示开关仍遵守来源授权。
+已核实的公开 PDF 报告可设置 `bodyExtractionPdf: true`，列表应直接指向报告文件。只接受 `application/pdf` 与 PDF 文件头一致的响应，按全部页面顺序提取可搜索文字；缺少可搜索文字的页面、损坏、需要密码或超过 16 MiB、150 页、50 万字符、30 秒解析限制时不确认正文。解析在单独线程内进行，不执行 PDF 脚本、不做 OCR、不付费回退。对于已目视核验的公开报告，可在 `bodyExtractionPdf: true` 旁明确设置 `bodyExtractionPdfOptions: { maxBytes: 67108864, timeoutMs: 120000, shortCoverTexts: ["已核验的封面全部文字"] }`：`maxBytes` 为正整数且最多 64 MiB，省略仍为 16 MiB；`timeoutMs` 为 1000–120000 的整数，仅调整 PDF 下载期限，默认 20000 毫秒；`shortCoverTexts` 最多 8 项，每项必须是非空、少于 20 个非数字非空白字符的完整封面文字。只在第一页文字不足 20 字时，忽略空白和大小写后与某项完全一致才允许，并保留该页全部文字；空封面、任何文字不足的内页、错误字形和控制字符仍拒绝。150 页、50 万字符、30 秒及线程 256 MiB 内存限制不变，关联 Adobe 阅读器不继承这些例外。选项对象未知键、错误类型、超限值或未打开 PDF 规则均拒绝。该规则与其他正文规则互斥；日期和标题可用详情的正则从报告文字读取，不使用 PDF 创建时间、文件名或上传路径猜首发日期。图表图像不作为文字识别，全文展示开关仍遵守来源授权。
 
 此配置不改变 JSON 列表请求的 `bodyJson` 参数，也不从创建时间推断文章发布日期。字段缺失、正文过短或选择结果不唯一时，不会回退到页面导航或付费正文服务。不能与顶层 `bodySelector` 或 `bodyJsonLdType` 同时配置。
 

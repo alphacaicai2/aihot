@@ -1,11 +1,12 @@
 // The config keys each kind of source implements. Anything else is refused: a key a collector does not
 // know would otherwise fall back silently to the generic parse (menus and sentence fragments as
 // articles, dates never found).
+import { validatedPdfOptions } from "../content/pdf.ts";
 import type { SourceRow } from "./types.ts";
 import { bodyJsonRequest, type BodyJsonRequestConfig } from "../content/json-request.ts";
 
 // Rules applied in collect.ts to every kind read through collectSource.
-const COLLECTED = ["_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "userAgent", "bodySelector", "bodyJsonLdType", "bodyExtractionJson", "bodyExtractionMarkdown", "bodyExtractionPdf", "bodyExtractionLinkedHtml"];
+const COLLECTED = ["_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "userAgent", "bodySelector", "bodyJsonLdType", "bodyExtractionJson", "bodyExtractionMarkdown", "bodyExtractionPdf", "bodyExtractionPdfOptions", "bodyExtractionLinkedHtml"];
 
 const KEYS: Record<SourceRow["kind"], string[]> = {
   rss: [...COLLECTED, "feedUrl", "summaryIsBody", "feedContentIsSummary", "preserveUrlFragment", "allowCategories", "denyCategories", "minifluxFeedId", "minifluxLookbackDays", "rssMaxBytes"],
@@ -62,6 +63,10 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     else if (NESTED[key] && value && typeof value === "object") {
       for (const sub of Object.keys(value)) if (!NESTED[key]!.includes(sub)) out.push(`${key}.${sub}`);
     }
+  }
+  if (config.bodyExtractionPdfOptions !== undefined) {
+    if (config.bodyExtractionPdf !== true) out.push("bodyExtractionPdfOptions=requires bodyExtractionPdf true");
+    if (!validatedPdfOptions(config.bodyExtractionPdfOptions)) out.push("bodyExtractionPdfOptions=bounded maxBytes and verified shortCoverTexts required");
   }
   if (kind === "web_list" && (config.nextPageSelector !== undefined || config.maxPages !== undefined)) {
     if (typeof config.nextPageSelector !== "string" || !config.nextPageSelector || config.nextPageSelector.length > 300) out.push("nextPageSelector=explicit selector required");
