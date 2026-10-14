@@ -49,6 +49,8 @@ Miniflux 的 `content` 默认作为订阅摘要保存，不声称是完整正文
 ```
 
 可选：`summaryIsBody`（订阅里的摘要就是全文）、`allowCategories` / `denyCategories`（按订阅里的分类过滤）。
+如果订阅的 `content:encoded` / Atom `content` 实际也只有摘要，设置 `feedContentIsSummary:true`，保留摘要并让正文提取任务读取原文；默认仍使用订阅提供的正文。
+正文采用非标准页面结构时，可用 `bodySelector` 指定已核验的文章正文容器；未匹配到容器则保持正文未确认，不采入页面其他区域。
 读取默认最多 8 MiB；确实提供较大 XML 的源可单独配置 `rssMaxBytes`（字节，最多 32 MiB），不影响其他源。
 
 #### 批量导入 OPML
@@ -81,6 +83,46 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 - `parseMode`：`html`（默认，用选择器）、`markdown`（经 Jina 渲染后按 Markdown 读）、`docusaurus_changelog`。
 - `detail`：列表缺日期、标题或摘要时抓详情页补齐（`publishedAtSelector`、`titleSelector`、`summarySelector` 等）。
 - `allowUrlPrefixes` / `denyUrlPrefixes`：只收某些路径下的文章。
+
+### 结构化正文
+
+对已经核实正文位置的站点，可配置 `bodyExtractionJson`。从文章页读取时，用 `selector` 指向唯一的 `application/json` 脚本；从公开 JSON 接口读取时，用 `urlTemplate` 指定包含 `{path}` 或 `{slug}` 的地址。两种入口只选一种。
+
+发布者的匿名正文读取接口使用 POST 时，显式设置 `method: "POST"` 和 `bodyJson`，例如 `{"id":"{slug}"}`。仅用于已经核实为读取文章的公开接口，不用于表单、登录或订阅操作。正文请求可以使用固定 `urlTemplate`，但请求地址或 JSON 值必须映射真实文章 `{path}` / `{slug}`；结构化替换 JSON 值，不拼接 JSON 语法。POST 请求不跟随重定向、不携带列表凭证，保留原有地址检查、体积限制和正文净化；失败保持未确认，不付费回退。未配置时继续使用 GET。
+
+`path` 指定正文的固定字段路径，`format` 为 `html` 或 `markdown`。HTML 片段包含周边内容时，可用嵌套的 `bodySelector` 限定唯一文章容器。经核实的 Magnolia 页面可指定 `adapter: "magnolia_article"`，只按组件顺序读取正文与问答，遇到未知组件则保留未确认状态。
+
+公开 Sanity API 的文章组件可指定 `adapter: "sanity_article"` 和 `format: "html"`，`path` 必须指向文章本身的组件数组。只读取已支持的段落、链接、列表和图片；遇到未知组件或缺失引用时保留未确认状态，不拼接描述、相关报道或 CMS 元数据。
+
+发布者另有原生 Markdown 全文时，可配置 `bodyExtractionMarkdown: { "urlTemplate": "https://example.org{path}.md" }`，模板须包含 `{path}` 或 `{slug}`。只接受公开 `text/markdown` 或 `text/plain` 响应中的 Markdown 原文，网页、JSON、错误页和过短文本不算正文。该规则与 CSS、JSON-LD、JSON 正文规则互斥，失败后不付费回退。网页列表的详情也从这一原文读取，可用 `detail.publishedAtRegex`、`detail.titleRegex` 指定原文中的主日和标题；未配置该规则的来源行为不变。
+
+已核实的公开 PDF 报告可设置 `bodyExtractionPdf: true`，列表应直接指向报告文件。只接受 `application/pdf` 与 PDF 文件头一致的响应，按全部页面顺序提取可搜索文字；缺少可搜索文字的页面、损坏、需要密码或超过 16 MiB、150 页、50 万字符、30 秒解析限制时不确认正文。解析在单独线程内进行，不执行 PDF 脚本、不做 OCR、不付费回退。对于已目视核验的公开报告，可在 `bodyExtractionPdf: true` 旁明确设置 `bodyExtractionPdfOptions: { maxBytes: 67108864, timeoutMs: 120000, shortCoverTexts: ["已核验的封面全部文字"] }`：`maxBytes` 为正整数且最多 64 MiB，省略仍为 16 MiB；`timeoutMs` 为 1000–120000 的整数，仅调整 PDF 下载期限，默认 20000 毫秒；`shortCoverTexts` 最多 8 项，每项必须是非空、少于 20 个非数字非空白字符的完整封面文字。只在第一页文字不足 20 字时，忽略空白和大小写后与某项完全一致才允许，并保留该页全部文字；空封面、任何文字不足的内页、错误字形和控制字符仍拒绝。150 页、50 万字符、30 秒及线程 256 MiB 内存限制不变，关联 Adobe 阅读器不继承这些例外。选项对象未知键、错误类型、超限值或未打开 PDF 规则均拒绝。该规则与其他正文规则互斥；日期和标题可用详情的正则从报告文字读取，不使用 PDF 创建时间、文件名或上传路径猜首发日期。图表图像不作为文字识别，全文展示开关仍遵守来源授权。
+
+此配置不改变 JSON 列表请求的 `bodyJson` 参数，也不从创建时间推断文章发布日期。字段缺失、正文过短或选择结果不唯一时，不会回退到页面导航或付费正文服务。不能与顶层 `bodySelector` 或 `bodyJsonLdType` 同时配置。
+
+### json_list 中的公开静态 JavaScript 数据
+
+发布者把文章文字放在公开客户端脚本中时，可使用 `mode: "javascript_array"` 直接读取脚本，或 `mode: "html_script_array"` 从网页的唯一 `scriptSelector` 找到当前公开脚本，避免固定部署 hash。后者可配置 `assetNameIncludes`，从脚本的静态导入中找到唯一文章 chunk，按模块地址解析相对路径；没有导入时只接受唯一绝对地址或根路径。裸依赖表字符串的地址基准不明确时拒绝读取，不猜路径。最多读取入口及一个 chunk，所有脚本必须同源，经过普通抓取的地址检查，不执行任何发布者代码。
+
+```json
+{
+  "url": "https://example.org/insights",
+  "mode": "html_script_array",
+  "scriptSelector": "script[type=module][src]",
+  "assetNameIncludes": "insights-",
+  "arrayMatchKeys": ["slug", "title", "blocks"],
+  "arrayProjectionKeys": ["slug", "title", "blocks", "dateLabel"],
+  "titlePaths": ["title"],
+  "publishedAtPath": "dateLabel",
+  "summaryBlocksPath": "blocks",
+  "summaryIsBody": true,
+  "urlTemplate": "https://example.org/insights/{slug}"
+}
+```
+
+`arrayMatchKeys` 是 2–20 个稳定字段名，用来选出唯一文章集合，不依赖混淆后的变量名。默认读取对象数组；真实出版结构为静态键到文章对象的字典时，显式配置 `collectionKind: "object"` 和 `itemsObjectValues: true`。`arrayProjectionKeys` 限定读取的顶层字段，须包含全部用于匹配、正文、日期、作者和网址映射的字段。未消费的图片字段可忽略，正文中的调用、变量、插值模板仍拒绝；对象中的动态键、展开、方法、重复键和原型相关键同样拒绝。
+
+正文为 HTML 字符串时沿用 `summaryPaths`；正文为已核验的纯文字块数组时用 `summaryBlocksPath`，只接受 `{type,text}` 结构的 `heading`、`paragraph`、`quote`，未知块会使整次读取失败，不确认残缺正文。仅有月份或年份的日期保留为未知日，不用抓取时间代替首发；完整文字日使用稳定 UTC 日锚点。解析在单独线程进行，限制 4 MiB 响应、128 MiB 主堆、5 秒、50 万语法节点、256 层语法深度、32 层数据深度和 2,000 个集合条目，超限或不唯一时失败，已有 JSON 读取方式保持不变。
 
 ### x_search
 
@@ -115,6 +157,10 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 首次发现时原文已经发布超过 48 小时的资料、新信源第一次导入的存量条目、标记为回灌的推送，都按原文时间归档：不进入“今天”，也不推送。这条规则所有入口共用，防止一次性导入历史内容刷屏。
 
+对原生 RSS、网页列表和 JSON 列表，可以在配置的 `_aihot` 中设置 `skipInitialRemainder: true`：第一次成功采集建立当前列表基线，只导入 `initialBackfillLimit` 限定的历史条目；其余未变化的存量不会在下次轮询进入站内。此后出现的新网址正常采集，基线中的旧条目发生变化时按历史更新采集。抓取或存储失败不推进基线。此选项不适用于 Miniflux 和 X 搜索，默认关闭，已有订阅保持原行为。已初始化的来源需重新建立基线后再启用此规则。
+
+公开站点拒绝默认请求标识时，可以为原生 RSS、网页列表和 JSON 列表单独配置 `userAgent`，使用明确的采集器名称及站点说明地址。列表、详情和后续正文提取保持同一标识；其他来源和付费 API 保持原请求方式。通过 Miniflux 读取的列表请求由 Miniflux 管理。
+
 ## 外部推送接口
 
 自己写脚本抓的内容，可以推进站里，走和普通采集一样的判重、精选和归组。
@@ -138,3 +184,25 @@ Content-Type: application/json
 - 返回 `{"ok": true, "created": <新建条数>}`。缺标题或网址的条目会被跳过，同一请求里重复的网址只取第一条。
 - `sourceId` 不存在时会自动建一个 `external` 信源，默认不进公开页面：到后台把它的参与方式改成 `editorial` 才会出现在站上。
 - 条目的 `raw._aihot.backfill` 为 `true` 时按历史回灌处理（不进入“今天”、不推送）。
+
+### 官方嵌入的另一份 HTML 正文
+
+`bodyExtractionLinkedHtml` 只适用于已经核实的出版链接，例如官方页静态声明的 Shorthand `embed.js`。它不运行脚本：用 `selector` 和 `attribute`（`href` 或 `src`）选出唯一目标，按明确的 `stripPathSuffix` 去掉路径后缀，再以 `allowedOrigins` 限定出版者。目标必须是 HTML；`bodySelector` 仅限定目标文档的正文。规范原文 URL、标题、日期仍来自官方列表／外层页。
+
+官方文章链接到 Adobe PDF 文档页时，可显式加 `format: "adobe_pdf"` 和 `pdfOrigins`（最多四个精确公开源）。第一跳仍须是已限定出版者的 HTML；仅静态读取 `#adobe-dc-view` 中 `AdobeDC.View` 的字面 `previewFile.content.location.url`。不执行脚本，不接受动态表达式、多个不同目标或未声明的 PDF 源。第二跳须直接返回完整可搜索 PDF，遵守同一 PDF 解析限制，不跟随 PDF 重定向；任何一步失败时，文章简介不能成为正文。此模式不能配置子正文选择器，日期不能根据下载地址或报告月份补造具体首发日。
+
+这项规则与其他正文规则互斥；缺失、歧义、域名不匹配、跳转到其他域或正文不确认均失败，不回退为外层导航，也不使用付费阅读器。官方页与目标页都经过同一个出站访问和体积限制。
+
+需要从列表的下一页发现原创文章时，HTML `web_list` 可显式设置 `nextPageSelector`（下一页链接的 CSS selector）和 `maxPages`（2–5 页）。采集器只沿发布者真实提供的链接读取，合并重复文章并保持首条记录，仍适用初导数量和订阅基线。分页链接必须唯一、位于同一 origin，不能含账号密码或 fragment；分页请求不跟随重定向。循环、失败页和非 HTML 响应会使本次采集失败，不把部分列表当成功。此功能只用于有规范列表 URL 的原生 HTML，不支持 Jina、其他 adapter 或自定义 `baseUrl`；未配置分页的来源仍只读取一页。
+
+正式官网直接链接的公开 X Article，可显式配置 `bodyExtractionJson: { urlTemplate: "https://api.fxtwitter.com/status/{slug}", path: "tweet", format: "html", adapter: "x_article" }`。这是无账号的公开 Fx JSON 镜像，不是 X 官方 API；只用于已核实的公开原作。适配器核对原文 URL、作者、status ID，要求作者明确非 protected，并完整处理 Draft.js 段落、样式、列表及图片 caption。未知块、缺少 entity/media 映射均失败，不采用 preview_text 或解读图片中的文字。正文走现有净化和权限规则。`detail` 必须有足够的 `maxFetches`；以 authoritative 日期和标题规则请求详情时，元数据来自实际 `article.title` 和 `article.created_at`，不用卡片错链日期、tweet 发布或 modified_at。不得配置子正文 selector 来将局部文本当全文。
+
+若正式页面内联脚本用静态变量声明当前文章 JSON 文件，可使用 `json_list` 的 `mode: "html_json_document"` 和 `jsonDocument: { selector, variable, allowedOrigins }`。每次采集先读正式页面，再用有限资源的 AST parser 找出该变量唯一的静态 URL 及 `fetch(variable)` 声明；不执行脚本。JSON 目标限定显式 origin、`.json` 文件、4MiB且不跟随跳转，不向 CDN 转发列表请求的凭证头。URL 缺失、动态赋值、歧义、非 JSON 或越域均失败。这样出版者换文件版本后不会继续盯着旧静态资产。
+
+少数公开正文 API 将严格 JSON 标成 `text/plain`。仅已核实此行为的来源可在 `bodyExtractionJson` 中设置 `allowPlainTextJson: true`；仍须严格 JSON 解码、匹配指定正文路径及原有体积限制。默认媒体类型要求保持不变，HTML 错误页不作为正文。
+
+已核实的完整原作若以 Markdown 字符串或段落字符串数组发布，可在 `summaryBlocksPath` 旁显式设 `summaryBlocksFormat: "markdown_strings"` 与 `summaryIsBody: true`。每个数组项必须为字符串，按原顺序保留全文及段落；对象/字符串混合块拒绝。静态 JS 刊物若用字面字符串数组 `.join("\n\n")` 发布这些段落，可额外设置 `allowJoinedMarkdown: true`：仅解释该固定数据形式，动态参数、其他方法和任意调用拒绝。默认仍只接受已知的 `type`/`text` 对象块，不自动猜测任意字符串数组是正文。
+
+若 JSON 文章目录用内部 CMS ID 引用读者页，而官网另有公开 ID→路径索引，可显式添加 `urlLookup: { url, itemsPath, keyPath, valuePath, itemKeyPath }`。采集时读取同源、4MiB 内的 JSON 索引，不跟随跳转或转发目录凭证；用文章的 `itemKeyPath` 匹配索引 `keyPath`，采用 `valuePath` 中真实读者路径。冲突映射、非 JSON、越域路径均失败，不按文章标题猜 slug。未匹配项仅可使用原有显式 URL 模板；不提供模板时跳过。
+
+Framer 的公开 `script[type="framer/handover"]` 若保存带引用的 JSON 数据图，可显式使用 `mode: "framer_handover"`、`framerHandover: { selector, matchKeys }`。解码器只解释字面量、对象、数组与 Map 数据，限制图大小、展开次数及深度；循环引用、自定义类型与危险键拒绝。`matchKeys` 必须唯一识别文章记录数组，避免把首页 featured 单项当成完整目录。正文仍从真实独立读者页读取，不执行网站脚本。

@@ -1,9 +1,11 @@
+import { linkedHtmlDocument } from "../content/linked-html.ts";
 // Web list pages: HTML with selectors, Markdown through Jina Reader, and Docusaurus changelogs.
 import * as cheerio from "cheerio";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { readable, type ExtractedBody } from "../content/extract.ts";
+import { readable, extractFromUrl, bodyDocumentUrl, markdownDocument, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
+import { pdfDocument, validatedPdfOptions } from "../content/pdf.ts";
 import { jinaRead } from "../providers/jina.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
@@ -119,7 +121,8 @@ async function fetchListingText(source: SourceRow): Promise<{ text: string; viaJ
     const page = await jinaRead(target, { purpose: "source_listing", subject: `source:${source.id}`, cacheToleranceSeconds: source.config.cacheToleranceSeconds, perRead: true });
     return { text: page.markdown, viaJina: true, base: source.config.baseUrl ?? target };
   }
-  const res = await guardedFetch(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8" }, timeoutMs: 25_000 });
+  const res = await guardedFetch(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+    ...(source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : {}) }, timeoutMs: 25_000 });
   if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
   return { text: res.text(), viaJina: false, base: source.config.baseUrl ?? url };
 }
@@ -305,6 +308,39 @@ async function fromMimoHome(html: string, base: string, source: SourceRow): Prom
 export async function fetchWebList(source: SourceRow): Promise<Candidate[]> {
   const { text, viaJina, base } = await fetchListingText(source);
   const mode = source.config.adapter === "mimo_home" ? "mimo_home" : source.config.parseMode ?? (viaJina ? "markdown" : "html");
+  if (source.config.nextPageSelector) {
+    if (viaJina || mode !== "html" || source.config.baseUrl) throw new FetchError("pagination requires native HTML with its canonical listing URL");
+    const selector = source.config.nextPageSelector;
+    const limit = source.config.maxPages;
+    if (typeof selector !== "string" || !selector || selector.length > 300 || !Number.isInteger(limit) || limit < 2 || limit > 5) throw new FetchError("invalid bounded pagination config");
+    let pageUrl = String(source.config.url);
+    const origin = new URL(pageUrl).origin;
+    const visited = new Set([pageUrl]);
+    const articles = new Map<string, Candidate>();
+    let html = text;
+    for (let page = 0; page < limit; page++) {
+      const pageSource = { ...source, config: { ...source.config, url: pageUrl } };
+      for (const article of fromHtml(html, pageUrl, pageSource)) if (!articles.has(article.url)) articles.set(article.url, article);
+      if (page + 1 === limit) break;
+      const $ = cheerio.load(html);
+      const next = $(selector).filter((_, el) => $(el).attr("aria-disabled") !== "true" && !/display\s*:\s*none/i.test($(el).attr("style") ?? ""));
+      if (!next.length) break;
+      const links = new Set(next.toArray().map(el => absolute($(el).attr("href"), pageUrl)));
+      if (links.size !== 1 || links.has(null)) throw new FetchError("pagination link is missing or ambiguous");
+      const target = [...links][0]!;
+      const url = new URL(target);
+      if (url.origin !== origin || url.username || url.password || url.hash) throw new FetchError("pagination must stay on the listing origin without credentials or fragments");
+      if (visited.has(target)) throw new FetchError("pagination loop");
+      visited.add(target);
+      const response = await guardedFetch(target, { timeoutMs: 25_000, maxBytes: 4 * 1024 * 1024, maxRedirects: 0,
+        headers: source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : undefined });
+      if (response.status !== 200 || !/html/i.test(response.headers.get("content-type") ?? "")) throw new FetchError(`pagination HTTP ${response.status} or non-HTML response`, response.status);
+      pageUrl = target;
+      html = response.text();
+    }
+    if (!articles.size) throw new FetchError("no items matched (paginated html)");
+    return [...articles.values()];
+  }
   let out: Candidate[];
   if (mode === "mimo_home") out = await fromMimoHome(text, base, source);
   else if (mode === "markdown") out = fromMarkdown(text, base, source);
@@ -330,18 +366,42 @@ export interface DetailNeed {
  */
 export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<{ publishedAt: Date | null; title: string | null; summary: string | null; body: ExtractedBody | null }> {
   const d = source.config.detail ?? {};
+  const markdownRule = source.config.bodyExtractionMarkdown;
+  const pdfRule = source.config.bodyExtractionPdf === true;
+  const pdfOptions = validatedPdfOptions(source.config.bodyExtractionPdfOptions);
+  if (!pdfOptions || (source.config.bodyExtractionPdfOptions !== undefined && !pdfRule)) return { publishedAt: null, title: null, summary: null, body: null };
+  const linkedRule = source.config.bodyExtractionLinkedHtml;
+  if (linkedRule && (markdownRule || pdfRule || source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson)) return { publishedAt: null, title: null, summary: null, body: null };
+  if ((markdownRule || pdfRule) && (source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson || (markdownRule && pdfRule))) return { publishedAt: null, title: null, summary: null, body: null };
+  if (source.config.bodyExtractionJson?.adapter === "x_article") {
+    const body = await extractFromUrl(url, { allowJina: false, subject: `source:${source.id}`, userAgent: source.config.userAgent,
+      bodyExtractionJson: source.config.bodyExtractionJson, bodySelector: source.config.bodySelector, bodyJsonLdType: source.config.bodyJsonLdType });
+    return { publishedAt: need.date ? body?.publishedAt ?? null : null, title: need.title ? body?.title ?? null : null,
+      summary: need.summary ? body?.text.slice(0, 2000) ?? null : null, body: need.body ? body : null };
+  }
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
-  const dateInJina = need.date && jinaListing && !!d.publishedAtRegex;
-  const titleInJina = need.title && jinaListing && !!d.titleRegex;
+  const dateInJina = need.date && jinaListing && !!d.publishedAtRegex && !pdfRule;
+  const titleInJina = need.title && jinaListing && !!d.titleRegex && !pdfRule;
   const jina = dateInJina || titleInJina ? (await jinaRead(url, { purpose: "source_detail", subject: `source:${source.id}` })).raw : null;
   let html: string | null = null;
   let body: ExtractedBody | null = null;
-  if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary) {
-    const res = await guardedFetch(url, { timeoutMs: 20_000 });
+  if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary || (need.body && (markdownRule || pdfRule || linkedRule))) {
+    const target = markdownRule ? bodyDocumentUrl(url, markdownRule.urlTemplate) : url;
+    if (!target) return { publishedAt: null, title: null, summary: null, body: null };
+    const res = await guardedFetch(target, { timeoutMs: pdfRule ? pdfOptions.timeoutMs : 20_000, maxBytes: pdfRule ? pdfOptions.maxBytes : undefined,
+      headers: source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : undefined });
     if (res.status === 200) {
       html = res.text();
-      if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
-        try { body = readable(html, res.url); }
+      if (pdfRule) {
+        const extracted = await pdfDocument(res.body, res.headers.get("content-type") ?? "", source.config.bodyExtractionPdfOptions);
+        html = extracted?.html ?? null;
+        if (need.body) body = extracted;
+      } else if (markdownRule) {
+        const extracted = markdownDocument(html, url, res.headers.get("content-type") ?? "");
+        if (!extracted) html = null;
+        else if (need.body) body = extracted;
+      } else if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
+        try { body = linkedRule ? await linkedHtmlDocument(html, res.url, linkedRule, readable, source.config.userAgent) : readable(html, res.url, source.config.bodySelector, source.config.bodyJsonLdType, source.config.bodyExtractionJson); }
         catch { /* A failed extraction must not discard the detail metadata. */ }
       }
     }
@@ -359,7 +419,7 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
     // An authoritative rule is the only source of the date: when its byline is missing, no other
     // timestamp on the page (an update time, a related post) stands in for it.
     const authoritative = d.publishedAtAuthoritative === true && !!(d.publishedAtSelector || d.publishedAtRegex);
-    if (!publishedAt && $ && !dateInJina && !authoritative) {
+    if (!publishedAt && $ && !dateInJina && !authoritative && !pdfRule) {
       const meta = $('meta[property="article:published_time"], meta[name="pubdate"], meta[itemprop="datePublished"]').attr("content");
       publishedAt = parseLooseDate(meta) ?? parseLooseDate(jsonLdPublished($, html!)) ?? parseLooseDate($("time[datetime]").first().attr("datetime"));
     }

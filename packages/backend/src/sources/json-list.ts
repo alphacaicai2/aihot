@@ -2,7 +2,10 @@
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
+import { identityKeyForUrl } from "../lib/url.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { htmlScriptArray, htmlJsonDocument, javascriptArray, JAVASCRIPT_MAX_BYTES, textBlocks } from "./javascript-array.ts";
+import { framerHandover } from "./framer-handover.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
@@ -23,6 +26,34 @@ function firstString(obj: unknown, paths: string[] | undefined): string | null {
     if (typeof v === "number") return String(v);
   }
   return null;
+}
+
+/** A publisher's separate public page index can resolve internal CMS IDs to actual reader URLs. */
+async function publicUrlLookup(config: Record<string, any>, listingUrl: string): Promise<Map<string, string> | null> {
+  const rule = config.urlLookup;
+  if (!rule) return null;
+  const target = new URL(rule.url, listingUrl), origin = new URL(listingUrl).origin;
+  if (target.origin !== origin || target.username || target.password || target.hash || !target.pathname.endsWith(".json")) throw new FetchError("URL lookup must be a same-origin public JSON file");
+  const response = await guardedFetch(target.href, { timeoutMs: 25_000, maxBytes: 4 * 1024 * 1024, maxRedirects: 0, headers: { accept: "application/json" } });
+  if (response.status !== 200 || !/\bapplication\/(?:[\w.+-]+\+)?json\b/i.test(response.headers.get("content-type") ?? "")) throw new FetchError("URL lookup returned redirects or non-JSON content", response.status);
+  let data: unknown;
+  try { data = JSON.parse(response.text()); } catch { throw new FetchError("URL lookup response is not JSON"); }
+  const rows = getPath(data, rule.itemsPath);
+  if (!Array.isArray(rows) || !rows.length || rows.length > 10_000) throw new FetchError("URL lookup items must be a bounded nonempty array");
+  const urls = new Map<string, string>();
+  for (const row of rows) {
+    const key = getPath(row, rule.keyPath), path = getPath(row, rule.valuePath);
+    if (key === undefined || key === null) continue; // Framework utility pages have no CMS article ID.
+    if (!(typeof key === "string" && key.length > 0 && key.length <= 256) && !(typeof key === "number" && Number.isSafeInteger(key))) throw new FetchError("URL lookup requires a stable string or integer key");
+    if (typeof path !== "string" || !path.trim()) throw new FetchError("URL lookup is missing a reader path");
+    const url = new URL(path, listingUrl);
+    if (url.origin !== origin || url.username || url.password || url.hash) throw new FetchError("URL lookup reader paths must stay on the publisher origin");
+    const previous = urls.get(String(key));
+    if (previous && previous !== url.href) throw new FetchError("URL lookup key has ambiguous reader paths");
+    urls.set(String(key), url.href);
+  }
+  if (!urls.size) throw new FetchError("URL lookup contains no public reader mappings");
+  return urls;
 }
 
 /** "{path}" → encoded value, "{raw:path}" → raw value. Returns null when a referenced value is missing. */
@@ -53,6 +84,23 @@ function toDate(v: unknown, unit: string | undefined): Date | null {
   return Number.isFinite(t) ? new Date(t) : null;
 }
 
+function staticDate(v: unknown, unit: string | undefined): Date | null {
+  if (unit) return toDate(v, unit);
+  const text = String(v ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}(?:$|T|\s)/.test(text)) {
+    const day = toDate(`${text.slice(0, 10)}T00:00:00Z`, undefined);
+    return day?.toISOString().startsWith(text.slice(0, 10)) ? toDate(text, undefined) : null;
+  }
+  // Human-readable calendar days have no publisher timezone; use a stable UTC day anchor.
+  const human = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(text);
+  if (human) {
+    const month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(human[1]!.slice(0, 3).toLowerCase());
+    const day = toDate(`${text} UTC`, undefined);
+    return day && day.getUTCMonth() === month && day.getUTCDate() === Number(human[2]) && day.getUTCFullYear() === Number(human[3]) ? day : null;
+  }
+  return null;
+}
+
 function findKey(obj: unknown, key: string, depth = 0): unknown {
   if (depth > 12 || obj === null || typeof obj !== "object") return undefined;
   if (!Array.isArray(obj) && key in (obj as Record<string, unknown>)) {
@@ -64,6 +112,32 @@ function findKey(obj: unknown, key: string, depth = 0): unknown {
     if (found !== undefined) return found;
   }
   return undefined;
+}
+
+/** Flight arrays can contain nested arrays and brackets inside JSON strings. */
+function flightArray(decoded: string, key: string): unknown[] | null {
+  const property = `${JSON.stringify(key)}:`;
+  let at = decoded.indexOf(property);
+  while (at >= 0) {
+    const start = at + property.length;
+    const match = /^\s*\[/.exec(decoded.slice(start));
+    if (match) {
+      const arrayStart = start + match[0].length - 1;
+      let depth = 0, inString = false, escaped = false;
+      for (let i = arrayStart; i < decoded.length; i++) {
+        const ch = decoded[i]!;
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === "\\") escaped = true;
+          else if (ch === '"') inString = false;
+        } else if (ch === '"') inString = true;
+        else if (ch === "[") depth++;
+        else if (ch === "]" && --depth === 0) return JSON.parse(decoded.slice(arrayStart, i + 1));
+      }
+    }
+    at = decoded.indexOf(property, at + property.length);
+  }
+  return null;
 }
 
 function embeddedJson(html: string, source: SourceRow): unknown {
@@ -113,13 +187,8 @@ function embeddedJson(html: string, source: SourceRow): unknown {
     if (flight) {
       try {
         const decoded = JSON.parse(`"${flight[1]}"`) as string;
-        const idx = decoded.indexOf(`"${key}"`);
-        if (idx >= 0) {
-          const objStart = decoded.lastIndexOf("{", idx);
-          const parsed = JSON.parse(decoded.slice(objStart, decoded.indexOf("]", idx) + 1) + "}");
-          const found = findKey(parsed, key);
-          if (found) return { [key]: found };
-        }
+        const found = flightArray(decoded, key);
+        if (found) return { [key]: found };
       } catch {
         // keep scanning
       }
@@ -131,7 +200,8 @@ function embeddedJson(html: string, source: SourceRow): unknown {
 export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
   const c = source.config;
   const url = String(c.url ?? "");
-  const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9", ...(c.headers ?? {}) };
+  const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9",
+    ...(c.userAgent ? { "user-agent": String(c.userAgent) } : {}), ...(c.headers ?? {}) };
   if (/^https:\/\/api\.github\.com\//.test(url)) {
     const token = credential("collectors", "GITHUB_TOKEN");
     if (token) headers.authorization = `Bearer ${token}`;
@@ -141,10 +211,15 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     headers: c.bodyJson ? { ...headers, "content-type": "application/json" } : headers,
     body: c.bodyJson ? JSON.stringify(c.bodyJson) : undefined,
     timeoutMs: 25_000,
+    ...(c.mode === "javascript_array" || c.mode === "html_script_array" || c.mode === "html_json_document" || c.mode === "framer_handover" ? { maxBytes: JAVASCRIPT_MAX_BYTES } : {}),
   });
   if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
   let data: unknown;
-  if (c.mode === "html_json_key" || c.mode === "html_window_var") data = embeddedJson(res.text(), source);
+  if (c.mode === "javascript_array") data = await javascriptArray(res.text(), c.arrayMatchKeys, c.arrayProjectionKeys, undefined, c.collectionKind, c.allowJoinedMarkdown === true);
+  else if (c.mode === "html_script_array") data = await htmlScriptArray(res.text(), res.url, c, headers);
+  else if (c.mode === "html_json_document") data = await htmlJsonDocument(res.text(), res.url, c);
+  else if (c.mode === "framer_handover") data = framerHandover(res.text(), c.framerHandover);
+  else if (c.mode === "html_json_key" || c.mode === "html_window_var") data = embeddedJson(res.text(), source);
   else {
     try {
       data = JSON.parse(res.text());
@@ -155,26 +230,32 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
   let items = c.itemsPath ? getPath(data, c.itemsPath) : c.jsonKey ? getPath(data, c.jsonKey) : data;
   if (c.itemsObjectValues && items && typeof items === "object" && !Array.isArray(items)) items = Object.values(items);
   if (!Array.isArray(items)) throw new FetchError("items path did not resolve to an array");
+  const urlLookup = await publicUrlLookup(c, res.url);
 
   const out: Candidate[] = [];
   for (const item of items) {
     if (c.requireBoolean && getPath(item, c.requireBoolean.path) !== c.requireBoolean.equals) continue;
     if (c.minNumeric && !(Number(getPath(item, c.minNumeric.path)) >= Number(c.minNumeric.min))) continue;
     const title = firstString(item, c.titlePaths);
-    const url = (c.urlTemplate && renderTemplate(c.urlTemplate, item)) || (c.urlTemplateFallback && renderTemplate(c.urlTemplateFallback, item));
+    const url = (urlLookup && urlLookup.get(String(getPath(item, c.urlLookup.itemKeyPath)))) ||
+      (c.urlTemplate && renderTemplate(c.urlTemplate, item)) || (c.urlTemplateFallback && renderTemplate(c.urlTemplateFallback, item));
     if (!title || !url) continue;
     const externalId = c.externalIdPath ? getPath(item, c.externalIdPath) : null;
-    const summary = firstString(item, c.summaryPaths);
+    const summary = c.summaryBlocksPath ? textBlocks(getPath(item, c.summaryBlocksPath), c.summaryBlocksFormat) : firstString(item, c.summaryPaths);
     const raw = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : { value: item };
     for (const k of c.rawDropKeys ?? []) delete (raw as Record<string, unknown>)[k];
     const summaryIsBody = c.summaryIsBody === true && !!summary;
     out.push({
       url,
+      ...(c.preserveUrlFragment === true ? { identityKey: identityKeyForUrl(url, { keepFragment: true }) ?? undefined } : {}),
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
-      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
-      excerpt: summary ? collapseWhitespace(stripTags(summary)).slice(0, 2000) : null,
-      bodyText: summaryIsBody ? stripTags(summary!) : null,
+      // A month-only static newsletter label is not a publication day. Never substitute fetch time.
+      publishedAt: !c.publishedAtPath ? null : (c.mode === "javascript_array" || c.mode === "html_script_array" || c.mode === "html_json_document" || c.mode === "framer_handover")
+        ? staticDate(getPath(item, c.publishedAtPath), c.publishedAtUnit)
+        : toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
+      excerpt: summary ? collapseWhitespace(c.summaryBlocksPath ? summary : stripTags(summary)).slice(0, 2000) : null,
+      bodyText: summaryIsBody ? (c.summaryBlocksPath ? summary! : stripTags(summary!)) : null,
       bodyStatus: summaryIsBody ? "ok" : "pending",
       raw: { externalId: externalId ?? null },
     });

@@ -49,6 +49,7 @@ export function sanitizeBody(html: string, baseUrl?: string): string {
       video: ["src", "poster", "width", "height"],
       code: ["class"],
       pre: ["class"],
+      ol: ["type"],
       th: ["colspan", "rowspan", "align"],
       td: ["colspan", "rowspan", "align"],
       span: [],

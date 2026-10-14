@@ -1,6 +1,7 @@
 // Collection run for one source: fetch listing → filter → store material → enqueue processing.
 // A failed fetch never advances the success cursor; the source's health reflects consecutive failures.
 import { sql } from "../db.ts";
+import { sha256, stableJson } from "../lib/ids.ts";
 import { identityKeyFor, upsertMaterial } from "../content/materials.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
@@ -128,6 +129,25 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
     if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
 
+    // An opt-in subscription baseline keeps the unimported stock out of later live polls. A new
+    // URL still enters normally; changed stock is collected as an update to an existing baseline.
+    let initialRemainder: Record<string, string> | null = null;
+    if (source.config._aihot?.skipInitialRemainder === true && source.kind !== "x_search" && source.config.minifluxFeedId === undefined) {
+      initialRemainder = { ...(source.cursor?.initialRemainder ?? {}) };
+      const seen = new Set<string>();
+      candidates = candidates.filter((c) => {
+        const key = sha256(identityKeyFor({ ...c, sourceId, via: "fetch" }));
+        if (seen.has(key)) return false;
+        seen.add(key);
+        const signature = sha256(stableJson({ title: c.title, excerpt: c.excerpt ?? null,
+          bodyText: c.bodyText ?? null, publishedAt: c.publishedAt?.toISOString() ?? null }));
+        if (firstImport) { initialRemainder![key] = signature; return true; }
+        if (initialRemainder![key] === signature) return false;
+        if (initialRemainder![key]) c.backfill ??= "initial-baseline-update";
+        return true;
+      });
+    }
+
     // First import of a new source: bounded, and archived by source time (never "today", never pushed).
     const backfillLimit = Number(source.config._aihot?.initialBackfillLimit ?? 30);
     const backfillMonths = Number(source.config._aihot?.initialBackfillMonths ?? 12);
@@ -182,6 +202,13 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     }
 
     ({ created, revised } = await store(sourceId, candidates, firstImport ? "first-import" : null));
+
+    // Only a successful storage removes a changed entry from the suppressed baseline. Entries
+    // beyond this run's cap stay suppressed (or pending when changed) until a later successful run.
+    if (initialRemainder) {
+      for (const c of candidates) delete initialRemainder[sha256(identityKeyFor({ ...c, sourceId, via: "fetch" }))];
+      nextCursor.initialRemainder = initialRemainder;
+    }
 
     if (firstImport) nextCursor.initializedAt = new Date().toISOString();
     nextCursor.lastOkAt = new Date().toISOString();

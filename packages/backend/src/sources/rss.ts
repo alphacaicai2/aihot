@@ -94,6 +94,9 @@ function feedText(bodyHtml: string | null, summaryHtml: string, source: SourceRo
   const bodyText = bodyHtml ? stripTags(bodyHtml) : null;
   const teaser = !!bodyText && source.participation_mode === "editorial" && isTeaser(bodyText);
   const excerpt = summaryHtml ? collapseWhitespace(stripTags(summaryHtml)).slice(0, 2000) : teaser ? collapseWhitespace(bodyText!) : null;
+  if (source.config.feedContentIsSummary === true) {
+    return { excerpt: excerpt ?? (collapseWhitespace(bodyText ?? "").slice(0, 2000) || null), bodyHtml: null, bodyText: null, bodyStatus: "pending" };
+  }
   return bodyText && bodyText.length > 280 && !teaser
     ? { excerpt, bodyHtml, bodyText, bodyStatus: "ok" }
     : { excerpt, bodyHtml: null, bodyText: null, bodyStatus: "pending" };
@@ -125,13 +128,15 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
   // Config changes can alter parsing/filtering even when the upstream bytes did not change.
   const configHash = sha256(stableJson(source.config));
   const previous = !opts.force && source.cursor?.rss?.configHash === configHash ? source.cursor.rss as RssValidator : null;
-  const headers: Record<string, string> = { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8" };
+  const baseHeaders: Record<string, string> = { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+    ...(source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : {}) };
+  const headers = { ...baseHeaders };
   if (previous?.etag) headers["if-none-match"] = previous.etag;
   if (previous?.lastModified) headers["if-modified-since"] = previous.lastModified;
   let res = await guardedFetch(url, { headers, timeoutMs: 25_000, maxBytes });
   // A redirect may have changed destinations, whose ETag namespace is unrelated to the old one.
   if (res.status === 304 && previous && res.url !== previous.responseUrl) {
-    res = await guardedFetch(url, { headers: { accept: headers.accept! }, timeoutMs: 25_000, maxBytes });
+    res = await guardedFetch(url, { headers: baseHeaders, timeoutMs: 25_000, maxBytes });
   }
   const validator: RssValidator = {
     configHash, responseUrl: res.url,
