@@ -2,6 +2,7 @@
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
+import { identityKeyForUrl } from "../lib/url.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 import { htmlScriptArray, javascriptArray, JAVASCRIPT_MAX_BYTES, textBlocks } from "./javascript-array.ts";
 
@@ -213,6 +214,7 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     const summaryIsBody = c.summaryIsBody === true && !!summary;
     out.push({
       url,
+      ...(c.preserveUrlFragment === true ? { identityKey: identityKeyForUrl(url, { keepFragment: true }) ?? undefined } : {}),
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
       // A month-only static newsletter label is not a publication day. Never substitute fetch time.
