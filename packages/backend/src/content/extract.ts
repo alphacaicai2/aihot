@@ -15,6 +15,7 @@ import { contentHash } from "./materials.ts";
 import { pdfDocument } from "./pdf.ts";
 import { linkedHtmlDocument, type LinkedHtmlConfig } from "./linked-html.ts";
 import { publicXArticle } from "./x-article.ts";
+import { bodyJsonRequest, type BodyJsonRequestConfig } from "./json-request.ts";
 
 export interface ExtractedBody {
   html: string;
@@ -25,9 +26,8 @@ export interface ExtractedBody {
   publishedAt?: Date | null;
 }
 
-export interface BodyJsonConfig {
+export interface BodyJsonConfig extends BodyJsonRequestConfig {
   selector?: string;
-  urlTemplate?: string;
   path: string;
   format: "html" | "markdown";
   adapter?: "magnolia_article" | "sanity_article" | "x_article";
@@ -221,7 +221,7 @@ export function readable(html: string, url: string, bodySelector?: string | null
   let { document } = parseHTML(html);
   restoreStreamedHtml(document);
   if (bodyExtractionJson) {
-    if (bodySelector || bodyJsonLdType || bodyExtractionJson.urlTemplate || !bodyExtractionJson.selector) return null;
+    if (bodySelector || bodyJsonLdType || bodyExtractionJson.urlTemplate || bodyExtractionJson.method || bodyExtractionJson.bodyJson || !bodyExtractionJson.selector) return null;
     const scripts = document.querySelectorAll(bodyExtractionJson.selector);
     const values = new Set<string>();
     for (const script of scripts) {
@@ -348,14 +348,13 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
   }
   if (opts.bodyExtractionJson?.urlTemplate) {
     if (opts.bodySelector || opts.bodyJsonLdType || opts.bodyExtractionJson.selector) return null;
-    if (!/\{(?:path|slug)\}/.test(opts.bodyExtractionJson.urlTemplate)) return null;
     try {
-      const path = new URL(url).pathname;
-      const slug = path.split("/").filter(Boolean).at(-1) ?? "";
-      const target = opts.bodyExtractionJson.urlTemplate.replaceAll("{path}", path).replaceAll("{slug}", slug);
-      if (/[{}]/.test(target)) return null;
-      const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
-        headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
+      const request = bodyJsonRequest(url, opts.bodyExtractionJson);
+      if (!request) return null;
+      const res = await guardedFetch(request.url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
+        method: request.method, body: request.body, maxRedirects: request.method === "POST" ? 0 : 5,
+        headers: { ...(opts.userAgent ? { "user-agent": opts.userAgent } : {}),
+          ...(request.method === "POST" ? { "content-type": "application/json" } : {}) } });
       const type = res.headers.get("content-type") ?? "";
       if (res.status !== 200 || (!/json/i.test(type) && !(opts.bodyExtractionJson.allowPlainTextJson === true && /^text\/plain\b/i.test(type)))) return null;
       return jsonBody(JSON.parse(res.text()), url, opts.bodyExtractionJson, "json-api");

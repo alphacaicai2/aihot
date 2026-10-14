@@ -2,6 +2,7 @@
 // know would otherwise fall back silently to the generic parse (menus and sentence fragments as
 // articles, dates never found).
 import type { SourceRow } from "./types.ts";
+import { bodyJsonRequest, type BodyJsonRequestConfig } from "../content/json-request.ts";
 
 // Rules applied in collect.ts to every kind read through collectSource.
 const COLLECTED = ["_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "userAgent", "bodySelector", "bodyJsonLdType", "bodyExtractionJson", "bodyExtractionMarkdown", "bodyExtractionPdf", "bodyExtractionLinkedHtml"];
@@ -27,9 +28,9 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
 
 // Objects with fixed keys (headers and bodyJson are request data, free-form).
 const NESTED: Record<string, string[]> = {
-  bodyExtractionJson: ["selector", "urlTemplate", "path", "format", "adapter", "bodySelector", "allowPlainTextJson"],
+  bodyExtractionJson: ["selector", "urlTemplate", "path", "format", "adapter", "bodySelector", "allowPlainTextJson", "method", "bodyJson"],
   bodyExtractionMarkdown: ["urlTemplate"],
-  bodyExtractionLinkedHtml: ["selector", "attribute", "stripPathSuffix", "allowedOrigins", "bodySelector"],
+  bodyExtractionLinkedHtml: ["selector", "attribute", "stripPathSuffix", "allowedOrigins", "bodySelector", "format", "pdfOrigins"],
   jsonDocument: ["selector", "variable", "allowedOrigins"],
   urlLookup: ["url", "itemsPath", "keyPath", "valuePath", "itemKeyPath"],
   framerHandover: ["selector", "matchKeys"],
@@ -68,6 +69,17 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     if (config.adapter || config.baseUrl || (config.parseMode !== undefined && config.parseMode !== "html") || String(config.url ?? "").startsWith("https://r.jina.ai/")) out.push("pagination=requires canonical native HTML listing");
   }
   const bodyJson = config.bodyExtractionJson as Record<string, unknown> | undefined;
+  const linked = config.bodyExtractionLinkedHtml as Record<string, unknown> | undefined;
+  if (linked?.format !== undefined && !["html", "adobe_pdf"].includes(String(linked.format))) out.push("bodyExtractionLinkedHtml.format=unsupported");
+  if (linked?.format === "adobe_pdf") {
+    if (linked.bodySelector || !Array.isArray(linked.pdfOrigins) || !linked.pdfOrigins.length || linked.pdfOrigins.length > 4) out.push("bodyExtractionLinkedHtml.adobe_pdf=explicit PDF origins required");
+    else for (const value of linked.pdfOrigins) {
+      try { const u = new URL(String(value)); if (u.origin !== value || !/^https?:$/.test(u.protocol) || u.username || u.password) out.push("bodyExtractionLinkedHtml.pdfOrigins=exact public origins required"); } catch { out.push("bodyExtractionLinkedHtml.pdfOrigins=invalid"); }
+    }
+  } else if (linked?.pdfOrigins !== undefined) out.push("bodyExtractionLinkedHtml.pdfOrigins=requires adobe_pdf format");
+  if (bodyJson && (bodyJson.method !== undefined || bodyJson.bodyJson !== undefined) &&
+    (bodyJson.selector || !bodyJsonRequest("https://publisher.example/post/article-id", bodyJson as BodyJsonRequestConfig)))
+    out.push("bodyExtractionJson.request=explicit GET or read-only POST JSON article mapping required");
   if (bodyJson?.allowPlainTextJson !== undefined && typeof bodyJson.allowPlainTextJson !== "boolean") out.push("bodyExtractionJson.allowPlainTextJson=boolean required");
   if (bodyJson?.adapter === "x_article" && (bodyJson.format !== "html" || bodyJson.path !== "tweet" || typeof bodyJson.urlTemplate !== "string" || !bodyJson.urlTemplate.includes("{slug}") || bodyJson.selector || bodyJson.bodySelector)) out.push("bodyExtractionJson.x_article=requires complete tweet JSON API mapping");
   if (config.mode === "html_json_document") {

@@ -88,6 +88,8 @@ node --env-file=.env scripts/import-opml.ts path/to/feeds.opml bestblogs --dedup
 
 对已经核实正文位置的站点，可配置 `bodyExtractionJson`。从文章页读取时，用 `selector` 指向唯一的 `application/json` 脚本；从公开 JSON 接口读取时，用 `urlTemplate` 指定包含 `{path}` 或 `{slug}` 的地址。两种入口只选一种。
 
+发布者的匿名正文读取接口使用 POST 时，显式设置 `method: "POST"` 和 `bodyJson`，例如 `{"id":"{slug}"}`。仅用于已经核实为读取文章的公开接口，不用于表单、登录或订阅操作。正文请求可以使用固定 `urlTemplate`，但请求地址或 JSON 值必须映射真实文章 `{path}` / `{slug}`；结构化替换 JSON 值，不拼接 JSON 语法。POST 请求不跟随重定向、不携带列表凭证，保留原有地址检查、体积限制和正文净化；失败保持未确认，不付费回退。未配置时继续使用 GET。
+
 `path` 指定正文的固定字段路径，`format` 为 `html` 或 `markdown`。HTML 片段包含周边内容时，可用嵌套的 `bodySelector` 限定唯一文章容器。经核实的 Magnolia 页面可指定 `adapter: "magnolia_article"`，只按组件顺序读取正文与问答，遇到未知组件则保留未确认状态。
 
 公开 Sanity API 的文章组件可指定 `adapter: "sanity_article"` 和 `format: "html"`，`path` 必须指向文章本身的组件数组。只读取已支持的段落、链接、列表和图片；遇到未知组件或缺失引用时保留未确认状态，不拼接描述、相关报道或 CMS 元数据。
@@ -186,6 +188,8 @@ Content-Type: application/json
 ### 官方嵌入的另一份 HTML 正文
 
 `bodyExtractionLinkedHtml` 只适用于已经核实的出版链接，例如官方页静态声明的 Shorthand `embed.js`。它不运行脚本：用 `selector` 和 `attribute`（`href` 或 `src`）选出唯一目标，按明确的 `stripPathSuffix` 去掉路径后缀，再以 `allowedOrigins` 限定出版者。目标必须是 HTML；`bodySelector` 仅限定目标文档的正文。规范原文 URL、标题、日期仍来自官方列表／外层页。
+
+官方文章链接到 Adobe PDF 文档页时，可显式加 `format: "adobe_pdf"` 和 `pdfOrigins`（最多四个精确公开源）。第一跳仍须是已限定出版者的 HTML；仅静态读取 `#adobe-dc-view` 中 `AdobeDC.View` 的字面 `previewFile.content.location.url`。不执行脚本，不接受动态表达式、多个不同目标或未声明的 PDF 源。第二跳须直接返回完整可搜索 PDF，遵守同一 PDF 解析限制，不跟随 PDF 重定向；任何一步失败时，文章简介不能成为正文。此模式不能配置子正文选择器，日期不能根据下载地址或报告月份补造具体首发日。
 
 这项规则与其他正文规则互斥；缺失、歧义、域名不匹配、跳转到其他域或正文不确认均失败，不回退为外层导航，也不使用付费阅读器。官方页与目标页都经过同一个出站访问和体积限制。
 
