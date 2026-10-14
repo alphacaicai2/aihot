@@ -198,3 +198,7 @@ Content-Type: application/json
 少数公开正文 API 将严格 JSON 标成 `text/plain`。仅已核实此行为的来源可在 `bodyExtractionJson` 中设置 `allowPlainTextJson: true`；仍须严格 JSON 解码、匹配指定正文路径及原有体积限制。默认媒体类型要求保持不变，HTML 错误页不作为正文。
 
 已核实的完整原作若以 Markdown 字符串或段落字符串数组发布，可在 `summaryBlocksPath` 旁显式设 `summaryBlocksFormat: "markdown_strings"` 与 `summaryIsBody: true`。每个数组项必须为字符串，按原顺序保留全文及段落；对象/字符串混合块拒绝。静态 JS 刊物若用字面字符串数组 `.join("\n\n")` 发布这些段落，可额外设置 `allowJoinedMarkdown: true`：仅解释该固定数据形式，动态参数、其他方法和任意调用拒绝。默认仍只接受已知的 `type`/`text` 对象块，不自动猜测任意字符串数组是正文。
+
+若 JSON 文章目录用内部 CMS ID 引用读者页，而官网另有公开 ID→路径索引，可显式添加 `urlLookup: { url, itemsPath, keyPath, valuePath, itemKeyPath }`。采集时读取同源、4MiB 内的 JSON 索引，不跟随跳转或转发目录凭证；用文章的 `itemKeyPath` 匹配索引 `keyPath`，采用 `valuePath` 中真实读者路径。冲突映射、非 JSON、越域路径均失败，不按文章标题猜 slug。未匹配项仅可使用原有显式 URL 模板；不提供模板时跳过。
+
+Framer 的公开 `script[type="framer/handover"]` 若保存带引用的 JSON 数据图，可显式使用 `mode: "framer_handover"`、`framerHandover: { selector, matchKeys }`。解码器只解释字面量、对象、数组与 Map 数据，限制图大小、展开次数及深度；循环引用、自定义类型与危险键拒绝。`matchKeys` 必须唯一识别文章记录数组，避免把首页 featured 单项当成完整目录。正文仍从真实独立读者页读取，不执行网站脚本。

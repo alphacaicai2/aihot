@@ -16,8 +16,8 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
   json_list: [
     ...COLLECTED, "url", "mode", "method", "headers", "bodyJson", "jsonKey", "windowVar", "itemsPath", "itemsObjectValues",
     "titlePaths", "summaryPaths", "summaryIsBody", "authorPaths", "publishedAtPath", "publishedAtUnit", "externalIdPath",
-    "urlTemplate", "urlTemplateFallback", "rawDropKeys", "requireBoolean", "minNumeric",
-    "arrayMatchKeys", "arrayProjectionKeys", "scriptSelector", "assetNameIncludes", "summaryBlocksPath", "summaryBlocksFormat", "collectionKind", "preserveUrlFragment", "jsonDocument", "allowJoinedMarkdown",
+    "urlTemplate", "urlTemplateFallback", "urlLookup", "rawDropKeys", "requireBoolean", "minNumeric",
+    "arrayMatchKeys", "arrayProjectionKeys", "scriptSelector", "assetNameIncludes", "summaryBlocksPath", "summaryBlocksFormat", "collectionKind", "preserveUrlFragment", "jsonDocument", "framerHandover", "allowJoinedMarkdown",
   ],
   // X accounts are mostly read in shards, which apply only these.
   x_search: ["_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "query", "searchType"],
@@ -31,6 +31,8 @@ const NESTED: Record<string, string[]> = {
   bodyExtractionMarkdown: ["urlTemplate"],
   bodyExtractionLinkedHtml: ["selector", "attribute", "stripPathSuffix", "allowedOrigins", "bodySelector"],
   jsonDocument: ["selector", "variable", "allowedOrigins"],
+  urlLookup: ["url", "itemsPath", "keyPath", "valuePath", "itemKeyPath"],
+  framerHandover: ["selector", "matchKeys"],
   _aihot: ["initialBackfillLimit", "initialBackfillMonths", "skipInitialRemainder"],
   ingestNoiseFilter: ["dropMarkers", "dropMarkersTitleOnly", "keepIfMatches"],
   itemUrlPrefixRewrite: ["from", "to"],
@@ -45,7 +47,7 @@ const NESTED: Record<string, string[]> = {
 const VALUES: Record<string, string[]> = {
   adapter: ["mimo_home"],
   parseMode: ["html", "markdown", "docusaurus_changelog"],
-  mode: ["json", "html_json_key", "html_window_var", "javascript_array", "html_script_array", "html_json_document"],
+  mode: ["json", "html_json_key", "html_window_var", "javascript_array", "html_script_array", "html_json_document", "framer_handover"],
 };
 
 /** The config entries a source of this kind would ignore or cannot run, e.g. ["adapter=site_cards", "detail.titleFoo"]. */
@@ -76,11 +78,25 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     }
   } else if (config.jsonDocument !== undefined) out.push("jsonDocument=requires html_json_document mode");
   if (kind === "json_list") {
+    if (config.urlLookup !== undefined) {
+      const rule = config.urlLookup as Record<string, unknown>;
+      const path = (v: unknown) => typeof v === "string" && v.length > 0 && v.length <= 256 && v.split(".").every(k => /^[\w$]+$/.test(k) && !["__proto__", "constructor", "prototype"].includes(k));
+      if (!rule || typeof rule !== "object" || Array.isArray(rule) || typeof rule.url !== "string" || ![rule.itemsPath, rule.keyPath, rule.valuePath, rule.itemKeyPath].every(path)) out.push("urlLookup=explicit public index and stable field paths required");
+      else try {
+        const listing = new URL(String(config.url)), target = new URL(rule.url, listing);
+        if (!/^https?:$/.test(target.protocol) || target.origin !== listing.origin || target.username || target.password || target.hash || !target.pathname.endsWith(".json")) out.push("urlLookup=same-origin public JSON file required");
+      } catch { out.push("urlLookup=invalid public index URL"); }
+    }
     if (config.summaryBlocksFormat !== undefined && (!["text_objects", "markdown_strings"].includes(String(config.summaryBlocksFormat)) || typeof config.summaryBlocksPath !== "string" || !config.summaryBlocksPath)) out.push("summaryBlocksFormat=explicit supported format and block path required");
     const staticMode = config.mode === "javascript_array" || config.mode === "html_script_array";
     if (config.allowJoinedMarkdown !== undefined && (!staticMode || typeof config.allowJoinedMarkdown !== "boolean")) out.push("allowJoinedMarkdown=boolean for static JavaScript only");
     const validKeys = (keys: unknown): keys is string[] => Array.isArray(keys) && keys.length >= 2 && keys.length <= 20 &&
       keys.every(k => typeof k === "string" && /^[a-zA-Z_$][\w$]*$/.test(k) && !["__proto__", "prototype", "constructor"].includes(k)) && new Set(keys).size === keys.length;
+    if (config.mode === "framer_handover") {
+      const rule = config.framerHandover as Record<string, unknown> | undefined;
+      if (!rule || typeof rule.selector !== "string" || !rule.selector || rule.selector.length > 300 || !validKeys(rule.matchKeys)) out.push("framerHandover=explicit data selector and collection keys required");
+      if (config.itemsPath || config.jsonKey || config.itemsObjectValues || config.windowVar) out.push("framerHandover=collection is selected by declared keys");
+    } else if (config.framerHandover !== undefined) out.push("framerHandover=requires framer_handover mode");
     if (staticMode) {
       if (!validKeys(config.arrayMatchKeys)) out.push("arrayMatchKeys=2-20 distinct static keys required");
       if (config.arrayProjectionKeys !== undefined && (!validKeys(config.arrayProjectionKeys) ||
