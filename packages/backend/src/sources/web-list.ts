@@ -3,7 +3,7 @@ import { linkedHtmlDocument } from "../content/linked-html.ts";
 import * as cheerio from "cheerio";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { readable, bodyDocumentUrl, markdownDocument, type ExtractedBody } from "../content/extract.ts";
+import { readable, extractFromUrl, bodyDocumentUrl, markdownDocument, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
 import { pdfDocument } from "../content/pdf.ts";
 import { jinaRead } from "../providers/jina.ts";
@@ -371,6 +371,12 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   const linkedRule = source.config.bodyExtractionLinkedHtml;
   if (linkedRule && (markdownRule || pdfRule || source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson)) return { publishedAt: null, title: null, summary: null, body: null };
   if ((markdownRule || pdfRule) && (source.config.bodySelector || source.config.bodyJsonLdType || source.config.bodyExtractionJson || (markdownRule && pdfRule))) return { publishedAt: null, title: null, summary: null, body: null };
+  if (source.config.bodyExtractionJson?.adapter === "x_article") {
+    const body = await extractFromUrl(url, { allowJina: false, subject: `source:${source.id}`, userAgent: source.config.userAgent,
+      bodyExtractionJson: source.config.bodyExtractionJson, bodySelector: source.config.bodySelector, bodyJsonLdType: source.config.bodyJsonLdType });
+    return { publishedAt: need.date ? body?.publishedAt ?? null : null, title: need.title ? body?.title ?? null : null,
+      summary: need.summary ? body?.text.slice(0, 2000) ?? null : null, body: need.body ? body : null };
+  }
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
   const dateInJina = need.date && jinaListing && !!d.publishedAtRegex && !pdfRule;
   const titleInJina = need.title && jinaListing && !!d.titleRegex && !pdfRule;

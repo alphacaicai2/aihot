@@ -4,7 +4,7 @@ import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
-import { htmlScriptArray, javascriptArray, JAVASCRIPT_MAX_BYTES, textBlocks } from "./javascript-array.ts";
+import { htmlScriptArray, htmlJsonDocument, javascriptArray, JAVASCRIPT_MAX_BYTES, textBlocks } from "./javascript-array.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
@@ -182,12 +182,13 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     headers: c.bodyJson ? { ...headers, "content-type": "application/json" } : headers,
     body: c.bodyJson ? JSON.stringify(c.bodyJson) : undefined,
     timeoutMs: 25_000,
-    ...(c.mode === "javascript_array" || c.mode === "html_script_array" ? { maxBytes: JAVASCRIPT_MAX_BYTES } : {}),
+    ...(c.mode === "javascript_array" || c.mode === "html_script_array" || c.mode === "html_json_document" ? { maxBytes: JAVASCRIPT_MAX_BYTES } : {}),
   });
   if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
   let data: unknown;
-  if (c.mode === "javascript_array") data = await javascriptArray(res.text(), c.arrayMatchKeys, c.arrayProjectionKeys, undefined, c.collectionKind);
+  if (c.mode === "javascript_array") data = await javascriptArray(res.text(), c.arrayMatchKeys, c.arrayProjectionKeys, undefined, c.collectionKind, c.allowJoinedMarkdown === true);
   else if (c.mode === "html_script_array") data = await htmlScriptArray(res.text(), res.url, c, headers);
+  else if (c.mode === "html_json_document") data = await htmlJsonDocument(res.text(), res.url, c);
   else if (c.mode === "html_json_key" || c.mode === "html_window_var") data = embeddedJson(res.text(), source);
   else {
     try {
@@ -208,7 +209,7 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     const url = (c.urlTemplate && renderTemplate(c.urlTemplate, item)) || (c.urlTemplateFallback && renderTemplate(c.urlTemplateFallback, item));
     if (!title || !url) continue;
     const externalId = c.externalIdPath ? getPath(item, c.externalIdPath) : null;
-    const summary = c.summaryBlocksPath ? textBlocks(getPath(item, c.summaryBlocksPath)) : firstString(item, c.summaryPaths);
+    const summary = c.summaryBlocksPath ? textBlocks(getPath(item, c.summaryBlocksPath), c.summaryBlocksFormat) : firstString(item, c.summaryPaths);
     const raw = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : { value: item };
     for (const k of c.rawDropKeys ?? []) delete (raw as Record<string, unknown>)[k];
     const summaryIsBody = c.summaryIsBody === true && !!summary;
@@ -218,7 +219,7 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
       // A month-only static newsletter label is not a publication day. Never substitute fetch time.
-      publishedAt: (c.mode === "javascript_array" || c.mode === "html_script_array")
+      publishedAt: (c.mode === "javascript_array" || c.mode === "html_script_array" || c.mode === "html_json_document")
         ? staticDate(getPath(item, c.publishedAtPath), c.publishedAtUnit)
         : toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
       excerpt: summary ? collapseWhitespace(c.summaryBlocksPath ? summary : stripTags(summary)).slice(0, 2000) : null,

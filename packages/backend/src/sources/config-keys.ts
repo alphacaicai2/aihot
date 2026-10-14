@@ -17,7 +17,7 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
     ...COLLECTED, "url", "mode", "method", "headers", "bodyJson", "jsonKey", "windowVar", "itemsPath", "itemsObjectValues",
     "titlePaths", "summaryPaths", "summaryIsBody", "authorPaths", "publishedAtPath", "publishedAtUnit", "externalIdPath",
     "urlTemplate", "urlTemplateFallback", "rawDropKeys", "requireBoolean", "minNumeric",
-    "arrayMatchKeys", "arrayProjectionKeys", "scriptSelector", "assetNameIncludes", "summaryBlocksPath", "collectionKind", "preserveUrlFragment",
+    "arrayMatchKeys", "arrayProjectionKeys", "scriptSelector", "assetNameIncludes", "summaryBlocksPath", "summaryBlocksFormat", "collectionKind", "preserveUrlFragment", "jsonDocument", "allowJoinedMarkdown",
   ],
   // X accounts are mostly read in shards, which apply only these.
   x_search: ["_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "query", "searchType"],
@@ -27,9 +27,10 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
 
 // Objects with fixed keys (headers and bodyJson are request data, free-form).
 const NESTED: Record<string, string[]> = {
-  bodyExtractionJson: ["selector", "urlTemplate", "path", "format", "adapter", "bodySelector"],
+  bodyExtractionJson: ["selector", "urlTemplate", "path", "format", "adapter", "bodySelector", "allowPlainTextJson"],
   bodyExtractionMarkdown: ["urlTemplate"],
   bodyExtractionLinkedHtml: ["selector", "attribute", "stripPathSuffix", "allowedOrigins", "bodySelector"],
+  jsonDocument: ["selector", "variable", "allowedOrigins"],
   _aihot: ["initialBackfillLimit", "initialBackfillMonths", "skipInitialRemainder"],
   ingestNoiseFilter: ["dropMarkers", "dropMarkersTitleOnly", "keepIfMatches"],
   itemUrlPrefixRewrite: ["from", "to"],
@@ -44,7 +45,7 @@ const NESTED: Record<string, string[]> = {
 const VALUES: Record<string, string[]> = {
   adapter: ["mimo_home"],
   parseMode: ["html", "markdown", "docusaurus_changelog"],
-  mode: ["json", "html_json_key", "html_window_var", "javascript_array", "html_script_array"],
+  mode: ["json", "html_json_key", "html_window_var", "javascript_array", "html_script_array", "html_json_document"],
 };
 
 /** The config entries a source of this kind would ignore or cannot run, e.g. ["adapter=site_cards", "detail.titleFoo"]. */
@@ -64,8 +65,20 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     if (!Number.isInteger(config.maxPages) || Number(config.maxPages) < 2 || Number(config.maxPages) > 5) out.push("maxPages=integer from2 to5 required");
     if (config.adapter || config.baseUrl || (config.parseMode !== undefined && config.parseMode !== "html") || String(config.url ?? "").startsWith("https://r.jina.ai/")) out.push("pagination=requires canonical native HTML listing");
   }
+  const bodyJson = config.bodyExtractionJson as Record<string, unknown> | undefined;
+  if (bodyJson?.allowPlainTextJson !== undefined && typeof bodyJson.allowPlainTextJson !== "boolean") out.push("bodyExtractionJson.allowPlainTextJson=boolean required");
+  if (bodyJson?.adapter === "x_article" && (bodyJson.format !== "html" || bodyJson.path !== "tweet" || typeof bodyJson.urlTemplate !== "string" || !bodyJson.urlTemplate.includes("{slug}") || bodyJson.selector || bodyJson.bodySelector)) out.push("bodyExtractionJson.x_article=requires complete tweet JSON API mapping");
+  if (config.mode === "html_json_document") {
+    const rule = config.jsonDocument as Record<string, unknown> | undefined;
+    if (!rule || typeof rule.selector !== "string" || !rule.selector || rule.selector.length > 300 || typeof rule.variable !== "string" || !/^[a-zA-Z_$][\w$]*$/.test(rule.variable) || ["__proto__", "constructor", "prototype"].includes(rule.variable) || !Array.isArray(rule.allowedOrigins) || !rule.allowedOrigins.length || rule.allowedOrigins.length > 4) out.push("jsonDocument=explicit inline loader and public origins required");
+    else for (const origin of rule.allowedOrigins) {
+      try { if (typeof origin !== "string" || new URL(origin).origin !== origin || !/^https?:$/.test(new URL(origin).protocol)) out.push("jsonDocument.allowedOrigins=exact HTTP origins required"); } catch { out.push("jsonDocument.allowedOrigins=invalid origin"); }
+    }
+  } else if (config.jsonDocument !== undefined) out.push("jsonDocument=requires html_json_document mode");
   if (kind === "json_list") {
+    if (config.summaryBlocksFormat !== undefined && (!["text_objects", "markdown_strings"].includes(String(config.summaryBlocksFormat)) || typeof config.summaryBlocksPath !== "string" || !config.summaryBlocksPath)) out.push("summaryBlocksFormat=explicit supported format and block path required");
     const staticMode = config.mode === "javascript_array" || config.mode === "html_script_array";
+    if (config.allowJoinedMarkdown !== undefined && (!staticMode || typeof config.allowJoinedMarkdown !== "boolean")) out.push("allowJoinedMarkdown=boolean for static JavaScript only");
     const validKeys = (keys: unknown): keys is string[] => Array.isArray(keys) && keys.length >= 2 && keys.length <= 20 &&
       keys.every(k => typeof k === "string" && /^[a-zA-Z_$][\w$]*$/.test(k) && !["__proto__", "prototype", "constructor"].includes(k)) && new Set(keys).size === keys.length;
     if (staticMode) {

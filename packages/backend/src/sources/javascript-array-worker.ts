@@ -7,6 +7,7 @@ const MAX_DEPTH = 256;
 const MAX_VALUE_DEPTH = 32;
 const MAX_ITEMS = 2_000;
 const forbidden = new Set(["__proto__", "prototype", "constructor"]);
+const allowJoinedMarkdown = workerData.allowJoinedMarkdown === true;
 type Node = Record<string, any>;
 
 function key(property: Node): string {
@@ -45,19 +46,31 @@ function value(node: Node | null, depth = 0, projection?: Set<string>): unknown 
       if (projection && [...projection].some(k => !seen.has(k))) throw new Error("projected property missing");
       return result;
     }
+    case "CallExpression": {
+      // One explicitly enabled publisher representation; this interprets data, never a call.
+      const callee = node.callee;
+      if (!allowJoinedMarkdown || node.optional || callee?.type !== "MemberExpression" || callee.computed || callee.object?.type !== "ArrayExpression" || callee.property?.type !== "Identifier" || callee.property.name !== "join" || node.arguments.length !== 1 || !["StringLiteral", "TemplateLiteral"].includes(node.arguments[0]?.type)) throw new Error("non-static call expression");
+      const separator = value(node.arguments[0], depth + 1);
+      if (separator !== "\n\n") throw new Error("unsupported Markdown paragraph separator");
+      const paragraphs = value(callee.object, depth + 1);
+      if (!Array.isArray(paragraphs) || paragraphs.some(p => typeof p !== "string")) throw new Error("non-string Markdown paragraphs");
+      return paragraphs.join(separator);
+    }
     default: throw new Error(`non-static value ${node.type}`);
   }
 }
 
 try {
-  const { source, matchKeys, projectionKeys, assetNameIncludes, collectionKind } = workerData as {
-    source: string; matchKeys?: string[]; projectionKeys?: string[]; assetNameIncludes?: string; collectionKind?: string;
+  const { source, matchKeys, projectionKeys, assetNameIncludes, collectionKind, documentVariable } = workerData as {
+    source: string; matchKeys?: string[]; projectionKeys?: string[]; assetNameIncludes?: string; collectionKind?: string; documentVariable?: string;
   };
   const ast = parse(source, { sourceType: "unambiguous", attachComment: false });
   const pending: Array<{ node: Node; depth: number }> = [{ node: ast, depth: 0 }];
   const arrays: Node[] = [];
   const assets = new Set<string>();
   const imports = new Set<string>();
+  const documents = new Set<string>();
+  let fetchesDocument = false;
   let count = 0;
   while (pending.length) {
     const { node, depth } = pending.pop()!;
@@ -65,6 +78,15 @@ try {
     const literal = (n: Node | undefined): string | null => n?.type === "StringLiteral" ? n.value :
       n?.type === "TemplateLiteral" && n.expressions.length === 0 && n.quasis.length === 1 ? n.quasis[0].value.cooked : null;
     const asset = (s: string | null) => typeof s === "string" && s.includes(assetNameIncludes!) && /^(?:\.?\.?\/|https?:\/\/)?[\w./:@-]+\.js(?:\?[^\s]*)?$/.test(s);
+    if (documentVariable) {
+      if (node.type === "VariableDeclarator" && node.id.type === "Identifier" && node.id.name === documentVariable) {
+        const declared = literal(node.init);
+        if (declared === null) throw new Error("JSON document URL is not a static literal");
+        documents.add(declared);
+      }
+      if (node.type === "AssignmentExpression" && node.left.type === "Identifier" && node.left.name === documentVariable) throw new Error("JSON document variable is reassigned");
+      if (node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "fetch" && node.arguments[0]?.type === "Identifier" && node.arguments[0].name === documentVariable) fetchesDocument = true;
+    }
     if (assetNameIncludes) {
       const s = literal(node);
       if (asset(s)) assets.add(s!);
@@ -84,7 +106,10 @@ try {
       } else if (child && typeof child === "object" && typeof child.type === "string") pending.push({ node: child, depth: depth + 1 });
     }
   }
-  if (assetNameIncludes) {
+  if (documentVariable) {
+    if (!fetchesDocument || documents.size !== 1) throw new Error("declared JSON document is missing or ambiguous");
+    parentPort!.postMessage({ documentUrl: [...documents][0] });
+  } else if (assetNameIncludes) {
     // Bare dependency-table strings do not declare their URL base. Imports are module-relative;
     // without an import, only an absolute URL or root-relative literal is unambiguous.
     const declared = imports.size ? imports : new Set([...assets].filter(s => s.startsWith("/") || /^https?:\/\//.test(s)));

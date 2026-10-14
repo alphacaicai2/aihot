@@ -190,3 +190,11 @@ Content-Type: application/json
 这项规则与其他正文规则互斥；缺失、歧义、域名不匹配、跳转到其他域或正文不确认均失败，不回退为外层导航，也不使用付费阅读器。官方页与目标页都经过同一个出站访问和体积限制。
 
 需要从列表的下一页发现原创文章时，HTML `web_list` 可显式设置 `nextPageSelector`（下一页链接的 CSS selector）和 `maxPages`（2–5 页）。采集器只沿发布者真实提供的链接读取，合并重复文章并保持首条记录，仍适用初导数量和订阅基线。分页链接必须唯一、位于同一 origin，不能含账号密码或 fragment；分页请求不跟随重定向。循环、失败页和非 HTML 响应会使本次采集失败，不把部分列表当成功。此功能只用于有规范列表 URL 的原生 HTML，不支持 Jina、其他 adapter 或自定义 `baseUrl`；未配置分页的来源仍只读取一页。
+
+正式官网直接链接的公开 X Article，可显式配置 `bodyExtractionJson: { urlTemplate: "https://api.fxtwitter.com/status/{slug}", path: "tweet", format: "html", adapter: "x_article" }`。这是无账号的公开 Fx JSON 镜像，不是 X 官方 API；只用于已核实的公开原作。适配器核对原文 URL、作者、status ID，要求作者明确非 protected，并完整处理 Draft.js 段落、样式、列表及图片 caption。未知块、缺少 entity/media 映射均失败，不采用 preview_text 或解读图片中的文字。正文走现有净化和权限规则。`detail` 必须有足够的 `maxFetches`；以 authoritative 日期和标题规则请求详情时，元数据来自实际 `article.title` 和 `article.created_at`，不用卡片错链日期、tweet 发布或 modified_at。不得配置子正文 selector 来将局部文本当全文。
+
+若正式页面内联脚本用静态变量声明当前文章 JSON 文件，可使用 `json_list` 的 `mode: "html_json_document"` 和 `jsonDocument: { selector, variable, allowedOrigins }`。每次采集先读正式页面，再用有限资源的 AST parser 找出该变量唯一的静态 URL 及 `fetch(variable)` 声明；不执行脚本。JSON 目标限定显式 origin、`.json` 文件、4MiB且不跟随跳转，不向 CDN 转发列表请求的凭证头。URL 缺失、动态赋值、歧义、非 JSON 或越域均失败。这样出版者换文件版本后不会继续盯着旧静态资产。
+
+少数公开正文 API 将严格 JSON 标成 `text/plain`。仅已核实此行为的来源可在 `bodyExtractionJson` 中设置 `allowPlainTextJson: true`；仍须严格 JSON 解码、匹配指定正文路径及原有体积限制。默认媒体类型要求保持不变，HTML 错误页不作为正文。
+
+已核实的完整原作若以 Markdown 字符串或段落字符串数组发布，可在 `summaryBlocksPath` 旁显式设 `summaryBlocksFormat: "markdown_strings"` 与 `summaryIsBody: true`。每个数组项必须为字符串，按原顺序保留全文及段落；对象/字符串混合块拒绝。静态 JS 刊物若用字面字符串数组 `.join("\n\n")` 发布这些段落，可额外设置 `allowJoinedMarkdown: true`：仅解释该固定数据形式，动态参数、其他方法和任意调用拒绝。默认仍只接受已知的 `type`/`text` 对象块，不自动猜测任意字符串数组是正文。

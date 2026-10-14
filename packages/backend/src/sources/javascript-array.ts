@@ -31,12 +31,12 @@ async function parseInWorker(source: string, options: Record<string, unknown>, t
   });
 }
 
-export async function javascriptArray(source: string, matchKeys: unknown, projectionKeys?: unknown, timeoutMs?: number, collectionKind = "array"): Promise<unknown[] | Record<string, unknown>> {
+export async function javascriptArray(source: string, matchKeys: unknown, projectionKeys?: unknown, timeoutMs?: number, collectionKind = "array", allowJoinedMarkdown = false): Promise<unknown[] | Record<string, unknown>> {
   const keys = staticKeys(matchKeys, "arrayMatchKeys");
   const projection = projectionKeys === undefined ? undefined : staticKeys(projectionKeys, "arrayProjectionKeys");
   if (projection && keys.some(k => !projection.includes(k))) throw new FetchError("arrayProjectionKeys must include arrayMatchKeys");
   if (!["array", "object"].includes(collectionKind)) throw new FetchError("invalid collectionKind");
-  const result = await parseInWorker(source, { matchKeys: keys, projectionKeys: projection, collectionKind }, timeoutMs);
+  const result = await parseInWorker(source, { matchKeys: keys, projectionKeys: projection, collectionKind, allowJoinedMarkdown }, timeoutMs);
   if (!result?.items || (collectionKind === "array" ? !Array.isArray(result.items) : typeof result.items !== "object" || Array.isArray(result.items))) throw new FetchError("JavaScript parser returned no items");
   return result.items;
 }
@@ -75,12 +75,43 @@ export async function htmlScriptArray(html: string, base: string, config: Record
     url = assetUrl(declared.asset, declared.assetBase === "module" ? response.url : base);
     response = await read();
   }
-  return javascriptArray(response.text(), config.arrayMatchKeys, config.arrayProjectionKeys, undefined, config.collectionKind);
+  return javascriptArray(response.text(), config.arrayMatchKeys, config.arrayProjectionKeys, undefined, config.collectionKind, config.allowJoinedMarkdown === true);
+}
+
+/** Follow a publisher's current, statically declared JSON document without running its loader. */
+export async function htmlJsonDocument(html: string, base: string, config: Record<string, any>): Promise<unknown> {
+  const rule = config.jsonDocument;
+  if (!rule || typeof rule.selector !== "string" || !rule.selector || rule.selector.length > 300 || typeof rule.variable !== "string" || !/^[a-zA-Z_$][\w$]*$/.test(rule.variable) || unsafe.has(rule.variable) || !Array.isArray(rule.allowedOrigins) || !rule.allowedOrigins.length || rule.allowedOrigins.length > 4) throw new FetchError("invalid jsonDocument rule");
+  for (const origin of rule.allowedOrigins) {
+    if (typeof origin !== "string" || new URL(origin).origin !== origin || !/^https?:$/.test(new URL(origin).protocol)) throw new FetchError("invalid JSON document origin");
+  }
+  const $ = load(html), scripts = $(rule.selector);
+  if (!scripts.length || scripts.length > 10 || scripts.toArray().some(e => !$(e).is("script") || !!$(e).attr("src"))) throw new FetchError("JSON document selector must match inline scripts");
+  const urls = new Set<string>();
+  for (const script of scripts.toArray()) {
+    const parsed = await parseInWorker($(script).text(), { documentVariable: rule.variable });
+    if (typeof parsed.documentUrl !== "string") throw new FetchError("no declared JSON document");
+    const url = new URL(parsed.documentUrl, base);
+    if (!rule.allowedOrigins.includes(url.origin) || !/^https?:$/.test(url.protocol) || !url.pathname.endsWith(".json") || url.username || url.password || url.hash) throw new FetchError("JSON document URL outside the declared public origin");
+    urls.add(url.toString());
+  }
+  if (urls.size !== 1) throw new FetchError("JSON document URL is ambiguous");
+  // Request headers for the listing are not forwarded to its separately declared CDN.
+  const response = await guardedFetch([...urls][0]!, { timeoutMs: 25_000, maxBytes: JAVASCRIPT_MAX_BYTES, maxRedirects: 0,
+    headers: { accept: "application/json", ...(config.userAgent ? { "user-agent": String(config.userAgent) } : {}) } });
+  if (response.status !== 200 || !/json/i.test(response.headers.get("content-type") ?? "")) throw new FetchError(`JSON document HTTP ${response.status} or non-JSON response`, response.status);
+  try { return JSON.parse(response.text()); } catch { throw new FetchError("declared document is not JSON"); }
 }
 
 /** These published block types are plain text; unknown blocks must not yield a partial body. */
-export function textBlocks(blocks: unknown): string {
+export function textBlocks(blocks: unknown, format: unknown = "text_objects"): string {
+  if (format === "markdown_strings" && typeof blocks === "string") return blocks;
   if (!Array.isArray(blocks) || !blocks.length || blocks.length > 2_000) throw new FetchError("invalid summary blocks");
+  if (format === "markdown_strings") {
+    if (blocks.some(block => typeof block !== "string")) throw new FetchError("unsupported Markdown string block");
+    return blocks.join("\n\n");
+  }
+  if (format !== "text_objects") throw new FetchError("unsupported summary block format");
   return blocks.map(block => {
     if (!block || typeof block !== "object" || Object.keys(block).some(k => !["type", "text"].includes(k)) || !["heading", "paragraph", "quote"].includes(block.type) || typeof block.text !== "string") throw new FetchError("unsupported summary block");
     return block.text;

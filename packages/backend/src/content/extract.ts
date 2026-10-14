@@ -14,12 +14,15 @@ import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
 import { contentHash } from "./materials.ts";
 import { pdfDocument } from "./pdf.ts";
 import { linkedHtmlDocument, type LinkedHtmlConfig } from "./linked-html.ts";
+import { publicXArticle } from "./x-article.ts";
 
 export interface ExtractedBody {
   html: string;
   text: string;
   images: Array<{ kind: "image"; url: string; width: number | null; height: number | null }>;
   via: "readability" | "jsonld" | "embedded-json" | "json-api" | "markdown-document" | "pdf-text" | "linked-html" | "jina";
+  title?: string;
+  publishedAt?: Date | null;
 }
 
 export interface BodyJsonConfig {
@@ -27,8 +30,9 @@ export interface BodyJsonConfig {
   urlTemplate?: string;
   path: string;
   format: "html" | "markdown";
-  adapter?: "magnolia_article" | "sanity_article";
+  adapter?: "magnolia_article" | "sanity_article" | "x_article";
   bodySelector?: string;
+  allowPlainTextJson?: boolean;
 }
 
 export interface BodyMarkdownConfig { urlTemplate: string }
@@ -185,10 +189,15 @@ function jsonBody(value: unknown, url: string, rule: BodyJsonConfig, via: "embed
     if (!value || typeof value !== "object" || !Object.hasOwn(value, key)) return null;
     value = (value as Record<string, unknown>)[key];
   }
+  let article: ReturnType<typeof publicXArticle> = null;
   if (rule.adapter) {
     if (rule.format !== "html") return null;
     if (rule.adapter === "magnolia_article") value = magnoliaArticle(value);
     else if (rule.adapter === "sanity_article") value = sanityArticle(value);
+    else if (rule.adapter === "x_article") {
+      if (rule.bodySelector) return null;
+      article = publicXArticle(value, url); value = article?.html;
+    }
     else return null;
   }
   if (typeof value !== "string" || !value.trim()) return null;
@@ -202,8 +211,10 @@ function jsonBody(value: unknown, url: string, rule: BodyJsonConfig, via: "embed
     html = nodes.html() ?? "";
   }
   const clean = trimTrailingChrome(sanitizeBody(html, url));
-  const text = stripTags(clean);
-  return text.length >= MIN_BODY_CHARS ? { html: clean, text, images: [], via } : null;
+  // Style boundaries may split a word; stripping each HTML tag to a space would alter the writing.
+  const text = article ? collapseWhitespace(article.text) : stripTags(clean);
+  const images = article ? cheerio.load(clean)("img[src]").map((_, e) => ({ kind: "image" as const, url: e.attribs.src!, width: null, height: null })).get() : [];
+  return text.length >= MIN_BODY_CHARS ? { html: clean, text, images, via, ...(article ? { title: article.title, publishedAt: article.publishedAt } : {}) } : null;
 }
 
 export function readable(html: string, url: string, bodySelector?: string | null, bodyJsonLdType?: string | null, bodyExtractionJson?: BodyJsonConfig | null): ExtractedBody | null {
@@ -345,7 +356,8 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
       if (/[{}]/.test(target)) return null;
       const res = await guardedFetch(target, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024,
         headers: opts.userAgent ? { "user-agent": opts.userAgent } : undefined });
-      if (res.status !== 200 || !/json/.test(res.headers.get("content-type") ?? "")) return null;
+      const type = res.headers.get("content-type") ?? "";
+      if (res.status !== 200 || (!/json/i.test(type) && !(opts.bodyExtractionJson.allowPlainTextJson === true && /^text\/plain\b/i.test(type)))) return null;
       return jsonBody(JSON.parse(res.text()), url, opts.bodyExtractionJson, "json-api");
     } catch { return null; }
   }
