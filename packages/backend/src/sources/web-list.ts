@@ -308,6 +308,39 @@ async function fromMimoHome(html: string, base: string, source: SourceRow): Prom
 export async function fetchWebList(source: SourceRow): Promise<Candidate[]> {
   const { text, viaJina, base } = await fetchListingText(source);
   const mode = source.config.adapter === "mimo_home" ? "mimo_home" : source.config.parseMode ?? (viaJina ? "markdown" : "html");
+  if (source.config.nextPageSelector) {
+    if (viaJina || mode !== "html" || source.config.baseUrl) throw new FetchError("pagination requires native HTML with its canonical listing URL");
+    const selector = source.config.nextPageSelector;
+    const limit = source.config.maxPages;
+    if (typeof selector !== "string" || !selector || selector.length > 300 || !Number.isInteger(limit) || limit < 2 || limit > 5) throw new FetchError("invalid bounded pagination config");
+    let pageUrl = String(source.config.url);
+    const origin = new URL(pageUrl).origin;
+    const visited = new Set([pageUrl]);
+    const articles = new Map<string, Candidate>();
+    let html = text;
+    for (let page = 0; page < limit; page++) {
+      const pageSource = { ...source, config: { ...source.config, url: pageUrl } };
+      for (const article of fromHtml(html, pageUrl, pageSource)) if (!articles.has(article.url)) articles.set(article.url, article);
+      if (page + 1 === limit) break;
+      const $ = cheerio.load(html);
+      const next = $(selector).filter((_, el) => $(el).attr("aria-disabled") !== "true" && !/display\s*:\s*none/i.test($(el).attr("style") ?? ""));
+      if (!next.length) break;
+      const links = new Set(next.toArray().map(el => absolute($(el).attr("href"), pageUrl)));
+      if (links.size !== 1 || links.has(null)) throw new FetchError("pagination link is missing or ambiguous");
+      const target = [...links][0]!;
+      const url = new URL(target);
+      if (url.origin !== origin || url.username || url.password || url.hash) throw new FetchError("pagination must stay on the listing origin without credentials or fragments");
+      if (visited.has(target)) throw new FetchError("pagination loop");
+      visited.add(target);
+      const response = await guardedFetch(target, { timeoutMs: 25_000, maxBytes: 4 * 1024 * 1024, maxRedirects: 0,
+        headers: source.config.userAgent ? { "user-agent": String(source.config.userAgent) } : undefined });
+      if (response.status !== 200 || !/html/i.test(response.headers.get("content-type") ?? "")) throw new FetchError(`pagination HTTP ${response.status} or non-HTML response`, response.status);
+      pageUrl = target;
+      html = response.text();
+    }
+    if (!articles.size) throw new FetchError("no items matched (paginated html)");
+    return [...articles.values()];
+  }
   let out: Candidate[];
   if (mode === "mimo_home") out = await fromMimoHome(text, base, source);
   else if (mode === "markdown") out = fromMarkdown(text, base, source);

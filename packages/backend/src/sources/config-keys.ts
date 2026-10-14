@@ -11,6 +11,7 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
   web_list: [
     ...COLLECTED, "url", "baseUrl", "parseMode", "adapter", "cacheToleranceSeconds", "linksStartLine", "preserveUrlFragment",
     "itemSelector", "linkSelector", "titleSelector", "publishedAtSelector", "publishedAtRegex", "publishedAtUtcOffset",
+    "nextPageSelector", "maxPages",
   ],
   json_list: [
     ...COLLECTED, "url", "mode", "method", "headers", "bodyJson", "jsonKey", "windowVar", "itemsPath", "itemsObjectValues",
@@ -57,6 +58,11 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     else if (NESTED[key] && value && typeof value === "object") {
       for (const sub of Object.keys(value)) if (!NESTED[key]!.includes(sub)) out.push(`${key}.${sub}`);
     }
+  }
+  if (kind === "web_list" && (config.nextPageSelector !== undefined || config.maxPages !== undefined)) {
+    if (typeof config.nextPageSelector !== "string" || !config.nextPageSelector || config.nextPageSelector.length > 300) out.push("nextPageSelector=explicit selector required");
+    if (!Number.isInteger(config.maxPages) || Number(config.maxPages) < 2 || Number(config.maxPages) > 5) out.push("maxPages=integer from2 to5 required");
+    if (config.adapter || config.baseUrl || (config.parseMode !== undefined && config.parseMode !== "html") || String(config.url ?? "").startsWith("https://r.jina.ai/")) out.push("pagination=requires canonical native HTML listing");
   }
   if (kind === "json_list") {
     const staticMode = config.mode === "javascript_array" || config.mode === "html_script_array";

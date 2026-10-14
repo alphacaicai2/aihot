@@ -188,3 +188,5 @@ Content-Type: application/json
 `bodyExtractionLinkedHtml` 只适用于已经核实的出版链接，例如官方页静态声明的 Shorthand `embed.js`。它不运行脚本：用 `selector` 和 `attribute`（`href` 或 `src`）选出唯一目标，按明确的 `stripPathSuffix` 去掉路径后缀，再以 `allowedOrigins` 限定出版者。目标必须是 HTML；`bodySelector` 仅限定目标文档的正文。规范原文 URL、标题、日期仍来自官方列表／外层页。
 
 这项规则与其他正文规则互斥；缺失、歧义、域名不匹配、跳转到其他域或正文不确认均失败，不回退为外层导航，也不使用付费阅读器。官方页与目标页都经过同一个出站访问和体积限制。
+
+需要从列表的下一页发现原创文章时，HTML `web_list` 可显式设置 `nextPageSelector`（下一页链接的 CSS selector）和 `maxPages`（2–5 页）。采集器只沿发布者真实提供的链接读取，合并重复文章并保持首条记录，仍适用初导数量和订阅基线。分页链接必须唯一、位于同一 origin，不能含账号密码或 fragment；分页请求不跟随重定向。循环、失败页和非 HTML 响应会使本次采集失败，不把部分列表当成功。此功能只用于有规范列表 URL 的原生 HTML，不支持 Jina、其他 adapter 或自定义 `baseUrl`；未配置分页的来源仍只读取一页。
