@@ -118,7 +118,10 @@ export function registerAdmin(app: FastifyInstance) {
 
 
   // Models and evaluation (F20)
-  app.get("/api/admin/models", adminHandler(async (req) => modelsOverview(Math.min(90, Number(q(req).days) || 7))));
+  app.get("/api/admin/models", adminHandler(async (req) => {
+    const period = q(req).period;
+    return modelsOverview(Math.max(1, Math.min(90, Number(q(req).days) || 7)), period === "today" || period === "yesterday" ? period : "rolling");
+  }));
   app.post("/api/admin/models/:capability", adminHandler(async (req, _reply, admin) => {
     const b = body<{ model: string | null; reason: string }>(req);
     return switchModel(param(req, "capability"), b.model ?? null, String(b.reason ?? ""), actorOf(admin));
