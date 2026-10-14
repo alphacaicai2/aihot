@@ -12,8 +12,13 @@ import { upsertMaterial } from "@aihot/backend/content/materials";
 import type { SourceRow } from "@aihot/backend/sources/types";
 
 // A real, complete multipage PDF with a standard font; no network or fixture dependency.
-function pdf(pages: string[][]): Buffer {
+function pdf(pages: string[][], unmappedFont = false): Buffer {
   const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+  if (unmappedFont) {
+    const cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Unmapped def /CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <41> <0000> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end";
+    objects[2] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 4 0 R >>";
+    objects.push(`<< /Length ${Buffer.byteLength(cmap)} >>\nstream\n${cmap}\nendstream`);
+  }
   const ids: number[] = [];
   for (const lines of pages) {
     const page = objects.length + 1;
@@ -34,6 +39,11 @@ function pdf(pages: string[][]): Buffer {
 
 const prose = Array.from({ length: 8 }, (_, i) => `Research ${i}: inference costs shape deployment economics and market structure.`);
 const bytes = pdf([["Original Research Q4", "Feb 9, 2026", ...prose], ["Second page: customer adoption", ...prose, "END OF ORIGINAL REPORT"]]);
+
+test("a PDF font mapped to a NUL glyph cannot be confirmed as a complete or database-safe body", async () => {
+  const result = await pdfDocument(pdf([["A glyph before original prose", ...prose], ["Second page", ...prose, "END OF ORIGINAL REPORT"]], true), "application/pdf");
+  assert.equal(result, null, "unknown glyphs must not be removed or replaced while claiming a full report");
+});
 
 test("native PDF extracts every page in order and escapes writing without interpreting PDF scripts", async () => {
   const result = await pdfDocument(bytes, "application/pdf; charset=binary");

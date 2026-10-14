@@ -26,6 +26,9 @@ export async function pdfDocument(bytes: Uint8Array, contentType: string): Promi
   });
   if (!pages) return null;
   const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Unmapped font glyphs can become control codes, including NUL (invalid PostgreSQL text).
+  // Refuse the document instead of guessing/removing writing or aborting its database write.
+  if (pages.some(p => /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(p))) return null;
   const html = pages.map(p => `<p>${escape(p).replace(/\n/g, "<br>")}</p>`).join("\n");
   const text = stripTags(html);
   return text.length >= 200 ? { html, text, images: [], via: "pdf-text" } : null;
