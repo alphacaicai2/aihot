@@ -7,6 +7,7 @@ import { data as routeData } from "react-router";
 import { breadcrumbLd, pageMeta, titled } from "../lib/seo";
 import { beijingDate, beijingTime, monthDayTime, relativeTime, shortSourceName } from "../lib/format";
 import { HeatChart } from "../features/story/HeatChart";
+import { ShareStoryButton } from "../features/story/ShareStoryButton";
 import { Badge, SelectedBadge } from "../components/ui/Badge";
 import { PillTabs } from "../components/ui/Tabs";
 import { Select } from "../components/ui/Controls";
@@ -207,7 +208,7 @@ export default function StoryPage() {
           <Badge tone={status.tone}>{status.label}</Badge>
         </div>
         <h1 className="mt-2.5 text-[27px] font-bold leading-[1.5] tracking-[-0.01em] text-ink lg:mt-3 lg:text-[36px] lg:font-[730]">{story.title}</h1>
-        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[12.5px] text-ink-3">
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] text-ink-3">
           <span className="inline-flex items-center gap-1.5">
             <IconDoc size={15} className="text-ink-4" />
             <b className="num font-semibold text-ink">{story.reportCount}</b> 篇报道
@@ -222,6 +223,7 @@ export default function StoryPage() {
               {relativeTime(story.latestAt)}更新
             </span>
           )}
+          <ShareStoryButton publicId={story.publicId} title={story.title} />
         </div>
       </header>
 
