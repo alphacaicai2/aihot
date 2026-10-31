@@ -17,7 +17,8 @@ test("body readers reject empty and non-object configurations", () => {
 
 test("Markdown readers require a usable article URL template", () => {
   for (const urlTemplate of [undefined, "", " ", 1, "https://example.org/static.md", "https://example.org/{unknown}",
-    "https://example.org/{slug}/{unknown}", "ftp://example.org/{slug}", "https://user:pass@example.org/{slug}"]) {
+    "https://example.org/{slug}/{unknown}", "https://example.org/{slug}{", "https://example.org/{slug}}",
+    "ftp://example.org/{slug}", "https://user:pass@example.org/{slug}"]) {
     assert.throws(() => assertSupportedConfig("web_list", { bodyExtractionMarkdown: { urlTemplate } }), UnsupportedConfig);
   }
 });

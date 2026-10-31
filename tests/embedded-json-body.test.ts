@@ -70,7 +70,7 @@ test("JSON HTML scoping excludes related stories and refuses missing or ambiguou
 
 test("article JSON extraction does not claim the existing JSON request-body option", () => {
   assert.deepEqual(unsupportedConfig("json_list", { url: "https://example.org/api", method: "POST", bodyJson: { query: "query { posts { title } }", variables: { limit: 10 } }, bodyExtractionJson: { urlTemplate: "https://example.org/posts/{slug}", path: "content", format: "html", bodySelector: ".copy-body" } }), []);
-  assert.ok(unsupportedConfig("rss", { bodyExtractionJson: { ...rule, typo: true } }).includes("bodyExtractionJson.typo"));
+  assert.deepEqual(unsupportedConfig("rss", { bodyExtractionJson: { ...rule, typo: true } }), ["bodyExtractionJson.typo"]);
 });
 
 test("Sanity article blocks preserve complete ordered prose, links and image captions without CMS metadata", () => {

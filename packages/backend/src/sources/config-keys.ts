@@ -92,7 +92,8 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
   if (explicitReaders.length > 1 || (explicitReaders.length && (config.bodySelector || config.bodyJsonLdType)))
     out.push("bodyExtraction=one body reader without bodySelector or bodyJsonLdType required");
   const markdown = configObject(config.bodyExtractionMarkdown) ? config.bodyExtractionMarkdown : undefined;
-  if (markdown && !bodyJsonRequest("https://publisher.example/post/article-id", { urlTemplate: markdown.urlTemplate as string }))
+  if (markdown && (typeof markdown.urlTemplate !== "string" || /[{}]/.test(markdown.urlTemplate.replace(/\{(?:path|slug)\}/g, "")) ||
+    !bodyJsonRequest("https://publisher.example/post/article-id", { urlTemplate: markdown.urlTemplate })))
     out.push("bodyExtractionMarkdown.urlTemplate=HTTP article template with path or slug required");
   const bodyJson = configObject(config.bodyExtractionJson) ? config.bodyExtractionJson : undefined;
   if (bodyJson) {
