@@ -52,6 +52,16 @@ const VALUES: Record<string, string[]> = {
   mode: ["json", "html_json_key", "html_window_var", "javascript_array", "html_script_array", "html_json_document", "framer_handover"],
 };
 
+const nonemptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+const configObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const exactHttpOrigins = (value: unknown): boolean => Array.isArray(value) && value.length > 0 && value.every(origin => {
+  try {
+    if (typeof origin !== "string") return false;
+    const url = new URL(origin);
+    return /^https?:$/.test(url.protocol) && !url.username && !url.password && url.origin === origin;
+  } catch { return false; }
+});
+
 /** The config entries a source of this kind would ignore or cannot run, e.g. ["adapter=site_cards", "detail.titleFoo"]. */
 export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string, unknown>): string[] {
   const allowed = new Set(KEYS[kind] ?? []);
@@ -73,17 +83,44 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     if (!Number.isInteger(config.maxPages) || Number(config.maxPages) < 2 || Number(config.maxPages) > 5) out.push("maxPages=integer from2 to5 required");
     if (config.adapter || config.baseUrl || (config.parseMode !== undefined && config.parseMode !== "html") || String(config.url ?? "").startsWith("https://r.jina.ai/")) out.push("pagination=requires canonical native HTML listing");
   }
-  const bodyJson = config.bodyExtractionJson as Record<string, unknown> | undefined;
-  const linked = config.bodyExtractionLinkedHtml as Record<string, unknown> | undefined;
-  if (linked?.format !== undefined && !["html", "adobe_pdf"].includes(String(linked.format))) out.push("bodyExtractionLinkedHtml.format=unsupported");
+  const readers = ["bodyExtractionJson", "bodyExtractionMarkdown", "bodyExtractionLinkedHtml"];
+  for (const key of readers) {
+    if (config[key] !== undefined && !configObject(config[key])) out.push(`${key}=object required`);
+  }
+  const explicitReaders = readers.filter(key => config[key] !== undefined);
+  if (config.bodyExtractionPdf === true) explicitReaders.push("bodyExtractionPdf");
+  if (explicitReaders.length > 1 || (explicitReaders.length && (config.bodySelector || config.bodyJsonLdType)))
+    out.push("bodyExtraction=one body reader without bodySelector or bodyJsonLdType required");
+  const markdown = configObject(config.bodyExtractionMarkdown) ? config.bodyExtractionMarkdown : undefined;
+  if (markdown && !bodyJsonRequest("https://publisher.example/post/article-id", { urlTemplate: markdown.urlTemplate as string }))
+    out.push("bodyExtractionMarkdown.urlTemplate=HTTP article template with path or slug required");
+  const bodyJson = configObject(config.bodyExtractionJson) ? config.bodyExtractionJson : undefined;
+  if (bodyJson) {
+    if (!nonemptyString(bodyJson.path) || !bodyJson.path.split(".").every(nonemptyString)) out.push("bodyExtractionJson.path=nonempty field path required");
+    if (bodyJson.format !== "html" && bodyJson.format !== "markdown") out.push("bodyExtractionJson.format=html or markdown required");
+    if ((bodyJson.selector === undefined) === (bodyJson.urlTemplate === undefined)) out.push("bodyExtractionJson=exactly one selector or urlTemplate required");
+    if (bodyJson.selector !== undefined && !nonemptyString(bodyJson.selector)) out.push("bodyExtractionJson.selector=nonempty string required");
+    if (bodyJson.adapter !== undefined && (typeof bodyJson.adapter !== "string" || !["magnolia_article", "sanity_article", "x_article"].includes(bodyJson.adapter) || bodyJson.format !== "html"))
+      out.push("bodyExtractionJson.adapter=supported HTML adapter required");
+    if (bodyJson.bodySelector !== undefined && (!nonemptyString(bodyJson.bodySelector) || bodyJson.format !== "html"))
+      out.push("bodyExtractionJson.bodySelector=nonempty HTML selector required");
+  }
+  const linked = configObject(config.bodyExtractionLinkedHtml) ? config.bodyExtractionLinkedHtml : undefined;
+  if (linked) {
+    if (!nonemptyString(linked.selector)) out.push("bodyExtractionLinkedHtml.selector=nonempty string required");
+    if (linked.attribute !== "href" && linked.attribute !== "src") out.push("bodyExtractionLinkedHtml.attribute=href or src required");
+    if (!exactHttpOrigins(linked.allowedOrigins)) out.push("bodyExtractionLinkedHtml.allowedOrigins=exact HTTP origins required");
+    for (const key of ["stripPathSuffix", "bodySelector"]) if (linked[key] !== undefined && !nonemptyString(linked[key])) out.push(`bodyExtractionLinkedHtml.${key}=nonempty string required`);
+  }
+  if (linked?.format !== undefined && linked.format !== "html" && linked.format !== "adobe_pdf") out.push("bodyExtractionLinkedHtml.format=unsupported");
   if (linked?.format === "adobe_pdf") {
     if (linked.bodySelector || !Array.isArray(linked.pdfOrigins) || !linked.pdfOrigins.length || linked.pdfOrigins.length > 4) out.push("bodyExtractionLinkedHtml.adobe_pdf=explicit PDF origins required");
     else for (const value of linked.pdfOrigins) {
       try { const u = new URL(String(value)); if (u.origin !== value || !/^https?:$/.test(u.protocol) || u.username || u.password) out.push("bodyExtractionLinkedHtml.pdfOrigins=exact public origins required"); } catch { out.push("bodyExtractionLinkedHtml.pdfOrigins=invalid"); }
     }
   } else if (linked?.pdfOrigins !== undefined) out.push("bodyExtractionLinkedHtml.pdfOrigins=requires adobe_pdf format");
-  if (bodyJson && (bodyJson.method !== undefined || bodyJson.bodyJson !== undefined) &&
-    (bodyJson.selector || !bodyJsonRequest("https://publisher.example/post/article-id", bodyJson as BodyJsonRequestConfig)))
+  if (bodyJson && (bodyJson.urlTemplate !== undefined || bodyJson.method !== undefined || bodyJson.bodyJson !== undefined) &&
+    (bodyJson.selector !== undefined || !bodyJsonRequest("https://publisher.example/post/article-id", bodyJson as BodyJsonRequestConfig)))
     out.push("bodyExtractionJson.request=explicit GET or read-only POST JSON article mapping required");
   if (bodyJson?.allowPlainTextJson !== undefined && typeof bodyJson.allowPlainTextJson !== "boolean") out.push("bodyExtractionJson.allowPlainTextJson=boolean required");
   if (bodyJson?.adapter === "x_article" && (bodyJson.format !== "html" || bodyJson.path !== "tweet" || typeof bodyJson.urlTemplate !== "string" || !bodyJson.urlTemplate.includes("{slug}") || bodyJson.selector || bodyJson.bodySelector)) out.push("bodyExtractionJson.x_article=requires complete tweet JSON API mapping");
