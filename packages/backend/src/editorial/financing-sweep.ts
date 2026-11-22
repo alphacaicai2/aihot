@@ -66,6 +66,15 @@ export async function runFinancingBatch() {
       if (!owner) return;
       for (const m of batch.material) {
         const {claim, ...review} = validateFinancing(m,byId.get(m.id));
+        // A second pass with more source material may enrich a claim. Preserve the original
+        // review when it finds no investor or switches to another company in the same report.
+        if (m.previousBatch) {
+          const kept = await tx`UPDATE analyses SET output=output || jsonb_build_object('financingBatch',${m.previousBatch}::bigint)
+            WHERE id=${m.id} AND output->>'financingBatch'=${String(batch.id)}
+              AND (${!claim?.investors.length} OR (output->'financing'->>'company' IS NOT NULL
+                AND lower(output->'financing'->>'company') <> lower(${claim?.company ?? ""}))) RETURNING id`;
+          if (kept.length) continue;
+        }
         // An omitted or malformed result must not discard valid siblings or be mistaken for no deal.
         if (review.reason === "invalid_result" && batch.material.length > 1) {
           const [retry] = await tx`INSERT INTO financing_extraction_batches(material) VALUES (${tx.json([m])}) RETURNING id`;

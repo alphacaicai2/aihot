@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FinancingClaim } from "@aihot/contracts/financing";
 
-export type FinancingMaterial = { id: number; text: string };
+export type FinancingMaterial = { id: number; text: string; previousBatch?: number };
 const field = z.string().trim().min(1).max(160);
 const quote = z.string().trim().min(1).max(1600);
 const candidate = z.object({
@@ -106,13 +106,31 @@ export function validateFinancing(source: FinancingMaterial, value: unknown) {
   return { claim, investorEvidence, reason: investorEvidence.length ? "named_investors" : "no_verified_investor" };
 }
 
-/** Keep the opening and transaction-specific context of a long original. */
+/** Select original passages where a financing or an investor is named, including the closing
+ * paragraphs of an investor letter. A long feed excerpt can itself contain the whole article. */
+export function additionalFinancingPassages(original: string, alreadyIncluded: string) {
+  const text = original.replace(/\s+/g, " ").trim();
+  const signal = /领投|跟投|参投|投资方|参与投资|参与本轮|本轮.{0,12}投资|融资.{0,10}投资|出资方|led by|co-led|co-lead|to lead|we led|leading.{0,60}series|our investment|we.{0,20}invested|participants included|participation from|investors includ|series [a-g]\b|seed round|funding round/gi;
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const match of text.matchAll(signal)) {
+    const position = match.index;
+    const context = text.slice(Math.max(0, position - 24), position + match[0].length + 24);
+    if (alreadyIncluded.includes(context)) continue;
+    const start = Math.max(0, position - 180);
+    const end = Math.min(text.length, position + 260);
+    const last = spans.at(-1);
+    if (last && start < last.end && end - last.start <= 700) last.end = Math.max(last.end, end);
+    else if (spans.length < 7) spans.push({start,end});
+    else break;
+  }
+  return spans.map(({start,end}) => text.slice(start,end));
+}
+
 export function financingText(title: string, excerpt: string | null, body: string | null) {
   const clean = (value: string | null) => (value ?? "").replace(/\s+/g, " ").trim();
-  const full = clean(body);
-  const opening = full.slice(0, 2400);
-  const tail = full.slice(opening.length);
-  const passages = Array.from(tail.matchAll(/领投|跟投|参投|投资方|投资人包括|出资方|led by|co-led|participants included|participation from|investors includ/gi),
-    m => tail.slice(Math.max(0, m.index - 130), m.index + 240)).slice(0, 5);
-  return [...new Set([clean(title), clean(excerpt).slice(0, 1800), opening, ...passages].filter(Boolean))].join("\n");
+  const fullExcerpt = clean(excerpt);
+  const fullBody = clean(body);
+  const opening = [...new Set([clean(title), fullExcerpt.slice(0, 1800), fullBody.slice(0, 2400)].filter(Boolean))].join("\n");
+  const passages = additionalFinancingPassages(fullExcerpt + "\n" + fullBody, opening);
+  return [opening, ...passages].filter(Boolean).join("\n");
 }

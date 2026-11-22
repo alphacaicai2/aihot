@@ -37,3 +37,7 @@ test("an HTML-encoded source keeps a literal attribution for a readable investor
   assert.deepEqual(claim?.investors,["Sprout & Oak"]);
   assert.equal(investorEvidence[0]?.quote,"Sprout &#38; Oak at the company&#8217;s first close");
 });
+test("a lead investor at the end of a long feed excerpt reaches extraction", () => {
+  const excerpt = "Introduction. ".repeat(450) + "FirstMark is excited to lead Fragment’s Series A.";
+  assert.match(financingText("Our investment in Fragment",excerpt,null),/FirstMark is excited to lead/);
+});
