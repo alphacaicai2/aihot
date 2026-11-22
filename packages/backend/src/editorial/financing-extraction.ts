@@ -26,7 +26,15 @@ function quoteIndex(text: string) {
   let previous = "";
   let gap = false;
   let offset = 0;
-  for (const char of text) {
+  const widths: number[] = [];
+  const entities: Record<string, string> = { amp: "&", apos: "'", quot: '"', nbsp: " ", lt: "<", gt: ">" };
+  // Some feed excerpts still contain HTML character references or discretionary hyphens.
+  for (const match of text.matchAll(/&#(?:x[0-9a-f]{1,6}|[0-9]{1,7});|&(amp|apos|quot|nbsp|lt|gt);|./gisu)) {
+    const raw = match[0];
+    const code = raw.startsWith("&#") ? Number(raw.slice(2, -1).replace(/^x/i, "0x")) : NaN;
+    const char = match[1] ? entities[match[1].toLowerCase()]! :
+      code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : raw;
+    if (char === "\u00ad") { offset += raw.length; continue; }
     const token = char.normalize("NFKC").toLowerCase();
     if (/^\s+$/u.test(token) && char !== "\n") {
       gap = true;
@@ -34,20 +42,21 @@ function quoteIndex(text: string) {
       if (gap && /[a-z0-9]$/i.test(previous) && /^[a-z0-9]/i.test(token)) {
         folded += " ";
         offsets.push(offset - 1);
+        widths.push(1);
       }
       folded += token;
-      for (let i = 0; i < token.length; i++) offsets.push(offset);
+      for (let i = 0; i < token.length; i++) { offsets.push(offset); widths.push(raw.length); }
       previous = token;
       gap = false;
     }
-    offset += char.length;
+    offset += raw.length;
   }
   offsets.push(text.length);
-  return { folded, offsets };
+  return { folded, offsets, widths };
 }
 
 function sourceQuotes(text: string) {
-  const { folded, offsets } = quoteIndex(text);
+  const { folded, offsets, widths } = quoteIndex(text);
   return (quote: string | undefined | null) => {
     if (!quote) return null;
     if (text.includes(quote)) return quote;
@@ -56,7 +65,7 @@ function sourceQuotes(text: string) {
     const at = folded.indexOf(key);
     if (at < 0) return null;
     const last = offsets[at + key.length - 1]!;
-    const width = text.codePointAt(last)! > 0xffff ? 2 : 1;
+    const width = widths[at + key.length - 1]!;
     return text.slice(offsets[at], last + width);
   };
 }
@@ -68,7 +77,13 @@ export function validateFinancing(source: FinancingMaterial, value: unknown) {
   const item = parsed.data;
   const present = sourceQuotes(source.text);
   const evidence = present(item.evidence);
-  if (!evidence || !present(item.company)) return { claim: null, reason: "unverified_transaction", investorEvidence: [] };
+  let company = present(item.company) ? item.company : null;
+  if (!company) {
+    // A parenthetical translation may be separated from the original name by an alias definition.
+    const alias = /^(.+?)\s*[（(]([^()（）]+)[）)]$/.exec(item.company);
+    if (alias && present(alias[1]) && present(alias[2])) company = alias[1]!.trim();
+  }
+  if (!evidence || !company) return { claim: null, reason: "unverified_transaction", investorEvidence: [] };
   const seen = new Set<string>();
   const investorEvidence: Array<{ name: string; quote: string }> = [];
   for (const { name, quote } of item.investors) {
@@ -83,7 +98,7 @@ export function validateFinancing(source: FinancingMaterial, value: unknown) {
   // Older responses sometimes omit kind. A missing fund/company distinction goes to review.
   if (!item.kind) return { claim: null, reason: "invalid_result", investorEvidence: [] };
   const claim: FinancingClaim = {
-    company: item.company, evidence: evidence.slice(0, 240), investors: investorEvidence.map(i => i.name),
+    company, evidence: evidence.slice(0, 240), investors: investorEvidence.map(i => i.name),
     round: present(item.round), amountText, valuationText: present(item.valuationText),
     currency: amountText && item.currency && (item.currency !== "USD" || /美元|美金|US\s*\$|\bUSD\b|U\.?S\.? dollars?/i.test(source.text)) ? item.currency : null, kind: item.kind,
     amountBasis: amountText ? item.amountBasis : "unknown", status: item.status,

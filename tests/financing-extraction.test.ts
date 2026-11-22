@@ -28,3 +28,12 @@ test("Chinese layout spaces are tolerated and the retained quote is from the ori
   assert.equal(claim?.evidence, "图灵科技 （ Turing ） 完成融资");
   assert.deepEqual(investorEvidence,[{name:"蓝海创投",quote:"由 蓝海 创投领投"}]);
 });
+test("an HTML-encoded source keeps a literal attribution for a readable investor name", () => {
+  const text = "Atlas raised with Sprout &#38; Oak at the company&#8217;s first close.";
+  const {claim,investorEvidence} = validateFinancing({id:1,text},{
+    company:"Atlas", evidence:"Atlas raised with Sprout & Oak", kind:"company_round", status:"closed",
+    amountBasis:"unknown", investors:[{name:"Sprout & Oak",quote:"Sprout & Oak at the company’s first close"}],
+  });
+  assert.deepEqual(claim?.investors,["Sprout & Oak"]);
+  assert.equal(investorEvidence[0]?.quote,"Sprout &#38; Oak at the company&#8217;s first close");
+});
