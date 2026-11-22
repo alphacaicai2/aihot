@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { analyzeArticle } from "@aihot/backend/editorial/analyze";
+import { runFinancingBatch } from "@aihot/backend/editorial/financing-sweep";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { composeDaily } from "@aihot/backend/reports/compose";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -29,7 +30,13 @@ const provider = await stub((_hit, req) => {
   const c = cases.find((c) => new RegExp(`\\b${c.marker}\\b`).test(user));
   let content: unknown;
   if (system.includes("日报主编")) content = { title: "投融资日报", leadParagraph: "公司融资与基金募资。", highlights: [1] };
-  else {
+  else if (system.includes("Extract the principal financing transaction")) {
+    const material: Array<{ id: number; text: string }> = JSON.parse(messages.at(-1).content);
+    content = { results: material.map(m => ({ id: m.id, claim: m.text.includes("蓝海领投本轮") ? {
+      company: "某AI公司", kind: "company_round", status: "announced", amountBasis: "round",
+      evidence: "某AI公司完成一亿美元B轮融资", investors: [{name:"蓝海",quote:"蓝海领投本轮"}],
+    } : null })) };
+  } else {
     assert.ok(c, "known fixture reaches the provider");
     if (system.includes("宽召回的AI相关性预筛")) content = { label: "PASS", reason: "AI经营活动" };
     else if (system.includes("事件注意力评分器")) content = { attentionScore: c.score };
@@ -65,7 +72,7 @@ test("financing survives analysis and publication without automatically selectin
   for (const c of cases) {
     const { articleId } = await upsertMaterial({
       sourceId: SOURCE, url: `https://example.com/${T}/${c.marker}`, title: `${c.title} ${c.marker} ${T}`,
-      bodyText: `${c.title}。${c.marker} ${T} ${"这篇新闻介绍AI业务的最新进展。".repeat(35)}`,
+      bodyText: `${c.title}。${c.marker === "ROUND" ? "蓝海领投本轮。" : ""}${c.marker} ${T} ${"这篇新闻介绍AI业务的最新进展。".repeat(35)}`,
       bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
     });
     ids.set(c.marker, articleId);
@@ -77,6 +84,17 @@ test("financing survives analysis and publication without automatically selectin
     assert.ok(p!.tags.includes(c.tag), c.marker);
     assert.equal(p!.selected, c.score >= 60, c.marker);
   }
+});
+
+test("a newly published financing report becomes searchable after the worker tick and stays idempotent", async () => {
+  assert.equal(await runFinancingBatch(), "completed");
+  const result = await app.inject({method: "GET", url: "/api/v1/financing?investor=" + encodeURIComponent("蓝海")});
+  assert.equal(result.statusCode, 200);
+  const reports = result.json().events.flatMap((e: { reports: Array<{id:string}> }) => e.reports);
+  assert.ok(reports.some((r: {id:string}) => r.id === ids.get("ROUND")));
+  const before = provider.hits();
+  assert.equal(await runFinancingBatch(), "idle");
+  assert.equal(provider.hits(), before);
 });
 
 test("site, public API and RSS filter financing while excluding product background and opinions", async () => {
