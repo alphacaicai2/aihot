@@ -1,5 +1,6 @@
 // First-party site API (/api/site/*). Not public, not versioned, never called /api/v2.
 // Reads through the same public read layer as v1; no cookies are read or set.
+import { loadDiscoveries } from "@aihot/backend/publication/discoveries";
 import { FEATURES } from "@aihot/industry/features";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isCategoryKey, isChannelKey, type CategoryKey, type ChannelKey } from "@aihot/contracts/taxonomy";
@@ -45,7 +46,7 @@ export function siteHandler(fn: Handler): Handler {
     try {
       return await fn(req, reply);
     } catch (error) {
-      if (error instanceof BadRequest) return sendProblem(req, reply, { status: 400, code: "invalid_request", detail: error.message });
+      if (error instanceof BadRequest || error instanceof RangeError) return sendProblem(req, reply, { status: 400, code: "invalid_request", detail: error.message });
       if (error instanceof InvalidCursorError) return sendProblem(req, reply, { status: 400, code: "invalid_cursor", detail: error.message });
       if (error instanceof SearchBusyError) {
         return sendProblem(req, reply, { status: 503, code: "temporarily_unavailable", detail: "search busy", retryAfter: error.retryAfter });
@@ -80,6 +81,8 @@ export async function parseFilters(q: Record<string, string>): Promise<FilterPar
 }
 
 export function registerSite(app: FastifyInstance) {
+  app.get("/api/site/discoveries", siteHandler(async (req, reply) => sendJsonWithEtag(req, reply, await loadDiscoveries(), { etagPrefix: "discoveries", cacheControl: "public, max-age=60" })));
+
   app.get("/api/site/meta", siteHandler(async (req, reply) => {
     return sendJsonWithEtag(req, reply, siteMeta(), { etagPrefix: "meta", cacheControl: "public, max-age=60, s-maxage=60" });
   }));
@@ -106,7 +109,8 @@ export function registerSite(app: FastifyInstance) {
     const page = Math.min(Math.max(Number(q.page) || 1, 1), 50);
     const search = q.q?.trim() ? q.q.trim().slice(0, 200) : null;
     const tab = q.tab === "relevance" ? "relevance" : "time";
-    const data = await loadPool({ ...filters, q: search, tab, page });
+    if ([q.company, q.investor].some(v => v && v.length > 120)) throw new BadRequest("company/investor too long");
+    const data = await loadPool({ ...filters, q: search, tab, page, from: q.from, to: q.to, company: q.company?.trim(), investor: q.investor?.trim() });
     const { generatedAt: _, ...content } = data;
     return sendJsonWithEtag(req, reply, data, { etagPrefix: "pool", cacheControl: "public, max-age=60, s-maxage=60", etagOf: content });
   }));

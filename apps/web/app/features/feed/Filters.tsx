@@ -34,7 +34,7 @@ export function CategoryTabs({ base, category, channel = "all", layoutId, size =
   return <PillTabs items={items} active={active} layoutId={layoutId} label="筛选" size={size} className={className} />;
 }
 
-function useSlashFocus(ref: React.RefObject<HTMLInputElement | null>) {
+export function useSlashFocus(ref: React.RefObject<HTMLInputElement | null>) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "/" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.isContentEditable)) {

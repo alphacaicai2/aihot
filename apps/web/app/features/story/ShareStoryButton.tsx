@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { SITE } from "@aihot/industry/site";
 import { Button, buttonClass } from "../../components/ui/Controls";
 import { IconShare } from "../../components/icons";
 import { canShareImage, shareImage } from "../hot/share-file";
 
-export function ShareStoryButton({ publicId, title }: { publicId: string; title: string }) {
+export function ShareStoryButton({ publicId, title, compact = false }: { publicId: string; title: string; compact?: boolean }) {
+  const headingId = useId();
   const dialog = useRef<HTMLDialogElement>(null);
   const generation = useRef(0);
   const [image, setImage] = useState<{ url: string; file: File; canShare: boolean } | null>(null);
@@ -67,10 +68,12 @@ export function ShareStoryButton({ publicId, title }: { publicId: string; title:
 
   return (
     <>
-      <Button onClick={open} className="shrink-0"><IconShare size={15} /> 分享事件</Button>
-      <dialog ref={dialog} aria-labelledby="share-story-title" className="fixed inset-0 m-auto max-h-[90dvh] w-[min(520px,calc(100vw-24px))] overflow-y-auto rounded-sheet border border-line bg-surface p-5 text-ink shadow-xl backdrop:bg-black/50">
+      {compact ? (
+        <button type="button" onClick={open} aria-label={`分享事件：${title}`} title="分享事件" className="relative z-10 grid size-10 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-bg-muted hover:text-accent"><IconShare size={16} /></button>
+      ) : <Button onClick={open} className="relative z-10 shrink-0"><IconShare size={15} /> 分享事件</Button>}
+      <dialog ref={dialog} aria-labelledby={headingId} className="fixed inset-0 m-auto max-h-[90dvh] w-[min(520px,calc(100vw-24px))] overflow-y-auto rounded-sheet border border-line bg-surface p-5 text-ink shadow-xl backdrop:bg-black/50">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="share-story-title" className="text-lg font-semibold">分享事件</h2>
+          <h2 id={headingId} className="text-lg font-semibold">分享事件</h2>
           <Button size="sm" variant="ghost" onClick={() => dialog.current?.close()}>关闭</Button>
         </div>
         <p className="mt-2 text-sm text-ink-3">分享事件链接，或将事件卡片作为图片发送。</p>

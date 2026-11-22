@@ -1841,6 +1841,105 @@
           }
         }
       }
+    },
+    "/api/v1/financing": {
+      "get": {
+        "operationId": "financing",
+        "summary": "Financing events and source claims",
+        "description": "Reads current public eligible financing reports, grouped by fact (not by story, which may span rounds). Matching a company or investor selects events, then returns their public source reports, including differing terms. Missing structured claims are null. CSV contains the current page only. No model calls occur on reads.",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Inclusive Beijing start date; requires to and overrides window."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Inclusive Beijing end date; requires from."
+          },
+          {
+            "name": "company",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "description": "Company name, expanded using known and reviewed aliases."
+          },
+          {
+            "name": "investor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "description": "Investor substring in structured financing claims; older unstructured reports will not match."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 40
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public event claims, or a bounded CSV export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinancingResponse"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filters or cursor"
+          },
+          "503": {
+            "description": "Search busy; honor Retry-After"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3562,6 +3661,178 @@
             }
           }
         ]
+      },
+      "FinancingResponse": {
+        "type": "object",
+        "required": [
+          "events",
+          "hasMore",
+          "nextCursor"
+        ],
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "latestAt",
+                "differingClaims",
+                "reports",
+                "reportCount"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "latestAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "differingClaims": {
+                  "type": "boolean",
+                  "description": "Different reported terms; not necessarily a factual contradiction."
+                },
+                "reports": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "title",
+                      "url",
+                      "sourceName",
+                      "publishedAt",
+                      "claim"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "sourceName": {
+                        "type": "string"
+                      },
+                      "publishedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "claim": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/FinancingClaim"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                },
+                "reportCount": {
+                  "type": "integer",
+                  "description": "Total public reports in the event; reports contains at most the latest 50."
+                }
+              }
+            }
+          }
+        }
+      },
+      "FinancingClaim": {
+        "type": "object",
+        "required": [
+          "company",
+          "round",
+          "amountText",
+          "currency",
+          "valuationText",
+          "investors",
+          "status",
+          "kind",
+          "amountBasis",
+          "evidence"
+        ],
+        "properties": {
+          "round": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amountText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valuationText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "type": "string"
+          },
+          "investors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "ongoing",
+              "announced",
+              "closed",
+              "unknown"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "company_round",
+              "fund_raise"
+            ]
+          },
+          "amountBasis": {
+            "enum": [
+              "round",
+              "cumulative",
+              "target",
+              "unknown"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 240
+          }
+        }
       }
     }
   }

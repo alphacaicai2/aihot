@@ -1,4 +1,5 @@
 // Public API v1 (long-term). Field shapes follow reference/public-v1.openapi.json 2.0.0 (the paths stay /api/v1).
+import { loadFinancing, financingCsv } from "@aihot/backend/publication/financing";
 import { FEATURES } from "@aihot/industry/features";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { V1_CACHE_CONTROL } from "@aihot/contracts/http-policy";
@@ -37,7 +38,7 @@ export function publicHandler(fn: Handler): Handler {
     try {
       return await fn(req, reply);
     } catch (error) {
-      if (error instanceof QueryError) return sendProblem(req, reply, { status: 400, code: "invalid_request", title: "Invalid request", detail: error.message });
+      if (error instanceof QueryError || error instanceof RangeError) return sendProblem(req, reply, { status: 400, code: "invalid_request", title: "Invalid request", detail: error.message });
       if (error instanceof InvalidCursorError) {
         return sendProblem(req, reply, { status: 400, code: "invalid_cursor", title: "Invalid cursor", detail: "The cursor is malformed." });
       }
@@ -73,6 +74,15 @@ export function registerV1(app: FastifyInstance) {
     if (q.cursor !== undefined && q.cursor.length === 0) throw new InvalidCursorError("empty cursor");
     const body = await v1Items({ mode, window, by, category, q: search, limit, cursor: q.cursor ?? null });
     return sendJsonWithEtag(req, reply, body, { etagPrefix: "v1-items", cacheControl: V1_CACHE_CONTROL.items });
+  }));
+
+  app.get("/api/v1/financing", publicHandler(async (req, reply) => {
+    const q = strictQuery(req, ["from", "to", "company", "investor", "limit", "cursor", "format"]);
+    for (const key of ["company", "investor"] as const) if (q[key] && q[key]!.length > 120) throw new QueryError(`${key} is too long.`);
+    const format = enumParam(q.format, "format", ["json", "csv"] as const, "json");
+    const result = await loadFinancing({ from: q.from, to: q.to, company: q.company?.trim(), investor: q.investor?.trim(), cursor: q.cursor, limit: intParam(q.limit, "limit", 1, 100, 40) });
+    if (format === "csv") return reply.header("Cache-Control", "no-store").header("Content-Disposition", 'attachment; filename="financing.csv"').type("text/csv; charset=utf-8").send(financingCsv(result));
+    return sendJsonWithEtag(req, reply, result, { etagPrefix: "v1-financing", cacheControl: V1_CACHE_CONTROL.items });
   }));
 
   if (FEATURES.codexResetMonitor) registerCodexResets(app);

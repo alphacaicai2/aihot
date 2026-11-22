@@ -34,8 +34,9 @@ export type Db = Sql | Tx;
  * two-character search term (no usable trigram) from a longer one and would scan the whole trigram
  * index, so every search goes through here.
  */
-export function withCustomPlans<T>(fn: (db: Tx) => Promise<T>): Promise<T> {
+export function withCustomPlans<T>(fn: (db: Tx) => Promise<T>, timeoutMs = 10_000): Promise<T> {
   return sql.begin(async (tx) => {
+    await tx`SELECT set_config('statement_timeout', ${String(timeoutMs)}, true), set_config('lock_timeout', '2000', true)`;
     await tx`SET LOCAL plan_cache_mode = force_custom_plan`;
     return fn(tx);
   }) as Promise<T>;

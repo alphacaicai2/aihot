@@ -121,7 +121,7 @@ export interface TimelineResponse {
 }
 
 export interface PoolResponse {
-  filters: TimelineFilters & { q: string | null; tab: "time" | "relevance" };
+  filters: TimelineFilters & { q: string | null; tab: "time" | "relevance"; from?: string | null; to?: string | null; company?: string | null; investor?: string | null };
   items: FeedItemSummary[];
   page: number;
   pageCount: number;

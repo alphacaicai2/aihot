@@ -1,14 +1,17 @@
 import { SITE, withSubject } from "@aihot/industry/site";
-import { Link, useLoaderData, useNavigation, useSearchParams } from "react-router";
+import { data as routeData, Link, useLocation, useLoaderData, useNavigation, useSearchParams } from "react-router";
 import type { Route } from "./+types/all";
 import type { PoolResponse } from "@aihot/contracts/site";
-import { isCategoryKey, isChannelKey } from "@aihot/contracts/taxonomy";
+import { CHANNEL_LABELS, isCategoryKey, isChannelKey } from "@aihot/contracts/taxonomy";
 import { loadOr404, queryString } from "../lib/api.server";
 import { listPath, pageMeta } from "../lib/seo";
-import { CategoryTabs, SearchField } from "../features/feed/Filters";
+import { CategoryTabs, hrefWith } from "../features/feed/Filters";
 import { PillTabs } from "../components/ui/Tabs";
 import { DayList, Pagination } from "../features/feed/DayList";
 import { EmptyState } from "../components/ui/Page";
+import { PoolSearch } from "../features/feed/PoolSearch";
+import { IconClose, IconList } from "../components/icons";
+import { dateProblem } from "../lib/date-range";
 import { RingMark } from "../components/Logo";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -19,25 +22,32 @@ export async function loader({ request }: Route.LoaderArgs) {
   const category = categoryParam && isCategoryKey(categoryParam) ? categoryParam : null;
   const tag = url.searchParams.get("tag")?.trim() || null;
   const q = url.searchParams.get("q")?.trim().slice(0, 200) || null;
-  const tab = url.searchParams.get("tab") === "relevance" ? "relevance" : null;
+  const tab = q && url.searchParams.get("tab") === "relevance" ? "relevance" : "time";
   // Legacy deep-paging parameters (deep, anchorAt) still open a normal page.
   const page = Math.min(Math.max(Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1, 1), 50);
+  const from = url.searchParams.get("from") || null;
+  const to = url.searchParams.get("to") || null;
+  const company = url.searchParams.get("company")?.trim() || null;
+  const investor = url.searchParams.get("investor")?.trim() || null;
+  const filters: PoolResponse["filters"] = { channel, category, tag, q, tab, from, to, company, investor };
+  const problem = dateProblem(from ?? "", to ?? "");
+  if (problem) return routeData({ data: null, filters, problem }, { status: 400 });
   const data = await loadOr404<PoolResponse>(
-    `/api/site/pool${queryString({ channel: channel === "all" ? null : channel, category, tag, q, tab, page: page > 1 ? page : null })}`,
+    `/api/site/pool${queryString({ channel: channel === "all" ? null : channel, category, tag, q, tab: tab === "time" ? null : tab, from, to, company, investor, page: page > 1 ? page : null })}`,
     { signal: request.signal, busyRedirect: "/all/search-busy" },
   );
-  return { data };
+  return { data, filters: data.filters, problem: null };
 }
 
 export function meta({ loaderData }: Route.MetaArgs) {
-  const f = loaderData?.data.filters;
+  const f = loaderData?.filters;
   const q = f?.q;
-  const page = loaderData?.data.page ?? 1;
+  const page = loaderData?.data?.page ?? 1;
   return pageMeta({
     title: q ? `搜索：${q}` : `全部${withSubject("动态")}`,
     description: `${SITE.name} 收录的全部${withSubject("动态")}，可按类别与标签筛选，支持中英文搜索。`,
     path: listPath("/all", { channel: f && f.channel !== "all" ? f.channel : null, category: f?.category, tag: f?.tag, q, tab: f?.tab === "relevance" ? "relevance" : null, page: page > 1 ? page : null }),
-    noindex: !!q,
+    noindex: !!(q || f?.from || f?.company || f?.investor),
   });
 }
 
@@ -57,12 +67,18 @@ function pageHref(params: URLSearchParams, page: number) {
 }
 
 export default function AllPage() {
-  const { data } = useLoaderData<typeof loader>();
+  const { data, filters: f, problem } = useLoaderData<typeof loader>();
+  const location = useLocation();
   const [params] = useSearchParams();
   const navigation = useNavigation();
-  const f = data.filters;
   const busy = navigation.state === "loading" && navigation.location?.pathname === "/all";
-  const keep = { channel: f.channel === "all" ? null : f.channel, category: f.category };
+  const chips: Array<{ value: string | null | undefined; clear: Record<string, null> }> = [
+    { value: f.channel !== "all" && f.channel !== "firstParty" ? CHANNEL_LABELS[f.channel] : null, clear: { channel: null } },
+    { value: f.tag && `#${f.tag}`, clear: { tag: null } },
+    { value: f.company && `公司 · ${f.company}`, clear: { company: null } },
+    { value: f.investor && `机构 · ${f.investor}`, clear: { investor: null } },
+    { value: (f.from || f.to) && `${f.from || "未填"} 至 ${f.to || "未填"}`, clear: { from: null, to: null } },
+  ];
   const searchTabHref = (tab: "time" | "relevance") => {
     const sp = new URLSearchParams(params);
     sp.delete("page");
@@ -70,37 +86,27 @@ export default function AllPage() {
     else sp.delete("tab");
     return `/all?${sp}`;
   };
-  const title = f.q ? `搜索“${f.q}”` : f.tag ? `#${f.tag}` : null;
-  const updated = new Date(data.freshness).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" });
-
+  const filtered = !!(f.q || f.category || f.channel !== "all" || chips.some(c => c.value));
+  const updated = data && new Date(data.freshness).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" });
   return (
-    <div className="pb-6">
-      {/* Desktop, as on 精选: the title, then one filter row with the search field aligned on the right. */}
-      <div className="hidden lg:block">
-        <h1 className="text-[24px] font-semibold leading-[1.3] text-ink">{title ?? `全部${withSubject("动态")}`}</h1>
-        <div className="mb-5 mt-4 flex items-center justify-between gap-4">
-          <CategoryTabs base="/all" category={f.category} channel={f.channel} layoutId="all-cat-desk" className="min-w-0" />
-          <SearchField variant="track" defaultValue={f.q ?? ""} keep={keep} />
+    <div className="mx-auto max-w-[1200px] pb-6">
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4 pt-5 lg:pt-0">
+        <div className="flex items-center gap-3">
+          <span className="grid size-11 place-items-center rounded-card bg-accent text-accent-contrast"><IconList size={23} /></span>
+          <h1 className="text-[25px] font-bold tracking-tight lg:text-[32px]">全部动态</h1>
         </div>
+        {!f.q && data && <span className="text-[13px] text-ink-3">今日 <b className="num text-ink">{data.todayCount}</b> 条</span>}
+      </header>
+      <PoolSearch key={location.key} filters={f} focus={params.get("search") === "1"} initialError={problem} />
+      <div className="my-3 flex flex-wrap items-center justify-between gap-2">
+        <CategoryTabs base="/all" category={f.category} channel={f.channel} layoutId="all-category" size="sm" className="min-w-0" />
+        {filtered && <Link to="/all" className="inline-flex min-h-9 items-center rounded-control px-1 text-[13px] font-medium text-accent hover:underline">清除全部条件</Link>}
       </div>
-
-      {/* Phones: title with today's count, the search bar, then the same filter row as 精选. */}
-      <div className="lg:hidden">
-        <div className="flex items-baseline justify-between pb-3 pt-5">
-          <h1 className="text-[22px] font-bold text-ink">{title ?? "全部动态"}</h1>
-          {!f.q && (
-            <span className="text-[12.5px] text-ink-4">
-              今日 <span className="num">{data.todayCount}</span> 条
-            </span>
-          )}
-        </div>
-        <SearchField variant="bar" defaultValue={f.q ?? ""} keep={keep} autoFocus={params.get("search") === "1"} />
-        <div className="-mx-4 mt-3 border-b border-line-soft px-4 pb-3">
-          <CategoryTabs base="/all" category={f.category} channel={f.channel} layoutId="all-cat-mobile" size="sm" className="min-w-0" />
-        </div>
-      </div>
-
-      {f.q && (
+      {chips.some(c => c.value) && <nav aria-label="已应用筛选" className="mb-3 flex flex-wrap gap-1.5">
+        {chips.map(({ value, clear }) => value && <Link key={value} to={hrefWith("/all", params, clear)} aria-label={`移除 ${value}`}
+          className="inline-flex min-h-9 max-w-full items-center gap-1 rounded-control bg-accent-soft px-2.5 text-xs font-medium text-accent"><span className="break-all">{value}</span><IconClose size={13} className="shrink-0" /></Link>)}
+      </nav>}
+      {f.q && data && (
         <div className="mb-3 mt-3 flex flex-wrap items-center justify-between gap-2 lg:mt-0">
           <PillTabs
             size="xs"
@@ -115,7 +121,7 @@ export default function AllPage() {
         </div>
       )}
 
-      <div className={`transition-opacity duration-200 ${busy ? "opacity-50" : ""}`}>
+      {data && <div aria-busy={busy} className={`transition-opacity duration-200 ${busy ? "opacity-50" : ""}`}>
         {data.items.length === 0 ? (
           <div className="mt-2 lg:card">
             <EmptyState
@@ -134,9 +140,9 @@ export default function AllPage() {
         ) : (
           <DayList items={data.items} todayCount={f.q ? null : data.todayCount} showTags />
         )}
-      </div>
-      <Pagination page={data.page} pageCount={data.pageCount} href={(p) => pageHref(params, p)} />
-      {data.page >= 50 && <p className="mt-4 text-center text-[12px] text-ink-4">最多提供 50 页，更早的内容请使用搜索或主题页。</p>}
+      </div>}
+      {data && <Pagination page={data.page} pageCount={data.pageCount} href={(p) => pageHref(params, p)} />}
+      {data && data.page >= 50 && <p className="mt-4 text-center text-[12px] text-ink-4">最多提供 50 页，更早的内容请使用搜索或主题页。</p>}
     </div>
   );
 }

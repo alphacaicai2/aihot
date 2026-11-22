@@ -1,4 +1,6 @@
 // Public pool (/all) with numeric pages, and search in its two orderings.
+import { researchDates } from "@aihot/contracts/research";
+import { companyCondition, investorCondition } from "./research.ts";
 import type { PoolResponse, TimelineFilters } from "@aihot/contracts/site";
 import { beijingDate, beijingMidnight } from "@aihot/contracts/time";
 import { one, sql, withCustomPlans, type Db } from "../db.ts";
@@ -44,6 +46,9 @@ export async function withSearchCapacity<T>(fn: (db: Db) => Promise<T>): Promise
   running += 1;
   try {
     return await withCustomPlans(fn);
+  } catch (error) {
+    if (["57014", "55P03"].includes(String((error as { code?: string }).code))) throw new SearchBusyError(5);
+    throw error;
   } finally {
     running -= 1;
     waiters.shift()?.();
@@ -108,6 +113,10 @@ export interface PoolQuery extends TimelineFilters {
   page?: number;
   topicTags?: string[] | null;
   now?: Date;
+  from?: string | null;
+  to?: string | null;
+  company?: string | null;
+  investor?: string | null;
 }
 
 export async function loadPool(query: PoolQuery): Promise<PoolResponse> {
@@ -116,11 +125,12 @@ export async function loadPool(query: PoolQuery): Promise<PoolResponse> {
   const q = query.q?.trim() || null;
   const tab = q && query.tab === "relevance" ? "relevance" : "time";
   const terms = q ? searchTerms(q) : [];
-  const filters = sql`${channelCondition(query.channel)} ${categoryCondition(query.category)} ${tagCondition(query.tag)} ${topicCondition(query.topicTags)}`;
+  const range = researchDates(query.from, query.to);
+  const filters = sql`${range ? sql`AND p.timeline_at >= ${range.start} AND p.timeline_at < ${range.end}` : sql``} ${companyCondition(query.company)} ${investorCondition(query.investor)} ${channelCondition(query.channel)} ${categoryCondition(query.category)} ${tagCondition(query.tag)} ${topicCondition(query.topicTags)}`;
   const offset = (page - 1) * POOL_PAGE_SIZE;
   const cap = POOL_MAX_PAGES * POOL_PAGE_SIZE;
   // A fixed clock (tests, replays) never shares cached totals.
-  const filterKey = query.now ? null : JSON.stringify([query.channel, query.category, query.tag, query.topicTags ?? null]);
+  const filterKey = query.now ? null : JSON.stringify([query.channel, query.category, query.tag, query.topicTags ?? null, query.from, query.to, query.company, query.investor]);
 
   // Searches go through pool_search (eligible items only): trigram indexes for longer terms, a small
   // table to scan for one- and two-character ones.
@@ -144,7 +154,7 @@ export async function loadPool(query: PoolQuery): Promise<PoolResponse> {
       // can make PostgreSQL scan every toasted body instead. Keep other searches inline so short
       // terms, additional terms and selective publication filters retain their existing plans.
       const splitFields = terms.length === 1 && /[\p{L}\p{N}]{3}/u.test(terms[0]!)
-        && (!query.channel || query.channel === "all") && !query.category && !query.tag && !query.topicTags?.length;
+        && !range && !query.company && !query.investor && (!query.channel || query.channel === "all") && !query.category && !query.tag && !query.topicTags?.length;
       const partScore = terms.reduce(
         (acc, t) => sql`${acc} + (CASE WHEN ${like(sql`ps.direct`, t)} THEN 3 ELSE 0 END) + (CASE WHEN ${like(sql`ps.body`, t)} THEN 1 ELSE 0 END)`,
         sql`0`,
@@ -188,15 +198,19 @@ export async function loadPool(query: PoolQuery): Promise<PoolResponse> {
     return { rows, total: Number(n) };
   };
 
-  const { rows, total } = q ? await withSearchCapacity(run) : await run(sql);
-  const today = beijingDate(now);
-  const meta = one(await sql<{ today_count: number; updated_at: Date | null }[]>`
-    SELECT (SELECT count(*) FROM publications p
-      WHERE ${listedCondition(now)} AND p.eligible AND p.timeline_at >= ${beijingMidnight(today)} ${filters}) AS today_count,
-      (SELECT max(p.updated_at) FROM publications p WHERE p.eligible) AS updated_at`);
+  const read = async (db: Db) => {
+    const result = await run(db);
+    const today = beijingDate(now);
+    const meta = one(await db<{ today_count: number; updated_at: Date | null }[]>`
+      SELECT (SELECT count(*) FROM publications p
+        WHERE ${listedCondition(now)} AND p.eligible AND p.timeline_at >= ${beijingMidnight(today)} ${filters}) AS today_count,
+        (SELECT max(p.updated_at) FROM publications p WHERE p.eligible) AS updated_at`);
+    return { ...result, meta };
+  };
+  const { rows, total, meta } = q || range || query.company || query.investor ? await withSearchCapacity(read) : await read(sql);
 
   return {
-    filters: { channel: query.channel, category: query.category, tag: query.tag, topic: query.topic ?? null, q, tab },
+    filters: { channel: query.channel, category: query.category, tag: query.tag, topic: query.topic ?? null, q, tab, from: query.from ?? null, to: query.to ?? null, company: query.company ?? null, investor: query.investor ?? null },
     items: rows.map(toFeedItemSummary),
     page,
     pageCount: Math.min(POOL_MAX_PAGES, Math.max(1, Math.ceil(total / POOL_PAGE_SIZE))),

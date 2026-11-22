@@ -5,6 +5,7 @@ import { Link } from "react-router";
 import { IntentLink } from "../../components/ui/IntentLink";
 import type { GroupInfo, FeedItemSummary, TimelineFilters } from "@aihot/contracts/site";
 import { CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
+import { IconCheck, IconChevronDown } from "../../components/icons";
 import { SelectedBadge } from "../../components/ui/Badge";
 import { ScoreLabel } from "../../components/ui/Score";
 import { MediaThumbs, SourceLine, StarButton } from "./parts";
@@ -95,15 +96,20 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
         </div>
       )}
 
-      <button type="button" onClick={() => read ? markUnread(item.id) : markRead(item.id)} className="relative z-10 mt-1 min-h-9 rounded-control px-1 text-[12px] text-ink-3 hover:text-accent">
-        {read ? "已读 · 标为未读" : "标为已读"}
-      </button>
-      {!compact && item.reason && (
-        <details className="relative z-10 mt-2 border-t border-line-soft pt-1 text-[13px] text-ink-3">
-          <summary className="w-fit cursor-pointer rounded-control py-2 pr-3 font-medium hover:text-accent focus-visible:outline-2 focus-visible:outline-accent">为什么值得看</summary>
-          <p className="pb-2 leading-[1.75]">{item.reason}</p>
-        </details>
-      )}
+      <footer className="mt-2 flex items-start justify-between gap-2 border-t border-line-soft pt-1 text-[12px] text-ink-3">
+        {!compact && item.reason && (
+          <details className="group/reason relative z-10 min-w-0 flex-1">
+            <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-control font-medium hover:text-accent">
+              为什么值得看 <IconChevronDown size={13} className="transition-transform group-open/reason:rotate-180" />
+            </summary>
+            <p className="pb-2 text-[13px] leading-[1.75]">{item.reason}</p>
+          </details>
+        )}
+        <button type="button" onClick={() => read ? markUnread(item.id) : markRead(item.id)} className="relative z-10 ml-auto inline-flex min-h-9 shrink-0 items-center gap-1 rounded-control px-1 hover:text-accent">
+          {read && <IconCheck size={13} />}
+          {read ? "已读 · 标为未读" : "标为已读"}
+        </button>
+      </footer>
     </article>
   );
 });
