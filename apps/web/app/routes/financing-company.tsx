@@ -1,28 +1,41 @@
-import { Link, useLocation } from "react-router";
+import { data, Link, redirect, useLocation } from "react-router";
 import { beijingDate } from "@aihot/contracts/time";
 import type { FinancingResponse } from "@aihot/contracts/financing";
 import type { Route } from "./+types/financing-company";
 import { IconArrowLeft, IconArrowRight } from "../components/icons";
 import { buttonClass } from "../components/ui/Controls";
 import { FinancingEvent } from "../features/research/FinancingEvent";
-import { loadOr404 } from "../lib/api.server";
+import { apiGet, ApiError } from "../lib/api.server";
 import { listPath, pageMeta } from "../lib/seo";
 
 const path = "/financing/company";
+const privateHeaders = { "Cache-Control": "private, no-store", Vary: "Cookie" };
 
 export async function loader({ request }: Route.LoaderArgs) {
   const params = new URL(request.url).searchParams;
   const name = params.get("name")?.trim() ?? "";
   const api = listPath("/api/site/financing/company", { name, cursor: params.get("cursor") });
-  const history = await loadOr404<FinancingResponse>(api, { signal: request.signal });
-  return { name, history };
+  try {
+    const history = await apiGet<FinancingResponse>(api, {
+      signal: request.signal,
+      headers: { cookie: request.headers.get("cookie") ?? "", "user-agent": request.headers.get("user-agent") ?? "" },
+    });
+    return { name, history };
+  } catch (error) {
+    if (request.signal.aborted) throw error;
+    const status = error instanceof ApiError ? error.status : 503;
+    if (status === 401 || status === 403) throw redirect("/membership?feature=financing", { headers: privateHeaders });
+    throw data({ message: status === 404 ? "not_found" : status === 400 ? "bad_request" : "unavailable" }, {
+      status: status === 404 || status === 400 ? status : 503, headers: privateHeaders,
+    });
+  }
 }
 
 export const meta: Route.MetaFunction = ({ loaderData }) => pageMeta({
   title: loaderData ? `${loaderData.name} · 融资历史` : "公司融资历史",
   path: listPath(path, { name: loaderData?.name }), noindex: true,
 });
-export const headers = () => ({ "Cache-Control": "public, max-age=0, s-maxage=60" });
+export const headers = () => privateHeaders;
 
 export default function FinancingCompany({ loaderData }: Route.ComponentProps) {
   const { name, history } = loaderData;
