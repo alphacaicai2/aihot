@@ -20,7 +20,7 @@ export async function loadFinancing(query: FinancingQuery, now = new Date()): Pr
     ELSE coalesce('fact:' || f.public_id || ':' || lower(btrim(deal.claim->>'company')), 'item:' || p.article_id) END`;
   const joins = sql`FROM publications p JOIN analyses an ON an.id=p.analysis_id AND an.article_id=p.article_id
     LEFT JOIN facts f ON f.id=p.fact_id CROSS JOIN LATERAL ${dealRows}`;
-  const publicDeal = sql`${listedCondition(now)} AND p.eligible AND p.category='financing' AND ${namedDeal}`;
+  const publicDeal = sql`${listedCondition(now)} AND p.eligible AND (p.category='financing' OR an.output ? 'financingClaims') AND ${namedDeal}`;
   return withSearchCapacity(async db => {
     const originals = query.investor?.trim() ? await financingInvestorNames(db, now, query.investor, !!query.investorExact) : [];
     const groups = await db<{ id: string; latest: Date }[]>`

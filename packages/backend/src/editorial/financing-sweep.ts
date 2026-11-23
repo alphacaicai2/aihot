@@ -12,26 +12,29 @@ async function enqueueFinancing() {
   return sql.begin(async tx => {
     const [lock] = await tx`SELECT pg_try_advisory_xact_lock(hashtext('financing.enqueue')) AS acquired`;
     if (!lock?.acquired) return;
-    const roundup = sql`(coalesce(an.output->'financingReview'->>'reason', '')='no_single_transaction'
-      OR concat_ws(' ',p.title,p.original_title) ~* '周报|月报|投融资汇总|融资盘点|roundup|weekly|[；;]')`;
-    const rows = await tx<{id: number; title: string; excerpt: string | null; body: string | null; roundup: boolean}[]>`
-      SELECT an.id, ${roundup} AS roundup, CASE WHEN a.revision=an.input_revision THEN a.title ELSE coalesce(r.title,p.original_title,'') END AS title,
+    const titles = sql`concat_ws(' ',p.title,p.original_title,CASE WHEN a.revision=an.input_revision THEN a.title ELSE r.title END)`;
+    const weekly = sql`${titles} ~* '(投融资|融资|创投|投资|风投|募资).{0,5}(周报|周刊|周览|周记|周汇总)|(每周|一周|本周).{0,6}(投融资汇总|融资盘点|融资汇总|融资速递)|(funding|venture|financing).{0,15}(weekly|week in review|roundup)|(weekly|week in).{0,15}(funding|venture|financing)'`;
+    const roundup = sql`(${weekly} OR ${titles} ~* '周报|月报|投融资汇总|融资盘点|roundup|weekly|[；;]')`;
+    const rows = await tx<{id: number; title: string; excerpt: string | null; body: string | null; roundup: boolean;
+      figures: Array<{text:string}> | null}[]>`
+      SELECT an.id, ${roundup} AS roundup, an.output->'financingSourceFigures' AS figures, CASE WHEN a.revision=an.input_revision THEN a.title ELSE coalesce(r.title,p.original_title,'') END AS title,
         CASE WHEN a.revision=an.input_revision THEN a.excerpt END AS excerpt,
         CASE WHEN a.revision=an.input_revision THEN concat_ws(E'\n',a.x_post->>'text',a.x_article->>'text',a.body_text) ELSE r.body_text END AS body
       FROM publications p JOIN analyses an ON an.id=p.analysis_id AND an.article_id=p.article_id JOIN articles a ON a.id=p.article_id
       LEFT JOIN article_revisions r ON r.article_id=a.id AND r.revision=an.input_revision
-      WHERE p.category='financing' AND p.eligible AND p.visibility='public'
+      WHERE (p.category='financing' OR ${weekly}) AND p.eligible AND p.visibility='public'
         AND (NOT (coalesce(an.output,'{}'::jsonb) ? 'financingBatch') OR (
           (an.output->'financingReview'->>'version') IS DISTINCT FROM ${transactionVersion} AND EXISTS (
             SELECT 1 FROM financing_extraction_batches old
             WHERE old.id=(an.output->>'financingBatch')::bigint AND old.finished_at IS NOT NULL)
-          AND ${roundup}))
+          AND ${weekly}))
       ORDER BY an.id DESC LIMIT 150`;
     const batches: FinancingMaterial[][] = [];
     let regular: FinancingMaterial[] = [];
     for (const row of rows) {
       const entry: FinancingMaterial = { id: row.id, format: "transactions",
-        text: financingText(row.title, row.excerpt, row.body, row.roundup) };
+        text: [financingText(row.title, row.excerpt, row.body, row.roundup),
+          ...(row.figures ?? []).map(figure => figure.text)].filter(Boolean).join("\n") };
       // Give long roundups their own input and answer budget.
       if (row.roundup) {
         batches.push([entry]);

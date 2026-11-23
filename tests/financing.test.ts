@@ -82,7 +82,7 @@ test("financing survives analysis and publication without automatically selectin
   for (const c of cases) {
     const { articleId } = await upsertMaterial({
       sourceId: SOURCE, url: `https://example.com/${T}/${c.marker}`, title: `${c.title} ${c.marker} ${T}`,
-      bodyText: `${c.title}。${c.marker === "ROUND" ? "Andreessen Horowitz 领投本轮。" : c.marker === "WEEKLY" ? drugDeal + robotDeal + "本轮由甲基金领投。" : ""}${c.marker} ${T} ${"这篇新闻介绍AI业务的最新进展。".repeat(35)}`,
+      bodyText: `${c.title}。${c.marker === "ROUND" ? "Andreessen Horowitz 领投本轮。" : c.marker === "WEEKLY" ? robotDeal + "本轮由甲基金领投。" : ""}${c.marker} ${T} ${"这篇新闻介绍AI业务的最新进展。".repeat(35)}`,
       bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
     });
     ids.set(c.marker, articleId);
@@ -100,6 +100,10 @@ test("a newly published financing report becomes searchable after the worker tic
   const [old] = await sql`INSERT INTO financing_extraction_batches (material,finished_at) VALUES ('[]',now()) RETURNING id`;
   await sql`UPDATE analyses SET output=output || jsonb_build_object('financingBatch',${old!.id}::bigint,
     'financingReview','{"reason":"no_single_transaction"}'::jsonb)
+    WHERE id=(SELECT analysis_id FROM publications WHERE article_id=${ids.get("WEEKLY")!})`;
+  // A weekly report can live in the industry feed and identify a recipient only in a source figure.
+  await sql`UPDATE publications SET category='industry' WHERE article_id=${ids.get("WEEKLY")!}`;
+  await sql`UPDATE analyses SET output=output || jsonb_build_object('financingSourceFigures',${sql.json([{text:drugDeal}])}::jsonb)
     WHERE id=(SELECT analysis_id FROM publications WHERE article_id=${ids.get("WEEKLY")!})`;
   const unprocessed = await app.inject({ method:"GET", url:"/api/v1/financing" });
   assert.deepEqual(unprocessed.json().events, []);
@@ -121,6 +125,9 @@ test("a newly published financing report becomes searchable after the worker tic
   assert.deepEqual(incomplete.json().events, []);
   const before = provider.hits();
   assert.equal(await runFinancingBatch(), "idle");
+  const fromFigure = await app.inject({method:"GET",url:"/api/v1/financing?company=Isomorphic"});
+  assert.equal(fromFigure.json().events[0].reports[0].claim.amountText, "50亿美元");
+  await sql`UPDATE publications SET category='financing' WHERE article_id=${ids.get("WEEKLY")!}`;
   assert.equal(provider.hits(), before);
 });
 
