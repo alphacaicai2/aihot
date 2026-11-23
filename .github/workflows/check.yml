@@ -37,11 +37,22 @@ jobs:
       IMG_PROXY_SIGN_SECRET: ci-img-secret-0123456789abcdef
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check release notes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            node scripts/check-changelog.ts --base-ref "$BASE_SHA"
+          else
+            node scripts/check-changelog.ts
+          fi
       - name: Install
         run: npm ci --no-audit --no-fund
       - name: Typecheck
@@ -65,6 +76,7 @@ jobs:
           (cd apps/web && NODE_ENV=production exec node server.ts) > "$RUNNER_TEMP/web.log" 2>&1 &
           for i in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:3000/api/health 2>/dev/null && break; sleep 1; done
           node scripts/smoke.ts --base http://127.0.0.1:3000
+          node scripts/check-changelog.ts --after http://127.0.0.1:3000
       # After the smoke check, which reads an empty database: these write their own rows.
       - name: Backend tests
         run: npm test

@@ -45,10 +45,16 @@ docker compose --profile https up -d --build
 
 ### 更新
 
+每次发布前，在 `industry/changelog.json` 顶部增加一条面向使用者的说明，并同步 `latestVersion`。主分支推送与 PR 的 CI 会对比基线检查新条目。部署时从待发布版本的仓库根目录执行，把域名换成目标站点。
+
 ```bash
-git pull
-docker compose up -d --build
+git pull --ff-only &&
+bash scripts/deploy-update.sh https://example.com
 ```
+
+脚本先和线上版本比较，缺条目即退出。通过后执行 Compose 更新，再从线上读回日志、导航提醒版本和公开页面。增量镜像、仅更新 Web 或 worker、配置发布和回滚，可把本次部署命令及参数接在 URL 后面，沿用相同检查。回滚时追加说明，保留先前版本的记录。
+
+API 默认读取镜像的 `industry/changelog.json`，也可通过 `AIHOT_CHANGELOG_FILE` 指定文件。API 会缓存日志。草庐正式站把主机的 `/opt/caolu/app/industry/changelog.json` 只读挂载到 API 同名文件。增量发布命令须原子替换该主机文件，并用当前 Compose 配置重新创建 API 容器，让绑定挂载指向新文件。若部署后验收失败，可单独运行 `node scripts/check-changelog.ts --after https://example.com` 复核。
 
 数据库迁移只做向后兼容的增量，更新时自动执行。
 
