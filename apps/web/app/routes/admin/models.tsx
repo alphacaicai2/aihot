@@ -1,11 +1,10 @@
 import { SITE } from "@aihot/industry/site";
-import { useState } from "react";
+import { receiptChannel, type ModelDisplay } from "../../features/admin/model-usage";
 import { Link } from "react-router";
 import type { Route } from "./+types/models";
 import { adminGet } from "../../lib/admin.server";
-import { useAdminAction } from "../../features/admin/action";
 import { bj, money, num } from "../../features/admin/format";
-import { AdminPage, Badge, Button, Card, DataTable, Empty, Field, ReasonDialog, Select } from "../../features/admin/ui";
+import { AdminPage, Badge, Card, DataTable, Empty } from "../../features/admin/ui";
 
 interface Usage {
   purpose: string;
@@ -33,8 +32,8 @@ interface Models {
   until: string;
   costs: { currencies: Array<{ currency: string; actual: number; estimated: number; amount: number }>; unpricedCalls: number };
   deepseek: { calls: number; tokensIn: number; tokensOut: number; estimatedCalls: number; amount: number | null; currency: string };
-  capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" }; usage: Usage[] }>;
-  choices: Array<{ key: string; service: string; vision: boolean }>;
+  capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" | "inherited" }; activeModelKeys?: string[]; usage: Usage[] }>;
+  displayModels: ModelDisplay[];
   history: Array<{ at: string; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;
   benches: Array<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; created_at: string }>;
 }
@@ -47,25 +46,28 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export const meta: Route.MetaFunction = () => [{ title: `模型与评测 · ${SITE.name} 后台` }];
 
-const SOURCE_LABEL = { admin: "后台切换", env: "环境变量", default: "代码默认" } as const;
+const SOURCE_LABEL = { admin: "后台配置", env: "环境变量", default: "代码默认", inherited: "沿用第一次评分" } as const;
 const secs = (ms: number | null) => (ms == null ? "—" : ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`);
 
 export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
-  const { run, pending } = useAdminAction();
-  const [target, setTarget] = useState<Models["capabilities"][number] | null>(null);
-  const [choice, setChoice] = useState<string>("");
+  const byKey = new Map(m.displayModels.map(model => [model.key, model]));
+  const modelName = (key: string) => {
+    const choice = byKey.get(key);
+    return choice ? `${choice.channel} · ${choice.model || "未配置模型"}` : key.startsWith("catalog-") ? "已移出目录的模型" : key;
+  };
   const labelOf = (key: string) => m.capabilities.find((c) => `capability:${c.key}` === key)?.label ?? key;
 
   return (
     <AdminPage
-      title="模型与评测"
-      subtitle="每项能力当前用哪个模型、来自哪里（后台切换 > 环境变量 > 代码默认），以及近期的成功率、耗时与费用。切换只影响之后的新任务，已有结果不重算；换精选模型前先看 SelectBench 同批对比。"
+      title="模型用量与评测"
+      subtitle="按任务查看当前配置与调用回执。表格高亮当前通道，粗体模型名表示该通道当前配置的模型。"
       actions={<div className="flex flex-wrap gap-1.5">{[
         { query: "period=today", label: "今天", active: m.period === "today" },
         { query: "period=yesterday", label: "昨天", active: m.period === "yesterday" },
         ...[1, 7, 30].map((days) => ({ query: `days=${days}`, label: days === 1 ? "24 小时" : `${days} 天`, active: m.period === "rolling" && m.days === days })),
       ].map((o) => <Link key={o.query} to={`?${o.query}`} preventScrollReset className={`inline-flex rounded-full px-3 py-1 text-[12.5px] ${o.active ? "bg-ink text-bg" : "bg-surface text-ink-2 ring-1 ring-line hover:bg-bg-sunk"}`}>{o.label}</Link>)}</div>}
     >
+      <div className="mb-4"><Link to="/admin/model-config" className="font-medium text-accent hover:underline">打开模型配置 →</Link></div>
       <div className="grid gap-5 xl:grid-cols-2">
       <Card title="总费用">
         {m.costs.currencies.length ? m.costs.currencies.map((c) => (
@@ -85,6 +87,16 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
       </div>
       <div className="mt-5 grid gap-5">
         {m.capabilities.map((c) => {
+          const active = (c.activeModelKeys ?? [c.current.model]).flatMap(key => {
+            const choice = byKey.get(key);
+            return choice ? [choice] : [];
+          });
+          const rows = c.usage.map(u => {
+            const channel = receiptChannel(m.displayModels, u.service, u.model);
+            const matching = active.filter(choice => choice.service === u.service && choice.channel === channel);
+            return { ...u, channel: channel ?? u.service, currentChannel: matching.length > 0,
+              currentModel: matching.some(choice => choice.model === u.model) };
+          });
           const total = c.usage.reduce((a, u) => a + u.calls, 0);
           return (
             <Card
@@ -92,31 +104,25 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
               title={
                 <span className="inline-flex flex-wrap items-center gap-2">
                   {c.label}
-                  <span className="font-mono text-[12px] font-normal text-ink-3">{c.current.model}</span>
+                  <span className="font-mono text-[12px] font-normal text-ink-3">{active.length ? active.map(choice => modelName(choice.key)).join(" / ") : "当前模型不可用"}</span>
                   <Badge tone={c.current.source === "admin" ? "accent" : "muted"}>{SOURCE_LABEL[c.current.source]}</Badge>
                 </span>
-              }
-              right={
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setTarget(c);
-                    setChoice(c.current.model);
-                  }}
-                >
-                  切换
-                </Button>
               }
               pad={false}
             >
               {c.usage.length ? (
                 <DataTable
                   dense
-                  rows={c.usage}
+                  rows={rows}
+                  rowClassName={u => u.currentChannel ? "bg-accent-softer" : ""}
                   rowKey={(u) => `${u.service}|${u.purpose}|${u.model}|${u.promptVersion}|${u.currency}`}
                   columns={[
-                    { key: "m", label: "模型", render: (u) => <span className="whitespace-nowrap font-mono text-[12px]">{u.model}</span> },
-                    { key: "s", label: "通道", render: (u) => <span className="whitespace-nowrap text-[12px]">{u.service === "deepseek" ? "DeepSeek" : u.service}</span> },
+                    { key: "m", label: "模型", render: (u) => u.currentModel
+                      ? <strong className="whitespace-nowrap font-mono text-[12px] text-accent">{u.model}</strong>
+                      : <span className="whitespace-nowrap font-mono text-[12px]">{u.model}</span> },
+                    { key: "s", label: "通道", render: (u) => u.currentChannel
+                        ? <Badge tone="accent">{u.channel} · 当前通道</Badge>
+                        : <span className="whitespace-nowrap text-[12px]">{u.channel}</span> },
                     { key: "v", label: "提示版本", render: (u) => <span className="whitespace-nowrap font-mono text-[11.5px] text-ink-3">{u.promptVersion ?? "—"}</span> },
                     { key: "p", label: "用途", render: (u) => <span className="whitespace-nowrap font-mono text-[11.5px] text-ink-3">{u.purpose}</span> },
                     { key: "c", label: "调用", align: "right", render: (u) => num(u.calls) },
@@ -164,13 +170,13 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
               columns={[
                 { key: "at", label: "时间", render: (h) => <span className="num whitespace-nowrap">{bj(h.at)}</span> },
                 { key: "c", label: "能力", render: (h) => labelOf(h.subject) },
-                { key: "m", label: "变化", render: (h) => <span className="font-mono text-[12px]">{h.before?.model ?? "—"} → {h.after?.model ?? "—"}</span> },
+                { key: "m", label: "变化", render: (h) => <span className="font-mono text-[12px]">{h.before ? modelName(h.before.model) : "—"} → {h.after ? modelName(h.after.model) : "—"}</span> },
                 { key: "r", label: "原因", render: (h) => <span className="text-ink-3">{h.reason}</span> },
                 { key: "a", label: "操作人", render: (h) => h.actor },
               ]}
             />
           ) : (
-            <Empty>还没有在后台切换过模型</Empty>
+            <Empty>还没有在后台配置过模型</Empty>
           )}
         </Card>
         <Card title="同批样本对比（SelectBench）" right={<Link to="/admin/selectbench" className="text-accent">全部运行</Link>} pad={false}>
@@ -181,7 +187,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
               rowKey={(b) => b.id}
               columns={[
                 { key: "l", label: "运行", render: (b) => <Link to={`/admin/selectbench/${b.id}`} className="text-ink hover:text-accent">{b.label}</Link> },
-                { key: "m", label: "模型", render: (b) => <span className="font-mono text-[11.5px] text-ink-3">{b.models.join("、")}</span> },
+                { key: "m", label: "模型", render: (b) => <span className="font-mono text-[11.5px] text-ink-3">{b.models.map(modelName).join("、")}</span> },
                 { key: "n", label: "样本", align: "right", render: (b) => num(b.sample_size) },
                 { key: "at", label: "时间", render: (b) => <span className="num whitespace-nowrap">{bj(b.created_at)}</span> },
               ]}
@@ -191,31 +197,6 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
           )}
         </Card>
       </div>
-
-      <ReasonDialog
-        open={!!target}
-        title={`切换模型：${target?.label ?? ""}`}
-        description="只影响之后的新任务。选“恢复默认”会回到环境变量或代码默认。"
-        confirmLabel="切换"
-        busy={pending === "switch"}
-        onClose={() => setTarget(null)}
-        onSubmit={async (reason) =>
-          (await run("POST", `/api/admin/models/${target!.key}`, { model: choice === "__default" ? null : choice, reason }, { label: "switch", success: "已切换，下一次调用生效" })) !== null
-        }
-      >
-        <Field label="模型">
-          <Select value={choice} onChange={(e) => setChoice(e.target.value)}>
-            {m.choices
-              .filter((x) => x.vision === !!target?.vision)
-              .map((x) => (
-                <option key={x.key} value={x.key}>
-                  {x.key}（{x.service}）
-                </option>
-              ))}
-            <option value="__default">恢复默认（{target?.env} 或 {target?.defaultModel}）</option>
-          </Select>
-        </Field>
-      </ReasonDialog>
     </AdminPage>
   );
 }

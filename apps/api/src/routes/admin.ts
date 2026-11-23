@@ -5,6 +5,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { actorOf } from "@aihot/backend/admin/auth";
 
 import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
+import { CAPABILITIES, modelSources } from "@aihot/backend/editorial/models";
+import { modelDisplayOptions } from "@aihot/backend/admin/model-display";
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
 
 import { contentChain, detachFromFact, mergeStories, overrideFields, rerun, searchContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
@@ -118,6 +120,15 @@ export function registerAdmin(app: FastifyInstance) {
 
 
   // Models and evaluation (F20)
+  app.get("/api/admin/model-config", adminHandler(async () => {
+    const sources = await modelSources();
+    return {
+      capabilities: Object.entries(CAPABILITIES).map(([key, task]) => ({
+        key, label: task.label, vision: "vision" in task && task.vision, current: sources[key]!,
+      })),
+      choices: modelDisplayOptions(),
+    };
+  }));
   app.get("/api/admin/models", adminHandler(async (req) => {
     const period = q(req).period;
     return modelsOverview(Math.max(1, Math.min(90, Number(q(req).days) || 7)), period === "today" || period === "yesterday" ? period : "rolling");

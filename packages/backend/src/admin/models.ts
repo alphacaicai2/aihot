@@ -1,3 +1,4 @@
+import { modelDisplayOptions } from "./model-display.ts";
 // Admin "模型与评测": the model each capability uses and where that choice comes from,
 // the prompt versions in use, quality / latency / cost of the last days per model, the switch history
 // and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
@@ -97,7 +98,7 @@ export async function modelsOverview(days = 7, period: "rolling" | "today" | "ye
         unestimatedCalls: u.calls - u.estimated_calls,
       })),
   }));
-  const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
+  const choices = modelDisplayOptions();
   // Include every purpose, not only the capabilities displayed below. Never include proxy estimates.
   const official = usage.filter((u) => u.service === "deepseek" && u.model === "deepseek-flash");
   const estimatedCalls = official.reduce((n, u) => n + u.estimated_calls, 0);
@@ -125,7 +126,7 @@ export async function modelsOverview(days = 7, period: "rolling" | "today" | "ye
     currencies.set(currency, total);
   }
   const costs = { currencies: [...currencies.values()].sort((a, b) => a.currency.localeCompare(b.currency)), unpricedCalls };
-  return { days, period, since, until, costs, deepseek, capabilities, choices, history, benches };
+  return { days, period, since, until, costs, deepseek, capabilities, choices, displayModels: choices, history, benches };
 }
 
 /** Switches a capability to another registered model (or back to the environment/default when null). */
