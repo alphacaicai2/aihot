@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { digestCoverage, type DigestEntry } from "./financing-digests.ts";
+import { cardPattern, digestCoverage, printedCard, printedRecipient, type DigestEntry } from "./financing-digests.ts";
 import type { FinancingClaim } from "@aihot/contracts/financing";
 
 export type FinancingMaterial = { id: number; text: string; previousBatch?: number; format?: "transactions" | "rounds"; digestEntries?: DigestEntry[]; replacesEmptyBatch?: number; historicalDigest?: boolean };
@@ -144,6 +144,51 @@ function evidencePassage(text: string, evidence: string, investors: unknown) {
   return length ? evidence + separator + list.slice(0, length) : evidence;
 }
 
+// A provider may quote just the card body. Its recipient is the immediately preceding
+// printed header, not a company from an adjacent transaction. Use only that card for all terms.
+function printedCardClaim(source: FinancingMaterial, item: Record<string, unknown>, markers: RegExpExecArray[]) {
+  if (typeof item?.company !== "string" || typeof item.evidence !== "string") return;
+  const company = item.company;
+  for (const [i,mark] of markers.entries()) {
+    const prefix = source.text.slice(Math.max(0, mark.index - 100), mark.index);
+    const before = prefix.trimEnd();
+    const name = printedRecipient(before, company);
+    if (!name) continue;
+    const start = mark.index - (prefix.length - before.length) - name.length;
+    if (start > 0 && !/\s/u.test(source.text[start - 1]!)) continue;
+    const next = markers[i + 1];
+    const lineEnd = source.text.indexOf("\n", mark.index);
+    const end = Math.min(next?.index ?? source.text.length, lineEnd < 0 ? source.text.length : lineEnd);
+    const block = source.text.slice(start, end);
+    if (!sourceQuotes(block)(item.evidence)) continue;
+    // Flat feeds join the next printed recipient to the preceding investor list.
+    // An adviser mentioned afterwards is outside the current card's investor evidence.
+    const nextHeading = next ? source.text.slice(Math.max(0,end - 100),end).trimEnd() : "";
+    const investingText = block.split(/财务顾问|法律顾问|financial advis[oe]r/iu)[0]!;
+    const namesInSource = sourceQuotes(investingText);
+    const list = /(?:投资方|投资机构)\s*[:：]\s*([^。；;\n]+)/u.exec(investingText)?.[1];
+    const investors = [];
+    for (const v of Array.isArray(item.investors) ? item.investors : []) {
+      if (typeof v?.name !== "string" || typeof v?.quote !== "string" || printedRecipient(nextHeading,v.name) || !namesInSource(v.name)) continue;
+      const quote = sourceQuotes(block)(v.quote);
+      if (!quote) continue;
+      const proof = quote.split(/财务顾问|法律顾问|financial advis[oe]r/iu)[0]!;
+      if (sourceQuotes(proof)(v.name) && /投资|领投|跟投|参投|加注|invest|led by|participat/iu.test(proof)) {
+        investors.push({name:v.name,quote:proof});
+      } else if (list) {
+        // A translated/shortened name in the model quote can be corroborated by its exact
+        // spelling in this same card's original investor list. Keep the original list as proof.
+        const exact = list.split(/[、,，]/u).some(s => s.trim().toLowerCase() === v.name.trim().toLowerCase());
+        if (exact) investors.push({name:v.name,quote:list});
+      }
+    }
+    const header = source.text.slice(start, mark.index + mark[0].length);
+    const result = validateFinancing({ id:source.id, text:block }, { ...item, evidence:header, investors });
+    if (result.claim && digestCoverage([printedCard(name,mark)], [result.claim]).verified) return result;
+  }
+  return {claim:null, reason:"unverified_transaction", investorEvidence:[]};
+}
+
 const roundDetails = candidate.pick({ round: true, amountText: true, currency: true, valuationText: true, investors: true })
   .extend({ terms: quote.nullish() });
 const multipleRounds = /(?:两|二|三|四|五|多|[2-9])\s*(?:个|笔)?\s*轮(?:次|融资|募资)?|(?:two|three|four|five|multiple|several|[2-9])\s+(?:financing |funding |separate )?rounds?\b/iu;
@@ -188,11 +233,13 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
   const seen = new Set<string>();
   let rejected = 0;
   const candidates = Array.isArray(value) ? value : [];
+  const cards = source.digestEntries?.some(e => e.stage) ? [...source.text.matchAll(new RegExp(cardPattern,"gu"))] : [];
   for (const item of candidates) {
     const quoted = typeof item?.passage === "string" && item.passage.length <= 1600 && present(item.passage);
     const evidence = typeof item?.evidence === "string" && item.evidence.length <= 1600 && present(item.evidence);
+    const card = cards.length ? printedCardClaim(source,item,cards) : undefined;
     const passage = quoted || (evidence && evidencePassage(source.text, evidence, item.investors));
-    if (!passage) { rejected++; continue; }
+    if (!passage || (cards.length && !card?.claim)) { rejected++; continue; }
     let rounds: unknown[] | undefined;
     if (source.format === "rounds" && evidence) {
       const stageMentions = [...evidence.matchAll(namedRounds)];
@@ -211,7 +258,7 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
     const entries = rounds ? disclosedRounds(passage, item, rounds) : [item];
     if (!entries.length) rejected++;
     for (const entry of entries) {
-      const result = validateFinancing({ id: source.id, text: passage }, entry);
+      const result = !rounds && card ? card : validateFinancing({ id: source.id, text: passage }, entry);
       if (!result || !result.claim || !sourceQuotes(result.claim.evidence)(result.claim.company) ||
           /[；;丨|]|(?:周报|月报)$/.test(result.claim.company)) {
         rejected++;

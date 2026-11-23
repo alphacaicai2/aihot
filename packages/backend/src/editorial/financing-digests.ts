@@ -9,17 +9,19 @@ export type DigestEntry = { heading: string; stage?: string; amount?: string };
 const compact = (s: string) => s.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
 const printedAmount = /((?:超|约|近|数|逾)?(?:[\d.,]+|数|[零一二两三四五六七八九十百千]+)?\s*(?:[千百十]?万|[千百十]?亿)\s*(?:美元|人民币|欧元|韩元|港元|英镑|元))(?:\s*[（(][^（）()]*[）)])?\s*$/u;
 
+export function printedCard(heading: string, marker: RegExpExecArray): DigestEntry {
+  return { heading, stage: marker[2]!.trim(), amount: printedAmount.exec(marker[1]!)?.[1] };
+}
+
 export function digestEntries(title: string, excerpt: string | null, body: string | null): DigestEntry[] {
   // A feed can repeat the full article in the excerpt. Count a source layout only once.
   const layouts: DigestEntry[][] = [];
   for (const text of [excerpt, body]) {
     if (!text) continue;
-    const cards = Array.from(text.matchAll(new RegExp(cardPattern, "gu")), match => ({
+    const cards = Array.from(text.matchAll(new RegExp(cardPattern, "gu")), match =>
       // The flat feed joins the preceding investor list to the next company. The printed
       // recipient always ends immediately before the region marker; keep that exact context.
-      heading: text.slice(Math.max(0, match.index - 100), match.index).trim(),
-      stage: match[2]!.trim(), amount: printedAmount.exec(match[1]!)?.[1],
-    }));
+      printedCard(text.slice(Math.max(0, match.index - 100), match.index).trim(), match));
     if (cards.length >= 2) layouts.push(cards);
     const headlines = new Set(Array.from(text.matchAll(new RegExp(sectionPattern, "gu")), m => m[1]!));
     if (headlines.size >= 2) layouts.push([...headlines].map(heading => ({ heading })));
@@ -34,6 +36,16 @@ const stageName = (s: string) => compact(s).replace(/[-‐‑–—]/g, "").repl
 const amountValue = (s: string) => compact(s).split(/[（(]/)[0]!.replace(/(?:人民币|美元|欧元|韩元|港元|英镑|元)$/, "");
 const denomination = (s: string) => /人民币|美元|欧元|韩元|港元|英镑/.exec(s)?.[0];
 
+// Recover the exact printed company span, retaining spaces inside Latin company names.
+export function printedRecipient(heading: string, company: string) {
+  const name = compact(company);
+  for (const word of heading.matchAll(/(?:^|\s)(\S)/gu)) {
+    const suffix = heading.slice(word.index + word[0].length - word[1]!.length).trimEnd();
+    if (compact(suffix) === name) return suffix;
+  }
+  return null;
+}
+
 export function digestCoverage(entries: DigestEntry[], claims: {company: string; round: string | null; amountText: string | null}[]) {
   const used = new Set<number>();
   const missing = entries.filter(entry => {
@@ -42,8 +54,7 @@ export function digestCoverage(entries: DigestEntry[], claims: {company: string;
       if (used.has(i) || !claim.company) return false;
       const name = compact(claim.company);
       if (!entry.stage) return heading.includes(name);
-      const words = entry.heading.split(/\s+/u);
-      if (!words.some((_, i) => compact(words.slice(i).join("")) === name)) return false;
+      if (!printedRecipient(entry.heading, claim.company)) return false;
       if (!claim.round || stageName(claim.round) !== stageName(entry.stage)) return false;
       if (!entry.amount) return true;
       if (!claim.amountText || amountValue(claim.amountText) !== amountValue(entry.amount)) return false;
