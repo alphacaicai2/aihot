@@ -38,6 +38,46 @@ const api = createServer((req, res) => {
     res.statusCode = 308;
     return res.end(JSON.stringify({ mergedInto: "surviving-story" }));
   }
+  if (url.pathname === "/api/reader/membership") {
+    const cookie = req.headers.cookie ?? "";
+    const isAdmin = cookie.includes("admin_session=member");
+    const isReader = cookie.includes("reader_session=member");
+    return res.end(JSON.stringify({
+      email: isAdmin ? "admin@example.test" : isReader ? "reader@example.test" : null,
+      emailConfirmed: isAdmin || isReader,
+      access: isAdmin || isReader,
+      admin: isAdmin,
+      source: isAdmin ? "admin" : isReader ? "subscription" : null,
+      customer: isReader,
+      billingReady: true,
+      hasToken: false,
+    }));
+  }
+  if (url.pathname === "/api/reader/me") {
+    const cookie = req.headers.cookie ?? "";
+    if (cookie.includes("admin_session=member")) return res.end(JSON.stringify({ enabled: true, email: "second-reader@example.test" }));
+    if (cookie.includes("reader_session=member")) return res.end(JSON.stringify({ enabled: true, email: "reader@example.test" }));
+    return res.end(JSON.stringify({ enabled: true, email: null }));
+  }
+  if (url.pathname === "/api/admin/me") {
+    if ((req.headers.cookie ?? "").includes("admin_session=member")) return res.end(JSON.stringify({ userId: 1, name: "Admin", csrf: "test-admin-csrf", dev: false }));
+    res.statusCode = 401;
+    return res.end(JSON.stringify({ code: "unauthorized" }));
+  }
+  if (url.pathname === "/api/v1/financing") {
+    if (!(req.headers.cookie ?? "").includes("reader_session=member")) {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ code: "unauthorized" }));
+    }
+    return res.end(JSON.stringify({ events: [], hasMore: false, nextCursor: null }));
+  }
+  if (url.pathname === "/api/site/financing/company") {
+    if (!(req.headers.cookie ?? "").includes("reader_session=member")) {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ code: "unauthorized" }));
+    }
+    return res.end(JSON.stringify({ events: [], hasMore: false, nextCursor: null, historySummary: { records: 0, latestAt: "2026-09-28T00:00:00Z" } }));
+  }
   res.statusCode = url.pathname.startsWith("/api/admin/") ? 401 : 404;
   res.end(JSON.stringify({ code: "not_found" }));
 });
@@ -219,4 +259,57 @@ test("browser caching preserves noindex and private sign-in responses", async ()
 test("a visitor cannot name its own address to the api without a trusted proxy in front", async () => {
   const res = await fetch(`${origin}/api/site/echo-client`, { headers: { "X-Forwarded-For": "6.6.6.6", "X-Real-IP": "6.6.6.6" } });
   assert.deepEqual(await res.json(), { forwarded: "127.0.0.1", real: "127.0.0.1" });
+});
+
+test("homepage links to membership without breaking public caching", async () => {
+  const res = await fetch(origin + "/");
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("Cache-Control")!, /^public,/);
+  const html = await res.text();
+  assert.match(html, /href="\/membership"/);
+  assert.match(html, /查看会员权益/);
+});
+
+test("membership gates private HTML and single-fetch data and forwards financing session cookies", async () => {
+  const headers = { cookie: "reader_session=member" };
+  for (const path of ["/agent", "/financing"]) {
+    const anonymous = await fetch(origin + path, { redirect: "manual" });
+    assert.equal(anonymous.status, 302);
+    assert.equal(anonymous.headers.get("location"), "/membership?feature=" + path.slice(1));
+    assert.equal(anonymous.headers.get("cache-control"), "private, no-store");
+    const anonData = await fetch(origin + path + ".data");
+    assert.equal(anonData.status, 202);
+    assert.match(await anonData.text(), /membership/);
+    for (const suffix of ["", ".data", ".data?_routes=root"]) {
+      const member = await fetch(origin + path + suffix, { headers });
+      assert.equal(member.status, 200);
+      assert.equal(member.headers.get("cache-control"), "private, no-store");
+      assert.equal(member.headers.get("x-accel-expires"), "0");
+      if (!suffix) assert.match(await member.text(), path === "/agent" ? /生成访问令牌/ : /导出本页 CSV/);
+    }
+  }
+  const companyAnon = await fetch(origin + "/financing/company?name=OpenAI", { redirect: "manual" });
+  assert.equal(companyAnon.status, 302);
+  assert.equal(companyAnon.headers.get("location"), "/membership?feature=financing&company=OpenAI");
+  assert.equal(companyAnon.headers.get("cache-control"), "private, no-store");
+  const companyPrompt = await fetch(origin + "/membership?feature=financing&company=OpenAI");
+  assert.match(await companyPrompt.text(), /查看「OpenAI」的完整历次融资记录需要读者会员权限/);
+
+  const member = await fetch(origin + "/membership", { headers });
+  const readerPage = await member.text();
+  assert.match(readerPage, /reader@example.test/);
+  assert.match(readerPage, /action="\/api\/reader\/logout"/);
+  const admin = await fetch(origin + "/membership", { headers: { cookie: "admin_session=member" } });
+  const adminPage = await admin.text();
+  assert.match(adminPage, /action="\/api\/auth\/logout"/);
+  assert.match(adminPage, /action="\/api\/reader\/logout"/);
+  assert.match(adminPage, /second-reader@example.test/);
+  assert.match(adminPage, /name="csrf" value="test-admin-csrf"/);
+  const anon = await fetch(origin + "/membership");
+  assert.equal(anon.headers.get("cache-control"), "private, no-store");
+  const body = await anon.text();
+  assert.match(body, /US\$5/);
+  assert.match(body, /免费阅读与读者会员的区别/);
+  assert.match(body, /展示样例/);
+  assert.doesNotMatch(body, /reader@example.test|action="\/api\/(?:auth|reader)\/logout"|test-admin-csrf/);
 });

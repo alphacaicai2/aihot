@@ -1,6 +1,6 @@
 import { FEATURES } from "@aihot/industry/features";
 import { SITE } from "@aihot/industry/site";
-import { Activity, BookOpenCheck, FileSearch, History, ListChecks, MessagesSquare, Radio, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { Activity, BookOpenCheck, FileSearch, History, KeyRound, ListChecks, MessagesSquare, Radio, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import { NavLink, Outlet, useNavigation, type ShouldRevalidateFunction } from "react-router";
 import type { Route } from "./+types/layout";
 import { RingMark } from "../../components/Logo";
@@ -42,6 +42,7 @@ const NAV: Array<{ group: string; items: Destination[] }> = [
       { to: "/admin/runs", icon: History, label: "运行", count: "runs", tone: "bad" },
       { to: "/admin/models", icon: SlidersHorizontal, label: "模型与评测" },
       { to: "/admin/selectbench", icon: BookOpenCheck, label: "SelectBench" },
+      { to: "/admin/memberships", icon: KeyRound, label: "会员授权" },
       { to: "/admin/settings", icon: Settings, label: "设置" },
       { to: "/admin/audit", icon: ListChecks, label: "审计记录" },
     ],

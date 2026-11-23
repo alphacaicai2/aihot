@@ -110,7 +110,7 @@ function stagesOf(stats: SiteStats | null): Stage[] {
       title: "成刊",
       figure: stats && <Figure n={stats.dailies} unit="期日报" />,
       text: ABOUT.steps.publish,
-      note: "也可以用 RSS、API、MCP 订阅",
+      note: "会员可通过 RSS、API 和 MCP 接入",
     },
   ];
 }
@@ -233,6 +233,9 @@ export default function AboutPage() {
           </Link>
           <Link to="/daily" prefetch="intent" className={buttonClass("secondary", "lg")}>
             读最新{withSubject("日报")}
+          </Link>
+          <Link to="/membership" prefetch="intent" className={buttonClass("secondary", "lg")}>
+            了解读者会员
           </Link>
         </div>
       </header>

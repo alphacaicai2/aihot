@@ -98,6 +98,23 @@ fallback 的每次请求仍通过回执与对应服务预算；DeepSeek 使用�
 
 后台“模型与评测”的 DeepSeek 官方合计只包含 `deepseek` 通道的 `deepseek-flash`，覆盖所有用途和重试；代理通道仅显示估值。选择“今天”或“昨天”按北京时间自然日统计，24 小时/7 天/30 天为滚动窗口。与官方后台对账时选择本站的 API Key、相同日期及人民币币种；All 会包含其他 Key 的用量，官方数据最多延迟 5 分钟。缺少用量的请求显示未计入数量，不能视作免费。
 
+## 首页的 Google 读者登录
+
+在 Google Cloud 的 Google Auth Platform 配置品牌和受众。向普通读者开放时选 External，测试阶段将要试用的账号添加为测试用户。在 Clients 创建 Web application 类型的 OAuth 客户端，把网站的完整回调地址登记为 Authorized redirect URI。例如站点为 `https://news.example.com`，回调地址为 `https://news.example.com/api/reader/google/callback`。[Google 配置说明](https://developers.google.com/identity/openid-connect/openid-connect)
+
+在 API 环境中设置 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`，确认已有 `SESSION_SECRET`，并将 `SITE_URL` 设为读者实际访问的站点地址。运行数据库迁移并用新配置重启 API、更新网页后，首页会显示「使用 Google 登录」。本机测试可使用 `http://localhost:3000/api/reader/google/callback`，同时将 `SITE_URL` 设为 `http://localhost:3000`。
+
+登录只申请 OpenID 和邮箱权限。站点用 Google 账号标识识别读者，首页显示经过验证的邮箱。读者会话有效期 30 天，点击「退出」立即撤销当前会话。
+
+## 读者会员与 Stripe
+
+普通资讯开放匿名阅读。会员中心在 `/membership`，每月 5 美元订阅包含 Agent 接入和融资数据库。管理员登录后可直接使用，在后台「会员授权」可以按邮箱授予、撤销同样的权限。对于 Google 无法确认当前归属的第三方邮箱，管理员可在同页生成一次性确认码，交付到该地址，由读者在会员中心输入。确认码 24 小时有效，重新生成将使上一个码失效。所有读者都可直接用自己的 Google 账户订阅。
+
+1. 在 Stripe 创建启用状态的循环价格，币种为 USD，金额为 5.00，周期为每 1 个月。将价格的 `price_…` ID 配置到 API 的 `STRIPE_PRICE_ID`，并设置同一模式下的 `STRIPE_SECRET_KEY`。
+2. 将 Stripe Webhook 端点设为 `https://你的站点/api/reader/billing/webhook`。订阅 `checkout.session.completed`、`invoice.paid`、`invoice.payment_failed`，以及 `customer.subscription.created`、`updated`、`deleted`、`paused`、`resumed`（后四项同属 `customer.subscription.` 前缀）。将该端点的签名密钥写入 API 的 `STRIPE_WEBHOOK_SECRET`。付款后的会员有效期由已验证的账单事件更新。[Stripe 订阅 Webhook](https://docs.stripe.com/billing/subscriptions/webhooks)
+3. 启用 Stripe Customer Portal，允许更新支付方式和在当前计费期末取消续订。若为本站创建了专用 Portal 配置，将其 `bpc_…` ID 写入 `STRIPE_PORTAL_CONFIGURATION_ID`。[Stripe 客户门户设置](https://docs.stripe.com/customer-management/configure-portal)
+4. 运行数据库迁移并更新 API 和 Web。代理须转发 Cookie 和 Authorization 请求头，并遵循 `Cache-Control: private, no-store`。启用访问限制时清除 CDN 里已有的融资、RSS、MCP、会员 API、机器可读文档和相关页面缓存。运行 `node scripts/smoke.ts --base https://你的站点` 检查访客权限。要验证会员 MCP，可在环境中设置会员 Agent 令牌 `MEMBERSHIP_AGENT_TOKEN`，再运行 `node scripts/mcp-check.ts https://你的站点/api/mcp`。
+
 ## 不用 Docker
 
 需要 Node.js 24.11 以上和 PostgreSQL 16 或 17。

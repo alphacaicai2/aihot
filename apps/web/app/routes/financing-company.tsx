@@ -1,30 +1,27 @@
-import { data, Link, redirect, useLocation } from "react-router";
+import { data, Link, useLocation } from "react-router";
 import { beijingDate } from "@aihot/contracts/time";
 import type { FinancingResponse } from "@aihot/contracts/financing";
 import type { Route } from "./+types/financing-company";
 import { IconArrowLeft, IconArrowRight } from "../components/icons";
 import { buttonClass } from "../components/ui/Controls";
 import { FinancingEvent } from "../features/research/FinancingEvent";
-import { apiGet, ApiError } from "../lib/api.server";
+import { ApiError } from "../lib/api.server";
+import { memberGet, offerMembership, privateHeaders } from "../lib/membership.server";
 import { listPath, pageMeta } from "../lib/seo";
 
 const path = "/financing/company";
-const privateHeaders = { "Cache-Control": "private, no-store", Vary: "Cookie" };
 
 export async function loader({ request }: Route.LoaderArgs) {
   const params = new URL(request.url).searchParams;
   const name = params.get("name")?.trim() ?? "";
   const api = listPath("/api/site/financing/company", { name, cursor: params.get("cursor") });
   try {
-    const history = await apiGet<FinancingResponse>(api, {
-      signal: request.signal,
-      headers: { cookie: request.headers.get("cookie") ?? "", "user-agent": request.headers.get("user-agent") ?? "" },
-    });
+    const history = await memberGet<FinancingResponse>(request, api);
     return { name, history };
   } catch (error) {
     if (request.signal.aborted) throw error;
     const status = error instanceof ApiError ? error.status : 503;
-    if (status === 401 || status === 403) throw redirect("/membership?feature=financing", { headers: privateHeaders });
+    if (status === 401 || status === 403) throw offerMembership("financing", name || undefined);
     throw data({ message: status === 404 ? "not_found" : status === 400 ? "bad_request" : "unavailable" }, {
       status: status === 404 || status === 400 ? status : 503, headers: privateHeaders,
     });

@@ -5,7 +5,7 @@
 export const PUBLIC_API_CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Accept, If-None-Match, If-Modified-Since",
+  "Access-Control-Allow-Headers": "Accept, Authorization, If-None-Match, If-Modified-Since",
   "Access-Control-Expose-Headers": "ETag, Last-Modified, Retry-After, X-Request-Id, Link",
   "Access-Control-Max-Age": "86400",
 };

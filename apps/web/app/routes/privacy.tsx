@@ -12,7 +12,7 @@ export function headers() {
 }
 
 export function meta() {
-  return pageMeta({ title: "隐私说明", description: `本站如何处理浏览器本地数据、反馈资料与访问日志。`, path: "/privacy", image: "/og/pages/privacy.png" });
+  return pageMeta({ title: "隐私说明", description: `本站如何处理账户、订阅、浏览器本地数据、反馈资料与访问日志。`, path: "/privacy", image: "/og/pages/privacy.png" });
 }
 
 export default function PrivacyPage() {

@@ -1,27 +1,45 @@
-// Verifies MCP with the official SDK client: handshake, list the five tools, call each once.
+// Check a member's MCP connection with the official SDK. Set MEMBERSHIP_AGENT_TOKEN before running:
 // node scripts/mcp-check.ts [url]
-import { Client } from "@modelcontextprotocol/client";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import assert from "node:assert/strict";
+import { MCP_TOOL_NAMES as T } from "@aihot/contracts/mcp";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+
 const url = new URL(process.argv[2] ?? "http://127.0.0.1:3001/api/mcp");
-const client = new Client({ name: "aihot-mcp-check", version: "1.0.0" });
-await client.connect(new StreamableHTTPClientTransport(url));
-const info = client.getServerVersion?.();
-console.log("server:", JSON.stringify(info));
-const tools = await client.listTools();
-console.log("tools:", tools.tools.map((t) => t.name).join(", "));
-const calls: Array<[string, Record<string, unknown>]> = [
-  ["aihot_get_latest", { limit: 2 }],
-  ["aihot_search", { q: "OpenAI", limit: 2 }],
-  ["aihot_get_hot_topics", { limit: 3 }],
-  ["aihot_get_daily", {}],
-  ["aihot_get_latest", { limit: 99 }],
-];
-const hot = await client.callTool({ name: "aihot_get_hot_topics", arguments: { limit: 1 } });
-const storyId = ((hot.structuredContent as any)?.items?.[0]?.links?.story ?? "").split("/").pop();
-if (storyId) calls.push(["aihot_get_story", { public_id: storyId, report_limit: 3 }]);
-for (const [name, args] of calls) {
-  const r = await client.callTool({ name, arguments: args });
-  const text = (r.content as Array<{ type: string; text?: string }>)[0]?.text ?? "";
-  console.log(`${name} ${JSON.stringify(args)} → ${r.isError ? "ERROR" : "ok"} | ${text.replace(/\n/g, " ").slice(0, 140)}`);
+const token = process.env.MEMBERSHIP_AGENT_TOKEN;
+if (!token) throw new Error("Set MEMBERSHIP_AGENT_TOKEN to a member's Agent key");
+const client = new Client({ name: "membership-mcp-check", version: "1.0.0" });
+await client.connect(new StreamableHTTPClientTransport(url, {
+  requestInit: { headers: { authorization: "Bearer " + token } },
+}));
+
+try {
+  console.log("server:", JSON.stringify(client.getServerVersion()));
+  const { tools } = await client.listTools();
+  const names = tools.map(tool => tool.name);
+  for (const name of Object.values(T)) assert(names.includes(name), "Missing MCP tool: " + name);
+  console.log("tools:", names.join(", "));
+
+  async function call(name: string, args: Record<string, unknown>) {
+    const result = await client.callTool({ name, arguments: args });
+    const payload = result.structuredContent as { error?: { code?: string }; items?: Array<{ links?: { story?: string } }> } | undefined;
+    if (name === T.daily && result.isError && payload?.error?.code === "not_found") {
+      console.log(name, "no published daily yet");
+      return;
+    }
+    assert(!result.isError, name + " failed: " + (payload?.error?.code ?? "unexpected error"));
+    console.log(name, "ok");
+    return payload;
+  }
+
+  await call(T.latest, { limit: 2 });
+  await call(T.search, { q: "OpenAI", limit: 2 });
+  const hot = await call(T.hot, { limit: 3 });
+  const storyId = hot?.items?.[0]?.links?.story?.split("/").pop();
+  if (storyId) await call(T.story, { public_id: storyId, report_limit: 3 });
+  await call(T.daily, {});
+  const invalid = await client.callTool({ name: T.latest, arguments: { limit: 99 } });
+  assert(invalid.isError, "MCP accepted an invalid limit");
+  console.log(T.latest, "invalid limit rejected");
+} finally {
+  await client.close();
 }
-await client.close();

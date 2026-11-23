@@ -7,7 +7,7 @@ import { CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
 import { beijingDate } from "@aihot/contracts/time";
 import { ogEtag } from "../apps/api/src/og/render.ts";
 import { posterEtag } from "../apps/api/src/og/poster.ts";
-import { tag } from "./setup.ts";
+import { tag, memberClient } from "./setup.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
@@ -27,14 +27,17 @@ const SOURCE = `test-publication-${T}`;
 const BODY = `FULLTEXT-${T} `.repeat(40);
 const REPORT_KEY = `2099-12-${String(10 + Math.floor(Math.random() * 19))}`;
 const app = await buildApp();
+let member: Awaited<ReturnType<typeof memberClient>>;
 
 before(async () => {
+  member = await memberClient();
   // An interrupted earlier run may have left entries behind the release gate, holding the watermark.
   await sql`UPDATE selected_ledger SET visible_at = now() WHERE visible_at > now()`;
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, site_fulltext, syndicate_fulltext, next_fetch_at)
             VALUES (${SOURCE}, 'Test publication', 'rss', 'T1', 'editorial', true, true, '2100-01-01')`;
 });
 after(async () => {
+  await member?.close();
   await sql`DELETE FROM reports WHERE kind = 'daily' AND key = ${REPORT_KEY}`;
   await app.close();
   await stopBoss();
@@ -65,7 +68,8 @@ async function storyFor(id: string, role: "report" | "mention" = "report"): Prom
 
 const released = () => ({ releasedAt: new Date(Date.now() - 60_000) });
 async function get(url: string, headers: Record<string, string> = {}) {
-  const res = await app.inject({ method: "GET", url, headers });
+  const protectedExport = /^\/(?:api\/v1\/|feed[./]|items\/[^/]+\/markdown)/.test(url);
+  const res = await app.inject({ method: "GET", url, headers: { ...(protectedExport ? member.headers : {}), ...headers } });
   return { status: res.statusCode, body: res.body, etag: res.headers.etag as string | undefined };
 }
 

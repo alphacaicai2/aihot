@@ -1,7 +1,7 @@
 import { data, Link, useLocation, useSearchParams } from "react-router";
 import type { Route } from "./+types/financing";
 import type { FinancingResponse } from "@aihot/contracts/financing";
-import { loadOr404 } from "../lib/api.server";
+import { financingData, privateHeaders, requireMembership } from "../lib/membership.server";
 import { pageMeta } from "../lib/seo";
 import { IconArrowRight, IconChart, IconDownload } from "../components/icons";
 import { buttonClass } from "../components/ui/Controls";
@@ -21,14 +21,15 @@ function financingQuery(params: URLSearchParams) {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
+  await requireMembership(request, "financing");
   const query = financingQuery(new URL(request.url).searchParams);
   const problem = dateProblem(query.get("from") ?? "", query.get("to") ?? "");
   if (problem) return data({ results: null, problem }, { status: 400 });
-  const results = await loadOr404<FinancingResponse>(`/api/v1/financing?${query}`, { signal: request.signal });
+  const results = await financingData<FinancingResponse>(request, `/api/v1/financing?${query}`);
   return { results, problem: null };
 }
 export const meta: Route.MetaFunction = () => pageMeta({ title: "融资数据库", path: "/financing", noindex: true });
-export const headers = () => ({ "Cache-Control": "public, max-age=0, s-maxage=60" });
+export const headers = () => privateHeaders;
 
 export default function Financing({ loaderData }: Route.ComponentProps) {
   const { results, problem } = loaderData;

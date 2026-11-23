@@ -3,8 +3,11 @@
 // Development may impersonate an admin with DEV_AUTH_ROLE=admin; production refuses to start with it.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { config, credential } from "../config.ts";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
+
+import { parseCookies } from "../lib/cookies.ts";
+export { cookie, parseCookies } from "../lib/cookies.ts";
 
 export const SESSION_COOKIE = "aihot_admin";
 export const STATE_COOKIE = "aihot_oauth_state";
@@ -42,19 +45,6 @@ function unsign(signed: string | undefined): string | null {
   const expected = Buffer.from(sign(value).slice(i + 1));
   const given = Buffer.from(signed.slice(i + 1));
   return expected.length === given.length && timingSafeEqual(expected, given) ? value : null;
-}
-
-export function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const part of (header ?? "").split(";")) {
-    const i = part.indexOf("=");
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
-  }
-  return out;
-}
-
-export function cookie(name: string, value: string, maxAgeSeconds: number, secure: boolean): string {
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
 }
 
 /** Where to send the browser to sign in; the signed state also carries where to return. */
@@ -109,10 +99,14 @@ async function feishuUser(code: string): Promise<FeishuUser> {
 
 export class LoginRejected extends Error {}
 
-async function createSession(userId: number, userAgent: string | undefined): Promise<string> {
+function sessionBinding(method:'password'|'feishu'):string {
+  return createHmac('sha256',secret()).update(`admin-session-v1:${method}:${method==='password' ? config.adminPassword ?? '' : ''}`).digest('hex');
+}
+
+async function createSession(userId: number, userAgent: string | undefined, method: "password" | "feishu"): Promise<string> {
   const token = randomBytes(32).toString("base64url");
-  await sql`INSERT INTO admin_sessions (id_hash, user_id, csrf_token, expires_at, user_agent)
-            VALUES (${sha256(token)}, ${userId}, ${randomBytes(18).toString("base64url")}, ${new Date(Date.now() + SESSION_DAYS * 86400_000)}, ${userAgent?.slice(0, 300) ?? null})`;
+  await sql`INSERT INTO admin_sessions (id_hash, user_id, csrf_token, expires_at, user_agent, auth_method, auth_binding)
+            VALUES (${sha256(token)}, ${userId}, ${randomBytes(18).toString("base64url")}, ${new Date(Date.now() + SESSION_DAYS * 86400_000)}, ${userAgent?.slice(0, 300) ?? null}, ${method}, ${sessionBinding(method)})`;
   return token;
 }
 
@@ -125,14 +119,14 @@ export async function completeLogin(code: string, state: string, stateCookie: st
   const u = await feishuUser(code);
   const email = (u.enterprise_email ?? u.email ?? "").toLowerCase() || null;
   const allowed = (u.union_id && config.adminUnionIds.includes(u.union_id)) || (email && config.adminEmails.includes(email));
-  if (!allowed) throw new LoginRejected("这个飞书账号没有后台权限");
+  if (!allowed || email === PASSWORD_ADMIN) throw new LoginRejected("这个飞书账号没有后台权限");
   const [existing] = await sql<{ id: number }[]>`
     SELECT id FROM admin_users WHERE (${u.union_id ?? null}::text IS NOT NULL AND feishu_union_id = ${u.union_id ?? null}) OR (${email}::text IS NOT NULL AND email = ${email}) LIMIT 1`;
   const [user] = existing
     ? await sql<{ id: number }[]>`UPDATE admin_users SET feishu_union_id = coalesce(feishu_union_id, ${u.union_id ?? null}), email = coalesce(email, ${email}),
         display_name = coalesce(${u.name ?? null}, display_name), last_login_at = now() WHERE id = ${existing.id} RETURNING id`
     : await sql<{ id: number }[]>`INSERT INTO admin_users (feishu_union_id, email, display_name, last_login_at) VALUES (${u.union_id ?? null}, ${email}, ${u.name ?? null}, now()) RETURNING id`;
-  const token = await createSession(user!.id, userAgent);
+  const token = await createSession(user!.id, userAgent, "feishu");
   await audit(`admin:${user!.id}`, "auth.login", null, null, null, { union_id: u.union_id ?? null });
   return { token, returnTo, userId: user!.id };
 }
@@ -150,19 +144,50 @@ export async function passwordLogin(password: string, returnTo: string, userAgen
   const [user] = await sql<{ id: number }[]>`
     INSERT INTO admin_users (email, display_name, last_login_at) VALUES (${PASSWORD_ADMIN}, '管理员', now())
     ON CONFLICT (email) DO UPDATE SET last_login_at = now() RETURNING id`;
-  const token = await createSession(user!.id, userAgent);
+  const token = await createSession(user!.id, userAgent, "password");
   await audit(`admin:${user!.id}`, "auth.login", null, null, null, { method: "password" });
   return { token, returnTo: safeReturn(returnTo), userId: user!.id };
 }
 
-export async function sessionPrincipal(cookieHeader: string | undefined): Promise<AdminPrincipal | null> {
+export interface AdminCredential {
+  email: string | null;
+  feishu_union_id: string | null;
+  auth_method: 'password' | 'feishu' | null;
+  auth_binding: string | null;
+}
+
+/** Recheck current admin settings both for browser sessions and read-only Agent keys. */
+export function adminCredentialAllowed(row: AdminCredential): boolean {
+  const permitted = row.auth_method === 'password'
+    ? row.email === PASSWORD_ADMIN && !!config.adminPassword && config.adminPassword.length >= 12
+    : row.auth_method === 'feishu' && feishuLoginConfigured() &&
+      ((!!row.feishu_union_id && config.adminUnionIds.includes(row.feishu_union_id)) || (!!row.email && config.adminEmails.includes(row.email.toLowerCase())));
+  return !!(permitted && row.auth_method && row.auth_binding === sessionBinding(row.auth_method));
+}
+
+export async function realAdminSession(cookieHeader: string | undefined) {
   const token = parseCookies(cookieHeader)[SESSION_COOKIE];
-  if (token) {
-    const [row] = await sql<{ user_id: number; csrf_token: string; name: string | null; email: string | null }[]>`
-      SELECT s.user_id, s.csrf_token, u.display_name AS name, u.email FROM admin_sessions s JOIN admin_users u ON u.id = s.user_id
-      WHERE s.id_hash = ${sha256(token)} AND s.expires_at > now()`;
-    if (row) return { userId: row.user_id, name: row.name ?? row.email ?? `admin:${row.user_id}`, csrf: row.csrf_token, dev: false };
+  if (!token) return null;
+  const [row] = await sql<(AdminCredential & { user_id: number; csrf_token: string; name: string | null })[]>`
+    SELECT s.user_id, s.csrf_token, u.display_name AS name, u.email, u.feishu_union_id, s.auth_method, s.auth_binding
+    FROM admin_sessions s JOIN admin_users u ON u.id = s.user_id
+    WHERE s.id_hash = ${sha256(token)} AND s.expires_at > now()`;
+  if (row?.auth_binding === "pre-membership-migration" && row.auth_method) {
+    // Older installations did not store credential bindings. Preserve only sessions that existed
+    // during migration and whose owner is still permitted by the current admin configuration.
+    const bound = { ...row, auth_binding: sessionBinding(row.auth_method) };
+    if (!adminCredentialAllowed(bound)) return null;
+    const updated = await sql`UPDATE admin_sessions SET auth_binding = ${bound.auth_binding}
+      WHERE id_hash = ${sha256(token)} AND expires_at > now()
+        AND auth_binding IN ('pre-membership-migration', ${bound.auth_binding}) RETURNING id_hash`;
+    return updated.length ? bound : null;
   }
+  return row && adminCredentialAllowed(row) ? row : null;
+}
+
+export async function sessionPrincipal(cookieHeader: string | undefined): Promise<AdminPrincipal | null> {
+  const row = await realAdminSession(cookieHeader);
+  if (row) return { userId: row.user_id, name: row.name ?? row.email ?? `admin:${row.user_id}`, csrf: row.csrf_token, dev: false };
   if (config.devAdmin && config.environmentName !== "production") return { userId: null, name: config.devAdmin.displayName, csrf: "dev", dev: true };
   return null;
 }
@@ -173,10 +198,10 @@ export async function endSession(cookieHeader: string | undefined) {
 }
 
 /** Every manual change: who, when, what, why. */
-export async function audit(actor: string, action: string, subject: string | null, reason: string | null, before: unknown, after: unknown, requestId?: string) {
-  await sql`INSERT INTO audit_log (actor, action, subject, reason, before, after, request_id)
-            VALUES (${actor}, ${action}, ${subject}, ${reason}, ${before === null || before === undefined ? null : sql.json(before as never)},
-                    ${after === null || after === undefined ? null : sql.json(after as never)}, ${requestId ?? null})`;
+export async function audit(actor: string, action: string, subject: string | null, reason: string | null, before: unknown, after: unknown, requestId?: string, db: Db = sql) {
+  await db`INSERT INTO audit_log (actor, action, subject, reason, before, after, request_id)
+            VALUES (${actor}, ${action}, ${subject}, ${reason}, ${before === null || before === undefined ? null : db.json(before as never)},
+                    ${after === null || after === undefined ? null : db.json(after as never)}, ${requestId ?? null})`;
 }
 
 export function actorOf(p: AdminPrincipal): string {

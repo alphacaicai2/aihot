@@ -6,14 +6,15 @@ import { FEATURES } from "@aihot/industry/features";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { MCP_TOOL_NAMES as T } from "@aihot/contracts/mcp";
 import { listPath, pageMeta, siteUrl } from "../lib/seo";
+import { AgentToken } from "../components/AgentToken";
+import { requireMembership } from "../lib/membership.server";
 import { CodeBlock, CopyButton } from "../components/CodeBlock";
 import { IconArrowUpRight, IconChevronRight } from "../components/icons";
 import { AsideCard, ReadingLayout } from "../components/ui/Page";
 import { PillTabs } from "../components/ui/Tabs";
 
-/** Shared caches may keep this page for five minutes. */
 export function headers() {
-  return { "Cache-Control": "public, max-age=0, s-maxage=300, stale-while-revalidate=600" };
+  return { "Cache-Control": "private, no-store", Vary: "Cookie" };
 }
 
 const MCP_VERSION = "2.0.0";
@@ -32,6 +33,7 @@ const TABS = [
 type TabKey = (typeof TABS)[number]["key"];
 
 export async function loader({ request }: Route.LoaderArgs) {
+  const membership = await requireMembership(request, "agent");
   const tab = new URL(request.url).searchParams.get("tab");
   let healthy = true;
   try {
@@ -41,13 +43,13 @@ export async function loader({ request }: Route.LoaderArgs) {
     healthy = false;
   }
   // The public address the examples show is the configured one, the same on the server and in the browser.
-  return { tab: (TABS.some((t) => t.key === tab) ? tab : "mcp") as TabKey, healthy, base: siteUrl() };
+  return { tab: (TABS.some((t) => t.key === tab) ? tab : "mcp") as TabKey, healthy, base: siteUrl(), hasToken: membership.hasToken };
 }
 
 export function meta({ loaderData }: Route.MetaArgs) {
   // Only the tab is part of the address (mcp is the default and not written).
   const path = listPath("/agent", { tab: loaderData && loaderData.tab !== "mcp" ? loaderData.tab : null });
-  return pageMeta({ title: "Agent 接入", description: `让 Agent 直接使用 ${SITE.name}：MCP、RSS、REST API v1，匿名只读。`, path, image: "/og/pages/agent.png" });
+  return pageMeta({ title: "Agent 接入", description: `让 Agent 直接使用 ${SITE.name}：MCP、RSS、REST API v1，获取站点数据。`, path, image: "/og/pages/agent.png" });
 }
 
 function Section({ title, children, id }: { title: string; children: ReactNode; id?: string }) {
@@ -79,13 +81,13 @@ function McpTab({ base }: { base: string }) {
   return (
     <>
       <h2 className="text-[20px] font-bold text-ink">加一个地址，Agent 直接调用五个工具</h2>
-      <p className="mt-2 text-[14.5px] text-ink-3">适合支持远程 MCP 的 Agent 与开发工具。标准 Streamable HTTP，匿名只读，不需要 token；工具返回简洁文字与同一份结构化数据。</p>
+      <p className="mt-2 text-[14.5px] text-ink-3">适合支持远程 MCP 的 Agent 与开发工具。连接方式选择 Streamable HTTP，并在请求头中使用个人访问令牌。</p>
       <div className="mt-6 flex items-center gap-2 rounded-card border border-line bg-surface p-3">
         <code className="min-w-0 flex-1 truncate font-mono text-[13px] text-ink">{url}</code>
         <CopyButton text={url} className="!text-ink-3" />
       </div>
-      <CodeBlock title="通用 MCP 配置" lang="json" code={JSON.stringify({ mcpServers: { [name]: { type: "http", url } } }, null, 2)} />
-      <CodeBlock lang="bash" code={`# Claude Code\nclaude mcp add --transport http ${name} '${url}'\n# Codex\ncodex mcp add ${name} --url '${url}'`} />
+      <CodeBlock title="通用 MCP 配置" lang="json" code={JSON.stringify({ mcpServers: { [name]: { type: "http", url, headers: { Authorization: "Bearer <个人访问令牌>" } } } }, null, 2)} />
+      <CodeBlock lang="bash" code={`# 先将个人访问令牌设置为 CAOLU_AGENT_TOKEN 环境变量\n# Claude Code\nclaude mcp add --transport http --header "Authorization: Bearer $CAOLU_AGENT_TOKEN" ${name} '${url}'\n# Codex\ncodex mcp add ${name} --url '${url}' --bearer-token-env-var CAOLU_AGENT_TOKEN`} />
       <Section title="连上后应看到这五个工具">
         <Bullets items={[
           <><Mono>{T.latest}</Mono>：过去 24 小时或最近 7 天的精选／全部资讯</>,
@@ -117,8 +119,9 @@ function RssTab({ base }: { base: string }) {
   const categories = CATEGORY_KEYS.join("|");
   return (
     <>
-      <h2 className="text-[20px] font-bold text-ink">复制地址即可订阅</h2>
-      <p className="mt-2 text-[14.5px] text-ink-3">兼容主流 RSS 2.0 阅读器与 n8n、Zapier 这类自动化工具。第一次接入选精选摘要。</p>
+      <h2 className="text-[20px] font-bold text-ink">在阅读器中添加订阅</h2>
+      <p className="mt-2 text-[14.5px] text-ink-3">使用支持自定义 HTTP 请求头的 RSS 阅读器或自动化工具。添加下方订阅地址，并设置 Authorization 请求头。</p>
+      <CodeBlock title="RSS 鉴权示例" lang="bash" code={`curl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/feed.xml'`} />
       <div className="mt-6 space-y-3">
         {feeds.map(([name, desc, path]) => {
           const url = `${base}${path}`;
@@ -166,9 +169,9 @@ function ApiTab({ base }: { base: string }) {
   ];
   return (
     <>
-      <h2 className="text-[20px] font-bold text-ink">匿名 GET，不需要 token</h2>
-      <p className="mt-2 text-[14.5px] text-ink-3">浏览器跨域、curl 和默认 HTTP SDK 都可以直接用。临时查最近内容用 items；长期维护全部精选用一次快照加增量游标。字段与错误码以 <a href="/openapi-v1.json" className="text-accent hover:underline">OpenAPI 3.1</a> 为准。</p>
-      <CodeBlock title="第一个请求" lang="bash" code={`curl '${base}/api/v1/items?mode=selected&window=24h&limit=20'`} />
+      <h2 className="text-[20px] font-bold text-ink">通过访问令牌查询 REST API</h2>
+      <p className="mt-2 text-[14.5px] text-ink-3">将个人访问令牌设置为 CAOLU_AGENT_TOKEN 环境变量。临时查最近内容用 items；长期维护全部精选用一次快照加增量游标。字段与错误码以 <a href="/openapi-v1.json" className="text-accent hover:underline">OpenAPI 3.1</a> 为准。</p>
+      <CodeBlock title="第一个请求" lang="bash" code={`curl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/api/v1/items?mode=selected&window=24h&limit=20'`} />
       <div className="overflow-x-auto rounded-card border border-line bg-surface">
         <table className="w-full min-w-[560px] text-left text-[13.5px]">
           <thead className="bg-bg-sunk text-ink-3"><tr><th className="px-3 py-2 font-medium">方法</th><th className="px-3 py-2 font-medium">路径</th><th className="px-3 py-2 font-medium">说明</th></tr></thead>
@@ -184,16 +187,16 @@ function ApiTab({ base }: { base: string }) {
           "不传 mode 等同 selected（精选）；只有明确需要全部公开动态才用 all。",
           "完整精选不限 7 天：snapshot 首次拿全，changes 只取变化；items 只看最近 7 天。",
           "items 不带正文：返回摘要、推荐理由、站内阅读页与原文链接。",
-          "没有推送通道：按响应的 s-maxage 带 If-None-Match 轮询，没变化时是 304。",
           "错误是 Problem JSON；反馈时附上 requestId 即可定位。",
         ]} />
       </Section>
       <Section title="维护全部精选：一次快照，之后只拉变化">
-        <CodeBlock lang="bash" code={`# 首次：分页拿当前全部精选，保存第一页响应里的 cursor（逐页相同）\ncurl '${base}/api/v1/selected/snapshot?fields=minimal&limit=500'\n# hasMore 为 true 就带 nextPage 继续翻\ncurl '${base}/api/v1/selected/snapshot?fields=minimal&limit=500&page=<上一页的 nextPage>'\n# 翻完之后：原样回传 cursor，只拿新增、修改和撤选\ncurl '${base}/api/v1/selected/changes?cursor=<第一页响应的 cursor>&limit=100'`} />
+        <CodeBlock lang="bash" code={`# 首次：分页拿当前全部精选，保存第一页响应里的 cursor（逐页相同）\ncurl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/api/v1/selected/snapshot?fields=minimal&limit=500'\n# hasMore 为 true 就带 nextPage 继续翻\ncurl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/api/v1/selected/snapshot?fields=minimal&limit=500&page=<上一页的 nextPage>'\n# 翻完之后：原样回传 cursor，只拿新增、修改和撤选\ncurl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/api/v1/selected/changes?cursor=<第一页响应的 cursor>&limit=100'`} />
         <p>每页成功应用后再保存新 cursor。返回 409 snapshot_required 时重新取一次快照即可，接口不会静默漏数。</p>
       </Section>
       <Section title="错误与恢复" id="agent-api-recovery">
         <Bullets items={[
+          "401 或 403：检查访问令牌与当前账号的会员权限。",
           "400：参数不合法；按 OpenAPI 修正，不要自动改成更宽的查询。",
           "409 snapshot_required：增量游标无法安全续传，重新取一次完整快照。",
           "429：遵守 Retry-After，不要增加并发重试。",
@@ -205,7 +208,7 @@ function ApiTab({ base }: { base: string }) {
 }
 
 export default function AgentPage() {
-  const { tab: initialTab, healthy, base } = useLoaderData<typeof loader>();
+  const { tab: initialTab, healthy, base, hasToken } = useLoaderData<typeof loader>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [tab, setTab] = useState<TabKey>(initialTab);
@@ -245,9 +248,9 @@ export default function AgentPage() {
     <ReadingLayout aside={aside}>
       <header>
         <h1 className="text-[24px] font-semibold leading-[1.3] text-ink">让 Agent 直接使用 {SITE.name}</h1>
-        <p className="mt-1.5 text-[13px] text-ink-3">三条接入路径都是匿名只读、无需 API Key：MCP、RSS、REST API v1。</p>
+        <p className="mt-1.5 text-[13px] text-ink-3">使用个人访问令牌连接 MCP、RSS 或 REST API v1。</p>
         <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
-          <span className={pill}>匿名只读</span>
+          <span className={pill}>会员只读</span>
           <span className={`${pill} mono`}>API v1</span>
           <span className={`${pill} mono`}>MCP {MCP_VERSION}</span>
           <span className={`${pill} gap-1.5 ${healthy ? "text-ok" : "text-hot"}`}>
@@ -256,6 +259,7 @@ export default function AgentPage() {
           </span>
         </div>
       </header>
+      <AgentToken issued={hasToken} />
 
       <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1.5 text-[12.5px] lg:hidden">
         {RESOURCES.map(([l, h]) => (

@@ -79,7 +79,7 @@ const server = createServer((req, res) => {
 function pageCache(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) {
   const url = new URL(req.url ?? "/", "http://web.local");
   const pathname = decodeURIComponent(url.pathname).replace(/\.data$/, "");
-  const publicRead = (req.method === "GET" || req.method === "HEAD") && !/^\/admin(?:\/|$)/i.test(pathname);
+  const publicRead = (req.method === "GET" || req.method === "HEAD") && !/^\/(?:admin|membership|agent|financing)(?:\/|$)/i.test(pathname);
   if (publicRead && url.pathname.endsWith(".data")) {
     url.searchParams.delete("_routes");
     req.url = url.pathname + url.search;

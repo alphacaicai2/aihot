@@ -6,6 +6,9 @@ import { sql } from "@aihot/backend/db";
 import { registerSite } from "./routes/site.ts";
 import { registerLeaderboard } from "./routes/leaderboard.ts";
 import { registerOg } from "./routes/og.ts";
+import { registerMembership, registerMembershipGuard } from "./routes/membership.ts";
+import { registerBilling } from "./routes/billing.ts";
+import { registerReaderAuth } from "./routes/reader-auth.ts";
 import { registerAdminAuth } from "./routes/admin-auth.ts";
 import { registerAdmin } from "./routes/admin.ts";
 import { registerIngest } from "./routes/ingest.ts";
@@ -63,9 +66,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     return reply.header("Cache-Control", "no-store").send({ ok: true, db: "ok", ms: Date.now() - started, release: process.env.AIHOT_RELEASE ?? "dev" });
   });
 
+  registerMembershipGuard(app);
+  app.register(registerMembership);
+  app.register(registerBilling);
+
   registerSite(app);
   if (FEATURES.leaderboard) registerLeaderboard(app);
   registerOg(app);
+  app.register(registerReaderAuth);
   registerAdminAuth(app);
   registerAdmin(app);
 

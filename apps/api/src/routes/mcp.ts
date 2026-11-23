@@ -233,7 +233,7 @@ function allowedOrigin(origin: string | undefined): boolean {
 // Browser clients on the site or on a local development address (the MCP inspector): a 204 preflight,
 // and the protocol headers readable on responses.
 const CORS_METHODS = "POST, GET, DELETE, OPTIONS";
-const CORS_HEADERS = "Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID, MCP-Method, MCP-Name";
+const CORS_HEADERS = "Content-Type, Accept, Authorization, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID, MCP-Method, MCP-Name";
 const CORS_EXPOSE = "MCP-Protocol-Version, MCP-Session-Id, Link";
 
 function corsHeaders(reply: FastifyReply, origin: string | undefined) {

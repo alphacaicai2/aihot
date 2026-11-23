@@ -6,7 +6,7 @@ import type { loader as rootLoader } from "../root";
 import { useChangelogDot } from "../components/shell/Sidebar";
 import { pageMeta } from "../lib/seo";
 import { ThemeSwitch } from "../components/shell/ThemeSwitch";
-import { IconDoc, IconChart, IconChevronRight, IconGrid, IconHeart, IconHistory, IconMessage, IconMoon, IconPlug } from "../components/icons";
+import { IconDoc, IconChart, IconChevronRight, IconGrid, IconHeart, IconHistory, IconMessage, IconMoon, IconPlug, IconSparkles } from "../components/icons";
 
 /** Shared caches may keep this page for five minutes. */
 export function headers() {
@@ -29,6 +29,7 @@ const GROUPS: Array<{ title: string; rows: Row[] }> = [
       { to: "/topics", label: "主题索引", icon: <IconGrid size={18} /> },
       ...(FEATURES.leaderboard ? [{ to: "/leaderboard", label: "模型榜", icon: <IconChart size={18} /> }] : []),
       ...(FEATURES.codexResetMonitor ? [{ to: "/codex-reset", label: "Tibo重置监控", icon: <IconHistory size={18} /> }] : []),
+      { to: "/membership", label: "读者会员", icon: <IconSparkles size={18} /> },
       { to: "/agent", label: "Agent 接入", icon: <IconPlug size={18} /> },
     ],
   },
@@ -88,7 +89,7 @@ export default function MorePage() {
       <div className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[12px] text-ink-4">
         <Link to="/terms" className="hover:text-ink-2">使用规则</Link>
         <Link to="/privacy" className="hover:text-ink-2">隐私说明</Link>
-        <a href="/feed.xml" className="hover:text-ink-2">RSS</a>
+        <Link to="/agent?tab=rss" className="hover:text-ink-2">会员 RSS</Link>
         {SITE.icp && <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" className="hover:text-ink-2">{SITE.icp}</a>}
       </div>
     </div>

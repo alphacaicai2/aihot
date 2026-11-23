@@ -1,6 +1,6 @@
 // Exercise the new category through analysis, publication, real HTTP routes and daily composition.
 // The provider is a loopback stub: these checks validate the pipeline, not a live model's accuracy.
-import { stub, tag } from "./setup.ts";
+import { memberClient, stub, tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
@@ -63,12 +63,16 @@ const provider = await stub((_hit, req) => {
 for (const name of ["DASHSCOPE_BASE_URL", "ZHIPU_BASE_URL", "DEEPSEEK_BASE_URL"]) process.env[name] = `${provider.url}/v1`;
 for (const name of ["DASHSCOPE_API_KEY", "ZHIPU_API_KEY", "DEEPSEEK_API_KEY"]) process.env[name] = "test-key";
 const app = await buildApp();
+let member: Awaited<ReturnType<typeof memberClient>>;
+const authedGet = (url: string) => app.inject({ method: "GET", url, headers: member.headers });
 
 before(async () => {
+  member = await memberClient();
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, first_party, next_fetch_at)
             VALUES (${SOURCE}, 'Test financing', 'rss', 'T1', 'editorial', true, '2100-01-01')`;
 });
 after(async () => {
+  await member?.close();
   await sql`DELETE FROM reports WHERE kind = 'daily' AND key = '2031-02-03'`;
   await app.close();
   await provider.close();
@@ -105,27 +109,27 @@ test("a newly published financing report becomes searchable after the worker tic
   await sql`UPDATE publications SET category='industry' WHERE article_id=${ids.get("WEEKLY")!}`;
   await sql`UPDATE analyses SET output=output || jsonb_build_object('financingSourceFigures',${sql.json([{text:drugDeal}])}::jsonb)
     WHERE id=(SELECT analysis_id FROM publications WHERE article_id=${ids.get("WEEKLY")!})`;
-  const unprocessed = await app.inject({ method:"GET", url:"/api/v1/financing" });
+  const unprocessed = await authedGet("/api/v1/financing");
   assert.deepEqual(unprocessed.json().events, []);
   assert.equal(await runFinancingBatch(), "completed");
   assert.equal(await runFinancingBatch(), "completed");
-  const result = await app.inject({method: "GET", url: "/api/v1/financing?investor=" + encodeURIComponent("Andreessen")});
+  const result = await authedGet("/api/v1/financing?investor=" + encodeURIComponent("Andreessen"));
   assert.equal(result.statusCode, 200);
   const reports = result.json().events.flatMap((e: { reports: Array<{id:string}> }) => e.reports);
   assert.ok(reports.some((r: {id:string}) => r.id === ids.get("ROUND")));
-  const options = await app.inject({method:"GET", url:"/api/site/financing/investors"});
+  const options = await authedGet("/api/site/financing/investors");
   assert.equal(options.statusCode, 200);
   assert.ok(options.json().some((o: {name:string; aliases:string[]}) => o.name === "a16z" && o.aliases.includes("Andreessen Horowitz")));
   for (const investor of ["a16z", "安德里森·霍洛维茨"]) {
-    const exact = await app.inject({method:"GET", url:"/api/v1/financing?investorMode=exact&investor="+encodeURIComponent(investor)});
+    const exact = await authedGet("/api/v1/financing?investorMode=exact&investor=" + encodeURIComponent(investor));
     assert.equal(exact.statusCode,200);
     assert.ok(exact.body.includes(ids.get("ROUND")!));
   }
-  const incomplete = await app.inject({method:"GET", url:"/api/v1/financing?investor=Andreessen&investorMode=exact"});
+  const incomplete = await authedGet("/api/v1/financing?investor=Andreessen&investorMode=exact");
   assert.deepEqual(incomplete.json().events, []);
   const before = provider.hits();
   assert.equal(await runFinancingBatch(), "idle");
-  const fromFigure = await app.inject({method:"GET",url:"/api/v1/financing?company=Isomorphic"});
+  const fromFigure = await authedGet("/api/v1/financing?company=Isomorphic");
   assert.equal(fromFigure.json().events[0].reports[0].claim.amountText, "50亿美元");
   await sql`UPDATE publications SET category='financing' WHERE article_id=${ids.get("WEEKLY")!}`;
   assert.equal(provider.hits(), before);
@@ -133,7 +137,7 @@ test("a newly published financing report becomes searchable after the worker tic
 
 test("roundup deals paginate independently and company, investor and CSV filters stay on the transaction", async () => {
   const financing = async (query: string) => {
-    const result = await app.inject({method:"GET", url:"/api/v1/financing?" + query});
+    const result = await authedGet("/api/v1/financing?" + query);
     assert.equal(result.statusCode, 200);
     return result;
   };
@@ -164,7 +168,7 @@ test("roundup deals paginate independently and company, investor and CSV filters
 });
 
 test("company history includes reviewed names, but excludes partial names and unrelated roundup deals", async () => {
-  const profile = (name: string) => app.inject({ method: "GET", url: "/api/site/financing/company?" + new URLSearchParams({ name }) });
+  const profile = (name: string) => authedGet("/api/site/financing/company?" + new URLSearchParams({ name }));
   assert.equal((await profile("Isomorphic")).statusCode, 404);
   assert.equal((await profile("isomorphic labs")).json().historySummary.records, 1);
   await sql`INSERT INTO research_entities(name, aliases, reviewed_by) VALUES ('镁伽科技', ARRAY['测试别名'], 'test')`;
@@ -187,13 +191,13 @@ test("one reviewed round shows every source when an investor matches only one re
       FROM publications p JOIN analyses a ON a.id=p.analysis_id, jsonb_array_elements(a.output->'financingClaims') c
       WHERE p.article_id=${id} OR (p.article_id=${weekly} AND c->>'company'='镁伽科技')`;
     const url = "/api/v1/financing?limit=1&investor=" + encodeURIComponent("甲基金");
-    const {events,hasMore} = (await app.inject({method:"GET",url})).json();
+    const {events,hasMore} = (await authedGet(url)).json();
     assert.equal(hasMore,false);
     assert.equal(events.length,1);
     assert.equal(events[0].id,"round:" + rid);
     assert.equal(events[0].reportCount,2);
     assert.deepEqual(new Set(events[0].reports.map((r: {id:string}) => r.id)),new Set([id,weekly]));
-    const csv = (await app.inject({method:"GET",url:url + "&format=csv"})).body;
+    const csv = (await authedGet(url + "&format=csv")).body;
     assert.equal(csv.split("\r\n").length,3);
     assert.doesNotMatch(csv,/Isomorphic/);
   } finally { await sql`DELETE FROM financing_round_sources WHERE round_id=${rid}`; }
@@ -201,7 +205,7 @@ test("one reviewed round shows every source when an investor matches only one re
 
 test("site, public API and RSS filter financing while excluding product background and opinions", async () => {
   for (const url of ["/api/site/pool?category=financing", "/api/v1/items?mode=all&category=financing", "/feed/category/financing.xml"]) {
-    const res = await app.inject({ method: "GET", url });
+    const res = url.startsWith("/api/site/") ? await app.inject({ method: "GET", url }) : await authedGet(url);
     assert.equal(res.statusCode, 200, url);
     for (const c of cases) {
       const expected = c.category === "financing" && (c.score >= 60 || !url.startsWith("/feed/"));
@@ -236,12 +240,12 @@ test("two reviewed rounds in one passage preserve the source and independent sea
         VALUES (${article},${raw.c.company},${raw.c.evidence},${i+1},${sql.json(raw.c)},${sql.json(claim)},gen_random_uuid())`;
     }
     const [url, company] = ["/api/v1/financing?", "镁伽"];
-    const result = (await app.inject({method:"GET",url:url+new URLSearchParams({company})})).json();
+    const result = (await authedGet(url + new URLSearchParams({ company }))).json();
     assert.deepEqual(new Set(result.events.map((e: {reports:{claim:{round:string}}[]}) => e.reports[0]!.claim.round)),new Set(["种子轮","A轮"]));
-    const history = (await app.inject({method:"GET",url:"/api/site/financing/company?" + new URLSearchParams({name:raw.c.company})})).json();
+    const history = (await authedGet("/api/site/financing/company?" + new URLSearchParams({ name: raw.c.company }))).json();
     assert.equal(history.historySummary.records, 2);
     assert.deepEqual(history.events.map((e: {id:string}) => e.id), result.events.map((e: {id:string}) => e.id));
-    const only = (await app.inject({method:"GET",url:url+new URLSearchParams({company,investor:"A轮基金"})})).json();
+    const only = (await authedGet(url + new URLSearchParams({ company, investor: "A轮基金" }))).json();
     assert.equal(only.events.length,1);
     assert.equal(only.events[0].reports[0].id,article);
     assert.equal(only.events[0].reports[0].claim.round,"A轮");
@@ -262,12 +266,12 @@ test("two reviewed mentions in one article keep both quotes and count as one rep
         VALUES (${article},${raw.c.company},${raw.c.evidence},${i+1},${sql.json(raw.c)},${sql.json(claim)},${id})`;
     }
     const url = "/api/v1/financing?company=" + encodeURIComponent("镁伽");
-    const {events} = (await app.inject({method:"GET",url})).json();
+    const {events} = (await authedGet(url)).json();
     assert.equal(events.length,1);
     assert.equal(events[0].reportCount,1);
     const [r] = events[0].reports;
     assert.deepEqual(new Set([r.claim.evidence,r.additionalClaims[0].evidence]),new Set([robotDeal,"本轮由甲基金领投。"]));
-    const csv = (await app.inject({method:"GET",url:url+"&format=csv"})).body;
+    const csv = (await authedGet(url + "&format=csv")).body;
     assert.equal(csv.split("\r\n").length,3);
     assert.ok(csv.includes("记录类型"));
   } finally { await sql`DELETE FROM financing_claim_reviews WHERE article_id=${article}`; }

@@ -77,3 +77,26 @@ export function gate<T = void>() {
 
 /** A short unique tag for the rows a test creates. */
 export const tag = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+/** A read-only Agent client for tests exercising publication behavior behind the membership gate. */
+export async function memberClient() {
+  const { randomBytes } = await import("node:crypto");
+  const { sql } = await import("@aihot/backend/db");
+  const { sha256 } = await import("@aihot/backend/lib/ids");
+  const subject = "member-test-" + tag();
+  const email = subject + "@example.test";
+  const token = "caolu_" + randomBytes(32).toString("base64url");
+  await sql.begin(async tx => {
+    await tx`INSERT INTO readers(google_subject, email) VALUES (${subject},${email})`;
+    await tx`INSERT INTO reader_email_bindings(email,google_subject,method) VALUES (${email},${subject},'google')`;
+    await tx`INSERT INTO membership_grants(email) VALUES (${email})`;
+    await tx`INSERT INTO membership_agent_tokens(reader_subject,token_hash) VALUES (${subject},${sha256(token)})`;
+  });
+  return {
+    headers: { authorization: "Bearer " + token },
+    async close() {
+      await sql`DELETE FROM readers WHERE google_subject=${subject}`;
+      await sql`DELETE FROM membership_grants WHERE email=${email}`;
+    },
+  };
+}

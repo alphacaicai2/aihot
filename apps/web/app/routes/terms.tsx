@@ -12,7 +12,7 @@ export function headers() {
 }
 
 export function meta() {
-  return pageMeta({ title: "使用规则", description: `本站网站、RSS、公开 API 与 MCP 的使用规则。`, path: "/terms", image: "/og/pages/terms.png" });
+  return pageMeta({ title: "使用规则", description: `普通资讯、融资数据库和会员 Agent 接口的使用规则。`, path: "/terms", image: "/og/pages/terms.png" });
 }
 
 export default function TermsPage() {
