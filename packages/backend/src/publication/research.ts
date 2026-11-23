@@ -16,10 +16,12 @@ export function companyCondition(company?: string | null) {
       AND position(lower(alias) in p.search_text) > 0))`;
 }
 
-export function investorCondition(investor?: string | null) {
+export function investorCondition(investor?: string | null, originals: string[] = [], exact = false) {
   if (!investor?.trim()) return sql``;
+  const literalMatch = exact ? sql`false` : sql`lower(inv.name) LIKE ${literal(investor.trim())}`;
+  const match = originals.length ? sql`(${literalMatch} OR btrim(inv.name) IN ${sql(originals)})` : literalMatch;
   return sql`AND EXISTS (SELECT 1 FROM analyses an,
     jsonb_array_elements_text(CASE WHEN jsonb_typeof(an.output->'financing'->'investors') = 'array'
       THEN an.output->'financing'->'investors' ELSE '[]'::jsonb END) AS inv(name)
-    WHERE an.id = p.analysis_id AND lower(inv.name) LIKE ${literal(investor.trim())})`;
+    WHERE an.id = p.analysis_id AND ${match})`;
 }

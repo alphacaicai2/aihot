@@ -1,5 +1,6 @@
 // First-party site API (/api/site/*). Not public, not versioned, never called /api/v2.
 // Reads through the same public read layer as v1; no cookies are read or set.
+import { loadInvestorOptions } from "@aihot/backend/publication/investors";
 import { loadDiscoveries } from "@aihot/backend/publication/discoveries";
 import { FEATURES } from "@aihot/industry/features";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -81,6 +82,8 @@ export async function parseFilters(q: Record<string, string>): Promise<FilterPar
 }
 
 export function registerSite(app: FastifyInstance) {
+  app.get("/api/site/financing/investors", siteHandler(async (req, reply) =>
+    sendJsonWithEtag(req, reply, await loadInvestorOptions(), { etagPrefix: "financing-investors", cacheControl: "public, max-age=60" })));
   app.get("/api/site/discoveries", siteHandler(async (req, reply) => sendJsonWithEtag(req, reply, await loadDiscoveries(), { etagPrefix: "discoveries", cacheControl: "public, max-age=60" })));
 
   app.get("/api/site/meta", siteHandler(async (req, reply) => {

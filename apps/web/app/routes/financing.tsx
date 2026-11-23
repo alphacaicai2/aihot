@@ -13,7 +13,7 @@ import { FinancingEvent } from "../features/research/FinancingEvent";
 
 function financingQuery(params: URLSearchParams) {
   const query = new URLSearchParams();
-  for (const key of ["company", "investor", "from", "to", "cursor"]) {
+  for (const key of ["company", "investor", "investorMode", "from", "to", "cursor"]) {
     const value = params.get(key)?.trim();
     if (value) query.set(key, value);
   }

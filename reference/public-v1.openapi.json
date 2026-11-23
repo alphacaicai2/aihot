@@ -1882,9 +1882,15 @@
             "schema": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 120
+              "maxLength": 160
             },
-            "description": "Investor substring in structured financing claims; older unstructured reports will not match."
+            "description": "Investor name or known alias in structured financing claims."
+          },
+          {
+            "name": "investorMode",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["contains", "exact"], "default": "contains" },
+            "description": "Exact matches one investor and its known aliases. Contains also matches literal substrings."
           },
           {
             "name": "limit",

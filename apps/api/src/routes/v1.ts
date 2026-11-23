@@ -77,10 +77,10 @@ export function registerV1(app: FastifyInstance) {
   }));
 
   app.get("/api/v1/financing", publicHandler(async (req, reply) => {
-    const q = strictQuery(req, ["from", "to", "company", "investor", "limit", "cursor", "format"]);
-    for (const key of ["company", "investor"] as const) if (q[key] && q[key]!.length > 120) throw new QueryError(`${key} is too long.`);
+    const q = strictQuery(req, ["from", "to", "company", "investor", "investorMode", "limit", "cursor", "format"]);
+    for (const key of ["company", "investor"] as const) if (q[key] && q[key]!.length > (key === "investor" ? 160 : 120)) throw new QueryError(`${key} is too long.`);
     const format = enumParam(q.format, "format", ["json", "csv"] as const, "json");
-    const result = await loadFinancing({ from: q.from, to: q.to, company: q.company?.trim(), investor: q.investor?.trim(), cursor: q.cursor, limit: intParam(q.limit, "limit", 1, 100, 40) });
+    const result = await loadFinancing({ from: q.from, to: q.to, company: q.company?.trim(), investor: q.investor?.trim(), investorExact: enumParam(q.investorMode, "investorMode", ["contains", "exact"] as const, "contains") === "exact", cursor: q.cursor, limit: intParam(q.limit, "limit", 1, 100, 40) });
     if (format === "csv") return reply.header("Cache-Control", "no-store").header("Content-Disposition", 'attachment; filename="financing.csv"').type("text/csv; charset=utf-8").send(financingCsv(result));
     return sendJsonWithEtag(req, reply, result, { etagPrefix: "v1-financing", cacheControl: V1_CACHE_CONTROL.items });
   }));

@@ -5,23 +5,25 @@ import { sql } from "../db.ts";
 import { decodeCursor, encodeCursor, InvalidCursorError, queryBinding } from "../lib/cursor.ts";
 import { listedCondition } from "./items.ts";
 import { companyCondition, investorCondition } from "./research.ts";
+import { financingInvestorNames } from "./investors.ts";
 import { withSearchCapacity } from "./pool.ts";
 
-export interface FinancingQuery { from?: string | null; to?: string | null; company?: string | null; investor?: string | null; cursor?: string | null; limit?: number }
+export interface FinancingQuery { from?: string | null; to?: string | null; company?: string | null; investor?: string | null; investorExact?: boolean; cursor?: string | null; limit?: number }
 export async function loadFinancing(query: FinancingQuery, now = new Date()): Promise<FinancingResponse> {
   const range = researchDates(query.from, query.to);
   const limit = Math.max(1, Math.min(100, query.limit ?? 40));
-  const binding = queryBinding({ from: query.from ?? null, to: query.to ?? null, company: query.company ?? null, investor: query.investor ?? null });
+  const binding = queryBinding({ from: query.from ?? null, to: query.to ?? null, company: query.company ?? null, investor: query.investor ?? null, ...(query.investorExact ? {exact:true} : {}) });
   const cursor = query.cursor ? decodeCursor<{ at: string; id: string; binding: string }>("fin1", query.cursor) : null;
   if (cursor && (cursor.binding !== binding || typeof cursor.id !== "string" || !Number.isFinite(Date.parse(cursor.at)))) throw new InvalidCursorError("financing cursor does not match filters");
   const key = sql`coalesce('fact:' || f.public_id, 'item:' || p.article_id)`;
   return withSearchCapacity(async db => {
+    const originals = query.investor?.trim() ? await financingInvestorNames(db, now, query.investor, !!query.investorExact) : [];
     const groups = await db<{ id: string; latest: Date }[]>`
       WITH matches AS (
         SELECT ${key} AS id, max(p.timeline_at) AS latest FROM publications p LEFT JOIN facts f ON f.id = p.fact_id
         WHERE ${listedCondition(now)} AND p.eligible AND p.category = 'financing'
           ${range ? sql`AND p.timeline_at >= ${range.start} AND p.timeline_at < ${range.end}` : sql``}
-          ${companyCondition(query.company)} ${investorCondition(query.investor)}
+          ${companyCondition(query.company)} ${investorCondition(query.investor, originals, query.investorExact)}
         GROUP BY ${key})
       SELECT * FROM matches ${cursor ? sql`WHERE (latest, id) < (${new Date(cursor.at)}, ${cursor.id})` : sql``}
       ORDER BY latest DESC, id DESC LIMIT ${limit + 1}`;

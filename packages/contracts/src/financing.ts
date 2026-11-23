@@ -19,3 +19,12 @@ export interface FinancingResponse {
   hasMore: boolean;
   nextCursor: string | null;
 }
+
+export interface InvestorOption {
+  name: string;
+  aliases: string[];
+}
+
+export function investorSearchKey(text: string) {
+  return text.normalize("NFKC").toLowerCase().replace(/[\s·._’'-]+/gu, "");
+}

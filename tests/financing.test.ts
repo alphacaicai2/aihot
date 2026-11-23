@@ -32,9 +32,9 @@ const provider = await stub((_hit, req) => {
   if (system.includes("日报主编")) content = { title: "投融资日报", leadParagraph: "公司融资与基金募资。", highlights: [1] };
   else if (system.includes("Extract the principal financing transaction")) {
     const material: Array<{ id: number; text: string }> = JSON.parse(messages.at(-1).content);
-    content = { results: material.map(m => ({ id: m.id, claim: m.text.includes("蓝海领投本轮") ? {
+    content = { results: material.map(m => ({ id: m.id, claim: m.text.includes("Andreessen Horowitz 领投本轮") ? {
       company: "某AI公司", kind: "company_round", status: "announced", amountBasis: "round",
-      evidence: "某AI公司完成一亿美元B轮融资", investors: [{name:"蓝海",quote:"蓝海领投本轮"}],
+      evidence: "某AI公司完成一亿美元B轮融资", investors: [{name:"Andreessen Horowitz",quote:"Andreessen Horowitz 领投本轮"}],
     } : null })) };
   } else {
     assert.ok(c, "known fixture reaches the provider");
@@ -72,7 +72,7 @@ test("financing survives analysis and publication without automatically selectin
   for (const c of cases) {
     const { articleId } = await upsertMaterial({
       sourceId: SOURCE, url: `https://example.com/${T}/${c.marker}`, title: `${c.title} ${c.marker} ${T}`,
-      bodyText: `${c.title}。${c.marker === "ROUND" ? "蓝海领投本轮。" : ""}${c.marker} ${T} ${"这篇新闻介绍AI业务的最新进展。".repeat(35)}`,
+      bodyText: `${c.title}。${c.marker === "ROUND" ? "Andreessen Horowitz 领投本轮。" : ""}${c.marker} ${T} ${"这篇新闻介绍AI业务的最新进展。".repeat(35)}`,
       bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
     });
     ids.set(c.marker, articleId);
@@ -88,10 +88,20 @@ test("financing survives analysis and publication without automatically selectin
 
 test("a newly published financing report becomes searchable after the worker tick and stays idempotent", async () => {
   assert.equal(await runFinancingBatch(), "completed");
-  const result = await app.inject({method: "GET", url: "/api/v1/financing?investor=" + encodeURIComponent("蓝海")});
+  const result = await app.inject({method: "GET", url: "/api/v1/financing?investor=" + encodeURIComponent("Andreessen")});
   assert.equal(result.statusCode, 200);
   const reports = result.json().events.flatMap((e: { reports: Array<{id:string}> }) => e.reports);
   assert.ok(reports.some((r: {id:string}) => r.id === ids.get("ROUND")));
+  const options = await app.inject({method:"GET", url:"/api/site/financing/investors"});
+  assert.equal(options.statusCode, 200);
+  assert.ok(options.json().some((o: {name:string; aliases:string[]}) => o.name === "a16z" && o.aliases.includes("Andreessen Horowitz")));
+  for (const investor of ["a16z", "安德里森·霍洛维茨"]) {
+    const exact = await app.inject({method:"GET", url:"/api/v1/financing?investorMode=exact&investor="+encodeURIComponent(investor)});
+    assert.equal(exact.statusCode,200);
+    assert.ok(exact.body.includes(ids.get("ROUND")!));
+  }
+  const incomplete = await app.inject({method:"GET", url:"/api/v1/financing?investor=Andreessen&investorMode=exact"});
+  assert.deepEqual(incomplete.json().events, []);
   const before = provider.hits();
   assert.equal(await runFinancingBatch(), "idle");
   assert.equal(provider.hits(), before);

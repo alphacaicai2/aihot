@@ -4,6 +4,7 @@ import { addDays, beijingDate } from "@aihot/contracts/time";
 import { Input } from "../../components/coss/input";
 import { dateProblem } from "../../lib/date-range";
 import { IconChevronDown, IconSearch } from "../../components/icons";
+import { InvestorPicker } from "./InvestorPicker";
 import { Button } from "../../components/ui/Controls";
 
 const field = "mt-1.5 min-w-0 font-normal";
@@ -42,15 +43,12 @@ export function FinancingFilters({ params, initialError }: { params: URLSearchPa
           筛选条件 <IconChevronDown size={16} className="text-ink-3 transition-transform group-open/filters:rotate-180" />
         </summary>
         <div className="pb-4 lg:pb-5">
-          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-1 lg:gap-4">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-1 lg:gap-4">
             <label className={label}>公司或基金
               <Input nativeInput size="lg" className={field} name="company" maxLength={120} defaultValue={params.get("company") ?? ""} placeholder="公司或基金名称" />
             </label>
-            <label className={label}>投资机构
-              <Input nativeInput size="lg" className={field} name="investor" maxLength={120} defaultValue={params.get("investor") ?? ""} placeholder="机构名称" aria-describedby="investor-help" />
-            </label>
+            <InvestorPicker initial={params.get("investor") ?? ""} initialExact={params.get("investorMode") === "exact"} />
           </div>
-          <p id="investor-help" className="mt-2 text-xs leading-relaxed text-ink-4">机构筛选仅覆盖已提取投资方的报道。</p>
           <details data-dates className="group mt-3 border-y border-line-soft" open={Boolean(params.get("from") || params.get("to"))}>
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-control text-[13px] font-semibold">
               日期范围
