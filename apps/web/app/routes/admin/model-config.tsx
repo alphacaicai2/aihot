@@ -17,11 +17,14 @@ function TaskSetting({ task, choices }: { task: Task; choices: Choice[] }) {
   const [confirm, setConfirm] = useState(false);
   const { run, busy } = useAdminAction();
   return <Card title={task.label}>
+    {task.key === "financing" && <p className="mb-2 text-sm text-ink-3">
+      从报道中提取融资公司、轮次、金额和投资机构。{task.current.source === "inherited" ? "当前沿用「分类与事实抽取」的模型。" : "当前使用独立选择的模型。"}
+    </p>}
     <div className="flex flex-wrap items-center gap-2">
       <Select aria-label={task.label} value={selected} onChange={e => setSelected(e.target.value)}>
         {choices.filter(c => c.vision === task.vision).map(c =>
           <option key={c.key} value={c.key}>{c.channel} · {c.model || "未配置模型"}（{c.key}）</option>)}
-        <option value="__default">恢复默认设置</option>
+        <option value="__default">{task.key === "financing" ? "沿用分类与事实抽取" : "恢复默认设置"}</option>
       </Select>
       <Button disabled={busy || (selected === task.current.model && task.current.source === "admin")} onClick={() => setConfirm(true)}>保存任务模型</Button>
     </div>

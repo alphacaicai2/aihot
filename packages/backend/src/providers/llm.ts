@@ -105,6 +105,8 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   maxTokens?: number;
   attemptTag?: string;
   timeoutMs?: number;
+  /** The batch input and prompt stay immutable across task model switches. */
+  reuseAcrossModels?: boolean;
   /** Comparisons/benchmarks can require the chosen model without automatic substitution. */
   fallback?: boolean;
   /** false: the model answers in its own text format (no JSON mode); `parse` turns it into the schema's input. */
@@ -171,6 +173,7 @@ function requestFor<S extends z.ZodType>(opts: ChatJsonOptions<S>, spec: ModelSp
     identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null },
     requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens },
     attemptTag: opts.attemptTag,
+    reuseSubjectVersion: opts.reuseAcrossModels ? opts.promptVersion : undefined,
   };
 }
 

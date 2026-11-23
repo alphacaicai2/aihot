@@ -105,7 +105,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                 <span className="inline-flex flex-wrap items-center gap-2">
                   {c.label}
                   <span className="font-mono text-[12px] font-normal text-ink-3">{active.length ? active.map(choice => modelName(choice.key)).join(" / ") : "当前模型不可用"}</span>
-                  <Badge tone={c.current.source === "admin" ? "accent" : "muted"}>{SOURCE_LABEL[c.current.source]}</Badge>
+                  <Badge tone={c.current.source === "admin" ? "accent" : "muted"}>{c.key === "financing" && c.current.source === "inherited" ? "沿用分类与事实抽取" : SOURCE_LABEL[c.current.source]}</Badge>
                 </span>
               }
               pad={false}

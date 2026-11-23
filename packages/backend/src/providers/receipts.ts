@@ -57,6 +57,8 @@ export interface ReceiptRequest {
   identity: unknown;
   /** Stored for diagnosis; must not contain secrets. */
   requestSummary?: Record<string, unknown>;
+  /** Immutable work may reuse a receipt for this subject and prompt version across model switches. */
+  reuseSubjectVersion?: string;
   /** Distinguishes an explicit re-run (e.g. admin "re-evaluate") from recovery of the same request. */
   attemptTag?: string;
 }
@@ -113,8 +115,16 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   const claimed = await sql.begin(async (tx) => {
     // Serialise budget checks per service so concurrent workers cannot overshoot.
     await tx`SELECT pg_advisory_xact_lock(hashtext(${"budget:" + req.service}))`;
+    let sameWork = tx`false`;
+    if (req.reuseSubjectVersion && req.subject) {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${JSON.stringify([req.purpose, req.subject, req.reuseSubjectVersion])}))`;
+      sameWork = tx`(purpose = ${req.purpose} AND subject = ${req.subject}
+        AND request->>'promptVersion' = ${req.reuseSubjectVersion} AND status <> 'failed')`;
+    }
     const [existing] = await tx<ReceiptRow[]>`
-      SELECT id, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
+      SELECT id, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} OR ${sameWork}
+      ORDER BY CASE WHEN status IN ('received','completed') THEN 0 WHEN status = 'failed' THEN 2 ELSE 1 END, id DESC
+      LIMIT 1 FOR UPDATE`;
     if (existing) {
       if (existing.status === "received" || existing.status === "completed") return { kind: "reuse" as const, row: existing };
       if (existing.status === "pending") {

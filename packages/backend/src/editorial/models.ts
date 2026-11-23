@@ -19,7 +19,8 @@ export const CAPABILITIES = {
   score: { label: "精选评分（两次独立评分，按信源分级门槛）", env: "SCORE_MODEL", default: "default", purposes: ["score_article"] },
   understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由、标签，能看图时看首图）", env: "UNDERSTAND_MODEL", default: "default", purposes: ["understand_article"] },
   summarize: { label: "标题摘要（其余文章的中文标题与摘要）", env: "SUMMARIZE_MODEL", default: "default", purposes: ["summarize_article"] },
-  structure: { label: "结构抽取（分类、标签、主体公司、事件事实，不写读者文字）", env: "STRUCTURE_MODEL", default: "default", purposes: ["structure_article"] },
+  structure: { label: "分类与事实抽取（分类、标签、主体公司、事件事实）", env: "STRUCTURE_MODEL", default: "default", purposes: ["structure_article"] },
+  financing: { label: "融资数据抽取", env: "STRUCTURE_MODEL", default: "default", purposes: ["financing_extract"] },
   group: { label: "事件归组（新报道与候选事实的关系：同一次发生、同一事件的进展、无关；被同一篇报道连起来的两个事件是否同一事件）", env: "GROUP_MODEL", default: "default", purposes: ["group_article", "group_signal", "group_story"] },
   groupReview: { label: "归组复核（相似度不高的合并、两个事件的合并，写入前再读一遍；最好换一家模型）", env: "GROUP_REVIEW_MODEL", default: "default", purposes: ["group_review", "group_story_review"] },
   digest: { label: "事件综述", env: "DIGEST_MODEL", default: "default", purposes: ["story_digest"] },
@@ -45,21 +46,28 @@ export function invalidateModelCache() {
   cache = null;
 }
 
-/** The model a capability uses now: admin switch, else environment, else the code default. */
-export async function modelFor(capability: CapabilityKey): Promise<string> {
-  const c: Capability = CAPABILITIES[capability];
-  const chosen = (await overrides())[capability] ?? process.env[c.env] ?? c.default;
-  return MODELS[chosen] ? chosen : c.default;
+interface ModelChoice {
+  model: string;
+  source: "admin" | "env" | "default" | "inherited";
 }
 
-/** Where the current choice comes from, for the admin page. */
-export async function modelSources(): Promise<Record<string, { model: string; source: "admin" | "env" | "default" }>> {
-  const o = await overrides();
-  const out: Record<string, { model: string; source: "admin" | "env" | "default" }> = {};
-  for (const [key, c] of Object.entries(CAPABILITIES) as Array<[string, Capability]>) {
-    if (o[key]) out[key] = { model: o[key]!, source: "admin" };
-    else if (process.env[c.env] && MODELS[process.env[c.env]!]) out[key] = { model: process.env[c.env]!, source: "env" };
-    else out[key] = { model: c.default, source: "default" };
+function effectiveChoice(capability: CapabilityKey, saved: Record<string, string>): ModelChoice {
+  if (saved[capability]) return { model: saved[capability], source: "admin" };
+  if (capability === "financing") {
+    return { model: effectiveChoice("structure", saved).model, source: "inherited" };
   }
-  return out;
+  const c = CAPABILITIES[capability];
+  const env = process.env[c.env];
+  return env && MODELS[env] ? { model: env, source: "env" } : { model: c.default, source: "default" };
+}
+
+export async function modelFor(capability: CapabilityKey): Promise<string> {
+  return effectiveChoice(capability, await overrides()).model;
+}
+
+/** The admin pages report the same effective choice the worker uses. */
+export async function modelSources(): Promise<Record<string, ModelChoice>> {
+  const saved = await overrides();
+  const keys = Object.keys(CAPABILITIES) as CapabilityKey[];
+  return Object.fromEntries(keys.map(key => [key, effectiveChoice(key, saved)]));
 }

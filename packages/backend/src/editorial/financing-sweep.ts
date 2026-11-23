@@ -75,9 +75,9 @@ export async function runFinancingBatch() {
       try { recovered = FinancingBatchAnswer.parse(JSON.parse(stored.content)); } catch { /* provider parser can retry malformed JSON */ }
     }
     const res = recovered && stored ? {data:recovered, receiptId:stored.id} : await chatJson({
-      model: await modelFor("structure"), fallback: false, purpose:"financing_extract", subject,
+      model: await modelFor("financing"), fallback: false, purpose:"financing_extract", subject,
       promptVersion: version, system, user: JSON.stringify(batch.material),
-      schema: FinancingBatchAnswer, maxTokens: multi ? 12000 : 5000, temperature: 0, timeoutMs: 120000,
+      schema: FinancingBatchAnswer, reuseAcrossModels: true, maxTokens: multi ? 12000 : 5000, temperature: 0, timeoutMs: 120000,
     });
     const byId = new Map<number, unknown>();
     for (const row of res.data.results) {
