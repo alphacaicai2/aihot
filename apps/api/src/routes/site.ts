@@ -1,5 +1,6 @@
 // First-party site API (/api/site/*). Not public, not versioned, never called /api/v2.
 // Reads through the same public read layer as v1; no cookies are read or set.
+import { loadFinancing } from "@aihot/backend/publication/financing";
 import { loadInvestorOptions } from "@aihot/backend/publication/investors";
 import { loadDiscoveries } from "@aihot/backend/publication/discoveries";
 import { FEATURES } from "@aihot/industry/features";
@@ -82,6 +83,14 @@ export async function parseFilters(q: Record<string, string>): Promise<FilterPar
 }
 
 export function registerSite(app: FastifyInstance) {
+  app.get("/api/site/financing/company", siteHandler(async (req, reply) => {
+    const q = looseQuery(req);
+    const name = q.name?.trim();
+    if (!name || name.length > 160) throw new BadRequest("invalid company name");
+    const history = await loadFinancing({ companyHistory: name, cursor: q.cursor });
+    if (!history.events.length) return sendProblem(req, reply, { status: 404, code: "not_found", detail: "company history not found" });
+    return sendJsonWithEtag(req, reply, history, { etagPrefix: "financing-company", cacheControl: "public, max-age=60" });
+  }));
   app.get("/api/site/financing/investors", siteHandler(async (req, reply) =>
     sendJsonWithEtag(req, reply, await loadInvestorOptions(), { etagPrefix: "financing-investors", cacheControl: "public, max-age=60" })));
   app.get("/api/site/discoveries", siteHandler(async (req, reply) => sendJsonWithEtag(req, reply, await loadDiscoveries(), { etagPrefix: "discoveries", cacheControl: "public, max-age=60" })));

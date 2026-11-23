@@ -17,6 +17,7 @@ export interface FinancingReport {
   additionalClaims?: FinancingClaim[];
 }
 export interface FinancingResponse {
+  historySummary?: { records: number; latestAt: string };
   events: Array<{ id: string; latestAt: string; reports: FinancingReport[]; reportCount: number; differingClaims: boolean }>;
   hasMore: boolean;
   nextCursor: string | null;

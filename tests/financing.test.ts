@@ -163,6 +163,20 @@ test("roundup deals paginate independently and company, investor and CSV filters
   assert.equal((await financing(new URLSearchParams({investor:"甲基金",investorMode:"exact"}).toString())).json().events.length, 1);
 });
 
+test("company history includes reviewed names, but excludes partial names and unrelated roundup deals", async () => {
+  const profile = (name: string) => app.inject({ method: "GET", url: "/api/site/financing/company?" + new URLSearchParams({ name }) });
+  assert.equal((await profile("Isomorphic")).statusCode, 404);
+  assert.equal((await profile("isomorphic labs")).json().historySummary.records, 1);
+  await sql`INSERT INTO research_entities(name, aliases, reviewed_by) VALUES ('镁伽科技', ARRAY['测试别名'], 'test')`;
+  try {
+    const result = await profile("测试别名");
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.json().historySummary.records, 1);
+    assert.equal(result.json().events[0].reports[0].claim.company, "镁伽科技");
+    assert.equal(result.json().events.length, 1);
+  } finally { await sql`DELETE FROM research_entities WHERE name='镁伽科技'`; }
+});
+
 test("one reviewed round shows every source when an investor matches only one report in a roundup", async () => {
   const rid = "1e181a1e-a31f-49fd-8224-15c0f91e4d23";
   const id = ids.get("ROUND")!;
@@ -224,6 +238,9 @@ test("two reviewed rounds in one passage preserve the source and independent sea
     const [url, company] = ["/api/v1/financing?", "镁伽"];
     const result = (await app.inject({method:"GET",url:url+new URLSearchParams({company})})).json();
     assert.deepEqual(new Set(result.events.map((e: {reports:{claim:{round:string}}[]}) => e.reports[0]!.claim.round)),new Set(["种子轮","A轮"]));
+    const history = (await app.inject({method:"GET",url:"/api/site/financing/company?" + new URLSearchParams({name:raw.c.company})})).json();
+    assert.equal(history.historySummary.records, 2);
+    assert.deepEqual(history.events.map((e: {id:string}) => e.id), result.events.map((e: {id:string}) => e.id));
     const only = (await app.inject({method:"GET",url:url+new URLSearchParams({company,investor:"A轮基金"})})).json();
     assert.equal(only.events.length,1);
     assert.equal(only.events[0].reports[0].id,article);
