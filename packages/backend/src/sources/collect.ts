@@ -1,6 +1,6 @@
 // Collection run for one source: fetch listing → filter → store material → enqueue processing.
 // A failed fetch never advances the success cursor; the source's health reflects consecutive failures.
-import { sql, type Tx } from "../db.ts";
+import { sql, type Db, type Tx } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { identityKeyFor, upsertMaterial } from "../content/materials.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
@@ -127,6 +127,10 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
   let revised = 0;
   let found = 0;
   let warning: string | null = null;
+  const superseded = async (): Promise<CollectResult> => {
+    await sql`UPDATE fetch_runs SET status='skipped', finished_at=now() WHERE id=${run!.id}`;
+    return { sourceId, status: "skipped", found, created: 0, revised: 0 };
+  };
   try {
     // A config entry this kind does not implement fails the run, visibly, instead of being ignored.
     const unsupported = unsupportedConfig(source.kind, source.config);
@@ -140,10 +144,6 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
       saved.validator.configHash === sha256(stableJson(source.config)) ? saved : undefined;
     let validator: RssRead["validator"] | undefined;
     delete nextCursor.rssBacklog;
-    const superseded = async (): Promise<CollectResult> => {
-      await sql`UPDATE fetch_runs SET status='skipped', finished_at=now() WHERE id=${run!.id}`;
-      return { sourceId, status: "skipped", found, created: 0, revised: 0 };
-    };
     if (backlog) {
       const entries = await readRssPage(sourceId, backlog);
       if (!entries) {
@@ -336,7 +336,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error).slice(0, 1000);
     const budget = error instanceof BudgetExceededError;
-    await sql`
+    const recordFailure = (db: Db) => db`
       UPDATE sources SET last_fetch_at = now(),
         fail_count = CASE WHEN ${budget} THEN fail_count ELSE fail_count + 1 END,
         last_error = ${message},
@@ -344,6 +344,16 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 ELSE LEAST(interval_minutes * (fail_count + 2), 360) END),
         updated_at = now()
       WHERE id = ${sourceId}`;
+    if (source.kind === "rss" && source.config.minifluxFeedId === undefined) {
+      const current = await sql.begin(async tx => {
+        if (!await lockSourceCursor(tx, source)) return false;
+        await recordFailure(tx);
+        return true;
+      });
+      if (!current) return superseded();
+    } else {
+      await recordFailure(sql);
+    }
     await sql`UPDATE fetch_runs SET status = 'failed', finished_at = now(), found_count = ${found}, new_count = ${created}, error = ${message} WHERE id = ${run!.id}`;
     return { sourceId, status: "failed", found, created, revised, error: message };
   }

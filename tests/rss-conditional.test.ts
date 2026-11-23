@@ -14,6 +14,7 @@ let version = 1;
 let broken = false;
 let redirectNew = false;
 const requests: Array<{ path: string; etag?: string; modified?: string }> = [];
+let lateFailure: (() => Promise<void>) | undefined;
 let burstBarrier: (() => Promise<void>) | undefined;
 const burstDate = new Date().toUTCString();
 const modified = 'Mon, 28 Sep 2026 10:00:00 GMT';
@@ -21,6 +22,11 @@ const server = http.createServer(async (req, res) => {
   const path = req.url ?? '/';
   requests.push({ path, etag: req.headers['if-none-match'], modified: req.headers['if-modified-since'] });
   if (path === '/redirect') { res.writeHead(302, { location: redirectNew ? '/new.xml' : '/old.xml' }); res.end(); return; }
+  if (path === '/racing.xml' && lateFailure) {
+    const pause = lateFailure; lateFailure = undefined;
+    await pause();
+    res.writeHead(200, { 'content-type': 'application/rss+xml' }); res.end('<bad/>'); return;
+  }
   if (path === '/burst.xml' && burstBarrier) await burstBarrier();
   const etag = path === '/modified.xml' ? undefined : path === '/feed.xml' ? `"v${version}"` : '"shared"';
   if ((etag && req.headers['if-none-match'] === etag) || (!etag && req.headers['if-modified-since'] === modified)) {
@@ -149,4 +155,20 @@ test('a failed first page is retried from the stored feed after the publisher dr
   } finally { broken = false; }
   assert.equal(requests.filter(r => r.path === '/retry.xml').length, before);
   assert.equal((await cursor(id)).rssBacklog, undefined);
+});
+
+test('an obsolete failed RSS fetch cannot postpone a newer successful poll', async () => {
+  const id = `rss-racing-${T}`;
+  await source(id, '/racing.xml');
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  lateFailure = () => { entered.resolve(); return finish.promise; };
+  const old = collectSource(id);
+  try {
+    await entered.promise;
+    assert.equal((await collectSource(id)).status, 'ok');
+  } finally { finish.resolve(); }
+  assert.equal((await old).status, 'skipped');
+  const [row] = await sql`SELECT health,fail_count,last_error FROM sources WHERE id=${id}`;
+  assert.deepEqual({ ...row }, { health: 'ok', fail_count: 0, last_error: null });
 });
