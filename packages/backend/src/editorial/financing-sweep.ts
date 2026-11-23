@@ -14,6 +14,17 @@ const unreviewedFields = sql`coalesce(an.output->'financing','null'::jsonb)='nul
   AND NOT EXISTS (SELECT 1 FROM financing_claim_reviews fc WHERE fc.article_id=an.article_id)
   AND NOT EXISTS (SELECT 1 FROM financing_round_sources fr WHERE fr.article_id=an.article_id)`;
 
+interface PendingArticle {
+  id: number;
+  title: string;
+  excerpt: string | null;
+  body: string | null;
+  daily: boolean;
+  roundup: boolean;
+  previous: number | null;
+  figures: Array<{text: string}> | null;
+}
+
 export async function pendingFinancing(db: Db, dailyStartId: number, approvedIds?: number[]) {
   const titles = sql`concat_ws(' ',p.title,p.original_title,src.title)`;
   const weekly = sql`${titles} ~* '(投融资|融资|创投|投资|风投|募资).{0,5}(周报|周刊|周览|周记|周汇总)|(每周|一周|本周).{0,6}(投融资汇总|融资盘点|融资汇总|融资速递)|(funding|venture|financing).{0,15}(weekly|week in review|roundup)|(weekly|week in).{0,15}(funding|venture|financing)'`;
@@ -28,10 +39,8 @@ export async function pendingFinancing(db: Db, dailyStartId: number, approvedIds
   const safeLegacyDigest = sql`an.output#>>'{financingReview,version}'='financing-investors-v1'
     AND an.output#>>'{financingReview,reason}'='no_single_transaction' AND ${unreviewedFields}
     AND EXISTS (SELECT 1 FROM receipts rc WHERE rc.subject='financing-batch:'||(an.output->>'financingBatch')
-      AND rc.id::text=an.output#>>'{financingReview,receiptId}' AND rc.purpose='financing_extract' AND rc.status='completed')
-    `;
-  return db<{id: number; title: string; excerpt: string | null; body: string | null; roundup: boolean; daily: boolean;
-    previous: number | null; figures: Array<{text:string}> | null}[]>`
+      AND rc.id::text=an.output#>>'{financingReview,receiptId}' AND rc.purpose='financing_extract' AND rc.status='completed')`;
+  return db<PendingArticle[]>`
     WITH candidates AS MATERIALIZED (
       SELECT p.article_id,p.analysis_id,p.category,p.title,p.original_title
       FROM publications p WHERE p.eligible AND p.visibility='public'
@@ -47,7 +56,9 @@ export async function pendingFinancing(db: Db, dailyStartId: number, approvedIds
     CROSS JOIN LATERAL (SELECT CASE WHEN a.revision=an.input_revision THEN a.title ELSE coalesce(r.title,p.original_title,'') END AS title,
       CASE WHEN a.revision=an.input_revision THEN a.excerpt END AS excerpt,
       CASE WHEN a.revision=an.input_revision THEN concat_ws(E'\\n',a.x_post->>'text',a.x_article->>'text',a.body_text) ELSE r.body_text END AS body) src
-    WHERE ${approvedIds ? sql`NOT (coalesce(an.output,'{}'::jsonb) ? 'financingBatch') AND ${unreviewedFields} AND` : sql``} (
+    WHERE ${approvedIds ? sql`NOT (coalesce(an.output,'{}'::jsonb) ? 'financingBatch') AND ${unreviewedFields}
+      AND NOT EXISTS (SELECT 1 FROM financing_extraction_batches b WHERE b.finished_at IS NULL
+        AND b.material @> jsonb_build_array(jsonb_build_object('id',an.id))) AND` : sql``} (
       (NOT (coalesce(an.output,'{}'::jsonb) ? 'financingBatch') AND (p.category='financing' OR ${weekly} OR ${daily}))
       OR (EXISTS (SELECT 1 FROM financing_extraction_batches old WHERE old.id=(an.output->>'financingBatch')::bigint AND old.finished_at IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM receipts rc WHERE rc.subject='financing-batch:'||(an.output->>'financingBatch')
@@ -73,7 +84,7 @@ async function enqueueFinancing() {
   });
 }
 
-async function enqueueRows(tx: Tx, rows: Awaited<ReturnType<typeof pendingFinancing>>, approvedHistory: boolean) {
+async function enqueueRows(tx: Tx, rows: PendingArticle[], approvedHistory: boolean) {
   const batches: FinancingMaterial[][] = [];
   let regular: FinancingMaterial[] = [];
   for (const row of rows) {

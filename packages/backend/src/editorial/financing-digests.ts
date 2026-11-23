@@ -30,6 +30,10 @@ export function digestEntries(title: string, excerpt: string | null, body: strin
   return unique.length >= 2 ? unique.map(heading => ({ heading })) : [];
 }
 
+const stageName = (s: string) => compact(s).replace(/[-‐‑–—]/g, "").replace(/轮融资$/, "轮");
+const amountValue = (s: string) => compact(s).split(/[（(]/)[0]!.replace(/(?:人民币|美元|欧元|韩元|港元|英镑|元)$/, "");
+const denomination = (s: string) => /人民币|美元|欧元|韩元|港元|英镑/.exec(s)?.[0];
+
 export function digestCoverage(entries: DigestEntry[], claims: {company: string; round: string | null; amountText: string | null}[]) {
   const used = new Set<number>();
   const missing = entries.filter(entry => {
@@ -38,12 +42,11 @@ export function digestCoverage(entries: DigestEntry[], claims: {company: string;
       if (used.has(i) || !claim.company) return false;
       const name = compact(claim.company);
       if (!entry.stage) return heading.includes(name);
-      const stage = (s: string) => compact(s).replace(/[-‐‑–—]/g, "").replace(/轮融资$/, "轮");
-      if (!heading.endsWith(name) || !claim.round || stage(claim.round) !== stage(entry.stage)) return false;
+      const words = entry.heading.split(/\s+/u);
+      if (!words.some((_, i) => compact(words.slice(i).join("")) === name)) return false;
+      if (!claim.round || stageName(claim.round) !== stageName(entry.stage)) return false;
       if (!entry.amount) return true;
-      const amount = (s: string) => compact(s).split(/[（(]/)[0]!.replace(/(?:人民币|美元|欧元|韩元|港元|英镑|元)$/, "");
-      const denomination = (s: string) => /人民币|美元|欧元|韩元|港元|英镑/.exec(s)?.[0];
-      if (!claim.amountText || amount(claim.amountText) !== amount(entry.amount)) return false;
+      if (!claim.amountText || amountValue(claim.amountText) !== amountValue(entry.amount)) return false;
       const sourceCurrency = denomination(entry.amount);
       const reportedCurrency = denomination(claim.amountText);
       return !sourceCurrency || !reportedCurrency || sourceCurrency === reportedCurrency;
