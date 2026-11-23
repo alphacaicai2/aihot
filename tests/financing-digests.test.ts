@@ -34,10 +34,12 @@ test("two deals from the original body retain their own amounts and rounds; abse
 test("the worker repairs confirmed v1 omissions only and serves new digests before explicitly approved historical reports", async () => {
   const sourceId = tag();
   await sql`INSERT INTO sources(id,name,kind) VALUES (${sourceId},'daily test','rss')`;
+  const joint = jointFinancingFixture();
+  let jointId = 0;
   const provider = await stub((_hit, request) => {
     const user = (JSON.parse(request.body) as {messages: Array<{role: string; content: string}>}).messages.find(m => m.role === "user")!;
     const [item] = JSON.parse(user.content) as Array<{id: number; historicalDigest?: boolean}>;
-    return { choices: [{ message: { content: JSON.stringify({ results: [{ id: item!.id, claims: item!.historicalDigest ? claims.slice(0,1) : claims }] }) } }] };
+    return { choices: [{ message: { content: JSON.stringify({ results: [{ id: item!.id, claims: item!.id === jointId ? joint.proposed : item!.historicalDigest ? claims.slice(0,1) : claims }] }) } }] };
   });
   Object.assign(process.env, { MODEL_CALLS_ENABLED: "true", STRUCTURE_MODEL: "deepseek-flash", DEEPSEEK_BASE_URL: provider.url, DEEPSEEK_API_KEY: "test-key" });
   async function article(body: string, category: string, legacy?: "completed" | "unknown" | "valid") {
@@ -130,6 +132,17 @@ test("the worker repairs confirmed v1 omissions only and serves new digests befo
     assert.deepEqual((await review(manualSection)).financingClaims[0].investors,[]);
     assert.deepEqual(await replayFinancingDigests([sectionId,manualSection],true),[]);
     assert.equal(provider.hits(), 3);
+    jointId = await article(joint.material.text,"industry");
+    assert.equal(await runFinancingBatch(),"completed");
+    const scheduled = (await review(jointId)).financingClaims;
+    assert.deepEqual(scheduled.map((c:{investors:string[]})=>c.investors),[["阿里"],[]]);
+    const jointReplay = await article(joint.material.text,"industry");
+    await finishedReceipt(jointReplay,"completed",[],{text:joint.material.text,claims:joint.proposed});
+    const result = await replayFinancingDigests([jointReplay],true);
+    assert.deepEqual(result.map(r=>r.id),[jointReplay]);
+    assert.deepEqual((await review(jointReplay)).financingClaims,scheduled);
+    assert.deepEqual(await replayFinancingDigests([jointReplay],true),[]);
+    assert.equal(provider.hits(),4);
   } finally {
     await provider.close();
     await sql`DELETE FROM articles WHERE source_id=${sourceId}`;
@@ -193,4 +206,24 @@ test("section receipts bind current investors to their company, financing and cl
   assert.equal(result.claims?.[0]?.amountBasis,"cumulative");
   const noHeadings={...material,text:text.replace(/【[^】]*】/g,""),digestEntries:[{heading:"甲科技完成融资"},{heading:"乙科技获得融资"}]};
   assert.deepEqual(financingBatchEntry(noHeadings,value).claims?.map(c=>c.investors),[[],[]]);
+});
+
+function jointFinancingFixture() {
+  const sentence="本轮B轮融资由红杉、腾讯、阿里联合参与。";
+  const historic="此前本轮B轮融资由旧方、错方联合参与。";
+  const stage="本轮A轮融资由先方、他方联合参与。";
+  const sibling="本轮B轮融资由邻方、串方联合参与。";
+  const body=deals[0]!.line+" "+sentence+" "+historic+" "+stage+" "+deals[1]!.line+" "+sibling;
+  const material={id:5,text:body,format:"rounds" as const,digestEntries:digestEntries(title,body,null)};
+  const proposed=[{...claims[0],evidence:"本轮B轮融资数亿人民币。",investors:[
+    {name:"阿里",quote:sentence},{name:"里",quote:sentence},{name:"错方",quote:historic.slice(2)},
+    {name:"他方",quote:stage},{name:"邻方",quote:sibling},
+  ]}, {...claims[1],evidence:"本轮B轮融资1亿人民币。",investors:[{name:"阿里",quote:sentence}]}];
+  return {material,proposed};
+}
+
+test("ordinary financing extraction verifies joint participation only in the same printed card", () => {
+  const {material,proposed}=jointFinancingFixture();
+  assert.deepEqual(financingBatchEntry(material,proposed).claims?.map(c=>c.investors),[["阿里"],[]]);
+  assert.deepEqual(financingBatchEntry({...material,digestEntries:undefined},proposed).claims?.map(c=>c.investors),[]);
 });

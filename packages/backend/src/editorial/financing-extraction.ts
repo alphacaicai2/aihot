@@ -144,6 +144,17 @@ function evidencePassage(text: string, evidence: string, investors: unknown) {
   return length ? evidence + separator + list.slice(0, length) : evidence;
 }
 
+// A printed card may state its participation as "本轮…融资由…联合参与". Require
+// the source sentence, its printed round and the exact institution in the named list.
+function jointFinancingParticipant(block: string, proof: string, name: string, round: string) {
+  const compact = (s:string) => s.normalize("NFKC").replace(/\s+/gu,"").toLowerCase();
+  const text = compact(proof);
+  const m = /^本轮([^。;,:、!?由]{0,24}?)融资由([^。;:!?]{1,240})联合参与[。.]?$/u.exec(text);
+  if (!m || (m[1] && m[1] !== compact(round)) || !m[2]!.split(/[、,]/u).includes(compact(name))) return false;
+  // Quoting only the positive portion of an intended, historical or negated sentence is insufficient.
+  return [...block.matchAll(/[^。；;！？!?\n]+[。；;！？!?]?/gu)].some(s=>compact(s[0])===text);
+}
+
 // A provider may quote just the card body. Its recipient is the immediately preceding
 // printed header, not a company from an adjacent transaction. Use only that card for all terms.
 function printedCardClaim(source: FinancingMaterial, item: Record<string, unknown>, markers: RegExpExecArray[]) {
@@ -173,7 +184,8 @@ function printedCardClaim(source: FinancingMaterial, item: Record<string, unknow
       const quote = sourceQuotes(block)(v.quote);
       if (!quote) continue;
       const proof = quote.split(/财务顾问|法律顾问|financial advis[oe]r/iu)[0]!;
-      if (sourceQuotes(proof)(v.name) && /投资|领投|跟投|参投|加注|invest|led by|participat/iu.test(proof)) {
+      if (sourceQuotes(proof)(v.name) && (/投资|领投|跟投|参投|加注|invest|led by|participat/iu.test(proof) ||
+          jointFinancingParticipant(block,proof,v.name,mark[2]!))) {
         investors.push({name:v.name,quote:proof});
       } else if (list) {
         // A translated/shortened name in the model quote can be corroborated by its exact
