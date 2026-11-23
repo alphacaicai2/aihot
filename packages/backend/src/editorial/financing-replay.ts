@@ -7,19 +7,34 @@ const key = (c: FinancingClaim) => JSON.stringify([c.company,c.kind,c.round,c.am
 
 /** Revalidate explicitly listed, finished structured financing digests from their original completed receipt.
  * No provider or scheduler is involved. Keep accepted field values and skip edited/reconciled reports. */
-export async function replayFinancingDigests(ids: number[], apply = false) {
+export function replayFinancingDigests(ids: number[], apply = false) {
+  return replayFinancing(ids,apply,false);
+}
+
+/** An explicit single-article repair requires an empty rejected review and one fully verified claim. */
+export function replayInvalidFinancingArticle(id: number, apply = false) {
+  return replayFinancing([id],apply,true);
+}
+
+async function replayFinancing(ids: number[], apply: boolean, singleInvalid: boolean) {
+  const version = singleInvalid ? "financing-transactions-v3" : "financing-digest-v1";
   if (!ids.length || ids.length > 150 || ids.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error("expected 1–150 positive analysis IDs");
   return sql.begin(apply ? "read write" : "read only", async tx => {
     const rows = await tx<{id:number; material:FinancingMaterial; receipt_id:number; content:string; prior:FinancingClaim[]}[]>`
       SELECT an.id,b.material->0 AS material,rc.id AS receipt_id,rc.response->'choices'->0->'message'->>'content' AS content,
-        coalesce(an.output->'financingClaims','[]'::jsonb) AS prior
+        coalesce(nullif(an.output->'financingClaims','null'::jsonb),'[]'::jsonb) AS prior
       FROM analyses an JOIN publications p ON p.analysis_id=an.id AND p.article_id=an.article_id
       JOIN financing_extraction_batches b ON b.id=(an.output->>'financingBatch')::bigint
       JOIN receipts rc ON rc.subject='financing-batch:'||b.id AND rc.id::text=an.output#>>'{financingReview,receiptId}'
       WHERE an.id IN ${tx(ids)} AND p.eligible AND p.visibility='public' AND b.finished_at IS NOT NULL
         AND jsonb_array_length(b.material)=1 AND b.material->0->>'id'=an.id::text
-        AND an.output#>>'{financingReview,version}'='financing-digest-v1'
-        AND rc.request->>'promptVersion'='financing-digest-v1' AND rc.purpose='financing_extract' AND rc.status='completed'
+        AND an.output#>>'{financingReview,version}'=${version}
+        ${singleInvalid ? tx`AND an.output#>>'{financingReview,reason}'='invalid_result'
+          AND coalesce(an.output->'financing','null'::jsonb)='null'::jsonb
+          AND coalesce(nullif(an.output->'financingClaims','null'::jsonb),'[]'::jsonb)='[]'::jsonb
+          AND NOT EXISTS (SELECT 1 FROM receipts other WHERE other.subject=rc.subject AND other.purpose=rc.purpose
+            AND other.status IN ('pending','unknown'))` : tx``}
+        AND rc.request->>'promptVersion'=${version} AND rc.purpose='financing_extract' AND rc.status='completed'
         AND rc.response->'choices'->0->>'finish_reason'='stop'
         AND NOT EXISTS (SELECT 1 FROM financing_claim_reviews f WHERE f.article_id=an.article_id)
         AND NOT EXISTS (SELECT 1 FROM financing_round_sources f WHERE f.article_id=an.article_id)
@@ -27,14 +42,22 @@ export async function replayFinancingDigests(ids: number[], apply = false) {
     const improved = [];
     for (const row of rows) {
       const {digestEntries, text} = row.material;
-      if (!row.content || (!digestEntries?.some(e => e.stage) && !financingSections(text,digestEntries).length)) continue;
+      if (!row.content) continue;
+      if (singleInvalid) {
+        if (row.material.format !== "rounds" || digestEntries?.length) continue;
+      } else if (!digestEntries?.some(e => e.stage) && !financingSections(text,digestEntries).length) continue;
       let parsed;
       try { parsed = FinancingBatchAnswer.parse(JSON.parse(row.content)); } catch { continue; }
       const entries = parsed.results.filter(r => r.id === row.id);
       if (entries.length !== 1) continue;
-      const result = financingBatchEntry(row.material,entries[0]!.claims);
+      const proposed = entries[0]!.claims;
+      if (singleInvalid && (parsed.results.length !== 1 || !Array.isArray(proposed) || proposed.length !== 1)) continue;
+      const result = financingBatchEntry(row.material,proposed);
       const claims = result.claims;
-      if (!claims || !("coverage" in result.review) || !result.review.coverage?.verified) continue;
+      if (!claims) continue;
+      const coverage = singleInvalid && claims.length === 1 && result.review.reason === "verified_transactions" ?
+        {verified:1,expected:1} : ("coverage" in result.review ? result.review.coverage : undefined);
+      if (!coverage?.verified) continue;
       // If a previously accepted identity or investor cannot be independently verified by
       // the new pass, retain the complete prior review. Never overwrite a human decision.
       if (!row.prior.every(old => claims.some(c => key(c) === key(old) && old.investors.every(i => c.investors.includes(i))))) continue;
@@ -47,9 +70,8 @@ export async function replayFinancingDigests(ids: number[], apply = false) {
         return { ...old, investors:c.investors };
       });
       if (kept.length <= row.prior.length && !addedInvestors) continue;
-      const coverage = result.review.coverage;
       const patch = { financing:kept.length===1 ? kept[0] : null, financingClaims:kept,
-        financingReview:{ ...result.review, version:"financing-digest-v1", receiptId:row.receipt_id } };
+        financingReview:{ ...result.review, version, receiptId:row.receipt_id } };
       if (apply) {
         const changed = await tx`UPDATE analyses an SET output=output || ${tx.json(patch as never)} WHERE id=${row.id}
           AND NOT EXISTS (SELECT 1 FROM financing_claim_reviews f WHERE f.article_id=an.article_id)

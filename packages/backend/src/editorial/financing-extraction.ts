@@ -56,11 +56,14 @@ function quoteIndex(text: string) {
     const char = match[1] ? entities[match[1].toLowerCase()]! :
       code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : raw;
     if (char === "\u00ad") { offset += raw.length; continue; }
-    const token = char.normalize("NFKC").toLowerCase();
+    // Fold an English word-internal right apostrophe, retaining offsets into the literal
+    // feed text (including the full width of an HTML entity). Quotation marks stay distinct.
+    const internalApostrophe = char === "’" && !gap && /[a-z]$/i.test(previous) && /[a-z]/i.test(text[offset + raw.length] ?? "");
+    const token = internalApostrophe ? "'" : char.normalize("NFKC").toLowerCase();
     if (/^\s+$/u.test(token) && char !== "\n") {
       gap = true;
     } else {
-      if (gap && /[a-z0-9]$/i.test(previous) && /^[a-z0-9]/i.test(token)) {
+      if (gap && /[a-z0-9'’]$/i.test(previous) && /^[a-z0-9'’]/i.test(token)) {
         folded += " ";
         offsets.push(offset - 1);
         widths.push(1);

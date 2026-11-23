@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { digestCoverage, digestEntries } from "@aihot/backend/editorial/financing-digests";
 import { financingBatchEntry } from "@aihot/backend/editorial/financing-extraction";
-import { replayFinancingDigests } from "@aihot/backend/editorial/financing-replay";
+import { replayFinancingDigests, replayInvalidFinancingArticle } from "@aihot/backend/editorial/financing-replay";
 import { historicalFinancingDigests, runFinancingBatch } from "@aihot/backend/editorial/financing-sweep";
 
 after(closeDb);
@@ -86,14 +86,15 @@ test("the worker repairs confirmed v1 omissions only and serves new digests befo
     assert.equal(partial.financingReview.coverage.missing.length, 1);
     assert.equal(await runFinancingBatch(), "idle");
     const normalized = financingBatchEntry({id:fix,text:original,format:"rounds",digestEntries:sections},claims).claims!;
-    async function finishedReceipt(id:number,status:string,prior=normalized.slice(0,0),section?:{text:string; claims:unknown[]}) {
+    async function finishedReceipt(id:number,status:string,prior=normalized.slice(0,0),section?:{text:string; claims:unknown[]; singleInvalid?:boolean}) {
+      const version = section?.singleInvalid ? "financing-transactions-v3" : "financing-digest-v1";
       const reply = claims.map((c,i)=>({...c,passage:undefined,evidence:deals[i]!.line.split("11-20 ")[1]}));
       const material = [{id,format:"rounds",digestEntries:section ? digestEntries(title,section.text,null) : sections,text:section?.text ?? original}];
       const [b] = await sql`INSERT INTO financing_extraction_batches(material,finished_at) VALUES (${sql.json(material)},now()) RETURNING id`;
       const [r] = await sql`INSERT INTO receipts(logical_key,purpose,subject,service,status,request,response)
-        VALUES (${tag()},'financing_extract',${"financing-batch:"+b!.id},'llm',${status},'{"promptVersion":"financing-digest-v1"}',
+        VALUES (${tag()},'financing_extract',${"financing-batch:"+b!.id},'llm',${status},${sql.json({promptVersion:version})},
         ${sql.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({results:[{id,claims:section?.claims ?? reply}]})}}]})}) RETURNING id`;
-      const out = {financingBatch:b!.id,financingClaims:prior,financingReview:{reason:"incomplete_roundup",version:"financing-digest-v1",receiptId:r!.id}};
+      const out = {financingBatch:b!.id,financingClaims:prior,financingReview:{reason:section?.singleInvalid ? "invalid_result" : "incomplete_roundup",version,receiptId:r!.id}};
       await sql`UPDATE analyses SET output=${sql.json(out as never)} WHERE id=${id}`;
     }
     const repair = await article(original,"financing");
@@ -142,6 +143,22 @@ test("the worker repairs confirmed v1 omissions only and serves new digests befo
     assert.deepEqual(result.map(r=>r.id),[jointReplay]);
     assert.deepEqual((await review(jointReplay)).financingClaims,scheduled);
     assert.deepEqual(await replayFinancingDigests([jointReplay],true),[]);
+    const text="a16z leads Embo&#8217;s round";
+    const candidate={company:"Embo",kind:"company_round",evidence:"a16z leads Embo's round",investors:[{name:"a16z",quote:"a16z leads Embo's round"}]};
+    const rejected=await article(text,"financing");
+    await finishedReceipt(rejected,"completed",[],{text,claims:[candidate],singleInvalid:true});
+    assert.deepEqual(await replayFinancingDigests([rejected]),[]);
+    const onePreview=await replayInvalidFinancingArticle(rejected);
+    assert.equal(onePreview.length,1);
+    assert.equal((await review(rejected)).financingReview.reason,"invalid_result");
+    assert.deepEqual(await replayInvalidFinancingArticle(rejected,true),onePreview);
+    const healed=await review(rejected);
+    assert.equal(healed.financingReview.version,"financing-transactions-v3");
+    assert.equal(healed.financingReview.receiptId,onePreview[0]!.receiptId);
+    assert.equal(healed.financing.evidence,text);
+    assert.deepEqual(healed.financing.investors,["a16z"]);
+    assert.deepEqual(await replayInvalidFinancingArticle(rejected,true),[]);
+    assert.deepEqual(await replayInvalidFinancingArticle(manual,true),[]);
     assert.equal(provider.hits(),4);
   } finally {
     await provider.close();

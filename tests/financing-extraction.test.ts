@@ -118,3 +118,17 @@ test("stored batches keep their original systems and receipt versions", () => {
   assert.ok(v3.system.startsWith(v2.system));
   assert.doesNotMatch(v2.system, /rounds array/);
 });
+
+
+test("English possessive apostrophes retain literal evidence offsets and cannot cross a quote boundary", () => {
+  const candidate = (evidence:string) => ({company:"Embo",kind:"company_round",evidence,investors:[{name:"a16z",quote:evidence}]});
+  for (const [printed,quoted] of [["&#8217;","'"],["&#x2019;","'"],["’","'"],["'","’"]]) {
+    const sentence="a16z leads Embo"+printed+"s round";
+    const {claims}=validateTransactions({id:1,text:"📰 Intro. "+sentence+". Next."},[candidate("a16z leads Embo"+quoted+"s round")]);
+    assert.equal(claims[0]?.evidence,sentence);
+    assert.deepEqual(claims[0]?.investors,["a16z"]);
+  }
+  for (const [printed,quoted] of [[" ’s","'s"],["’ s","'s"],["’s"," 's"],[" ‘fund’"," 'fund'"],["s","'s"]]) {
+    assert.deepEqual(validateTransactions({id:1,text:"a16z leads Embo"+printed+" round"},[candidate("a16z leads Embo"+quoted+" round")]).claims,[]);
+  }
+});
