@@ -45,7 +45,7 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
   const next = new URLSearchParams(query);
   if (results?.nextCursor) next.set("cursor", results.nextCursor);
   return (
-    <div className="mx-auto max-w-[1360px] pb-6">
+    <div className="pb-6">
       <ResearchHeader title="融资数据库" icon={<IconChart size={25} />}>按事件归并融资报道。金额、轮次与进展由模型从各篇报道提取，可展开核对原文。</ResearchHeader>
       <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-5 lg:grid-cols-[250px_minmax(0,1fr)] xl:grid-cols-[280px_minmax(0,1fr)] xl:gap-7">
         <FinancingFilters key={key} params={params} initialError={problem} />

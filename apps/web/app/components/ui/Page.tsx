@@ -3,18 +3,15 @@ import { Link } from "react-router";
 import { IconChevronRight } from "../icons";
 
 /**
- * The reading template, one of the site's two page widths (the other is the full-width feeds and
- * boards): a main column and an aside (300px, 340px on wide screens) in a container that fills a 16:9
- * screen and centres on wider ones (--page-max-reading); long text keeps its own reading measure
- * inside the main column.
- * On phones the aside follows the main column; the footer closes the whole frame.
+ * Keep the reading page on the shared frame. An optional aside follows the text on phones
+ * and occupies a separate column on desktop. The footer spans the whole frame.
  */
 export function ReadingLayout({ children, aside, footer, className = "", asideClassName = "" }: { children: ReactNode; aside?: ReactNode; footer?: ReactNode; className?: string; asideClassName?: string }) {
   return (
-    <div className={`mx-auto grid max-w-[var(--page-max-reading)] gap-8 pb-14 pt-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10 lg:pt-0 2xl:grid-cols-[minmax(0,1fr)_340px] ${className}`}>
+    <div className={`grid grid-cols-[minmax(0,1fr)] gap-8 pb-14 pt-5 lg:gap-10 lg:pt-0 ${aside ? "lg:grid-cols-[minmax(0,1fr)_300px] 2xl:grid-cols-[minmax(0,1fr)_340px]" : ""} ${className}`}>
       <div className="min-w-0">{children}</div>
       {aside && <aside className={`min-w-0 space-y-4 lg:sticky lg:top-6 lg:self-start ${asideClassName}`}>{aside}</aside>}
-      {footer && <div className="min-w-0 lg:col-span-2">{footer}</div>}
+      {footer && <div className="col-span-full min-w-0">{footer}</div>}
     </div>
   );
 }
@@ -28,7 +25,7 @@ export function ReadingLayout({ children, aside, footer, className = "", asideCl
  */
 export function ArticleLayout({ children, left, right, railTop = "top-6" }: { children: ReactNode; left?: ReactNode; right?: ReactNode; railTop?: string }) {
   return (
-    <div className="mx-auto grid max-w-[var(--page-max-reading)] grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_240px] lg:gap-x-12 2xl:grid-cols-[minmax(200px,1fr)_minmax(0,760px)_minmax(200px,1fr)] 2xl:gap-x-12">
+    <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_240px] lg:gap-x-12 2xl:grid-cols-[minmax(200px,1fr)_minmax(0,760px)_minmax(200px,1fr)] 2xl:gap-x-12">
       <aside className="hidden 2xl:block">
         <div className={`sticky ${railTop} max-w-[260px] space-y-8`}>{left}</div>
       </aside>

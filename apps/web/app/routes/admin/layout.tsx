@@ -73,7 +73,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
   return (
     <div className="flex min-h-dvh bg-bg">
       <NavigationProgress active={navigation.state === "loading"} />
-      <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 flex-col border-r border-line bg-surface px-3 py-4 lg:flex">
+      <aside className="sticky top-0 hidden h-dvh w-[var(--sidebar-width)] shrink-0 flex-col border-r border-line bg-surface px-3 py-4 lg:flex">
         <a href="/" className="mb-5 flex items-center gap-2 px-2">
           <RingMark className="size-6 text-accent" />
           <span className="text-[15px] font-semibold tracking-tight text-ink">{SITE.name} 后台</span>
@@ -102,12 +102,12 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur lg:hidden">
-          <div className="flex items-center gap-2 px-4 pt-3">
+          <div className="page-frame flex items-center gap-2 pt-3">
             <RingMark className="size-5 text-accent" />
             <span className="text-[14px] font-semibold text-ink">{SITE.name} 后台</span>
             {me.dev && <Badge variant="warning">开发</Badge>}
           </div>
-          <nav aria-label="后台导航" className="no-scrollbar flex gap-1 overflow-x-auto px-3 py-2">
+          <nav aria-label="后台导航" className="page-frame no-scrollbar flex gap-1 overflow-x-auto py-2">
             {flat.map((i) => <NavItem key={i.to} item={i} counts={counts} />)}
           </nav>
         </div>

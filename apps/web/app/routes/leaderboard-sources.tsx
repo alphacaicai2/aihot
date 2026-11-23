@@ -75,7 +75,7 @@ export default function LeaderboardSourcesPage() {
             <span className="mono text-[12px] text-ink-4">{g.sources.length}</span>
             <p className="text-[12.5px] text-ink-4">{g.blurb}</p>
           </div>
-          <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ul className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {g.sources.map((s) => (
               <li key={s.key}>
                 <Link to={`/leaderboard/sources/${s.key}`} className="card card-hover group flex h-full flex-col p-5">
@@ -83,8 +83,8 @@ export default function LeaderboardSourcesPage() {
                     <BrandMark brand={s.brand} size={30} />
                     <StatusChip status={s.status} />
                   </span>
-                  <span className="mt-3.5 text-[15px] font-bold leading-snug text-ink transition-colors group-hover:text-accent">{s.name}</span>
-                  <span className="mt-1.5 line-clamp-3 flex-1 text-[12.5px] leading-[1.7] text-ink-3">{s.description}</span>
+                  <span className="mt-3.5 wrap-anywhere text-[15px] font-bold leading-snug text-ink transition-colors group-hover:text-accent">{s.name}</span>
+                  <span className="mt-1.5 line-clamp-3 flex-1 wrap-anywhere text-[12.5px] leading-[1.7] text-ink-3">{s.description}</span>
                   <span className="mt-4 flex items-center justify-between gap-3 text-[11.5px] text-ink-4">
                     <span className="min-w-0 truncate">{s.operator}</span>
                     <span className="flex shrink-0 items-center gap-2.5">

@@ -209,7 +209,7 @@ export default function AboutPage() {
   }, [latest.length]);
 
   return (
-    <div className="mx-auto max-w-[var(--page-max-reading)] pb-14 pt-6 lg:pt-3">
+    <div className="pb-14 pt-5 lg:pt-0">
       <header className="grid items-end gap-8 lg:grid-cols-[minmax(0,1fr)_auto]">
         <div>
           <Kicker>{ABOUT.kicker}</Kicker>

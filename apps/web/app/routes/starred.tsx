@@ -66,7 +66,7 @@ export default function StarredPage() {
   const action = "text-[12.5px] text-ink-3 transition-colors hover:text-accent";
   return (
     <div className="pb-12">
-      <header className="flex flex-col gap-2 pb-4 pt-5 sm:flex-row sm:items-start sm:justify-between lg:pt-1">
+      <header className="flex flex-col gap-2 pb-4 pt-5 sm:flex-row sm:items-start sm:justify-between lg:pt-0">
         <div>
           <h1 className="text-[24px] font-semibold leading-[1.3] text-ink">收藏</h1>
           <p className="mt-1.5 text-[13px] text-ink-3">本机收藏的 {SITE.name} 内容，适合稍后阅读和回看。</p>

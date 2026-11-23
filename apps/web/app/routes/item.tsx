@@ -246,7 +246,7 @@ export default function ItemPage() {
   );
 
   return (
-    <div className="mx-auto max-w-[var(--page-max-reading)] pb-8">
+    <div className="pb-8">
       {item.body && <ReadingProgress />}
 
       {/* Phones: a sticky bar with back, 收藏, the original, share and more. Desktop puts these in the rails. */}

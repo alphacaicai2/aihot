@@ -40,7 +40,7 @@ function SideLink({ item, dot }: { item: NavItem; dot: boolean }) {
 export function Sidebar({ changelogVersion }: { changelogVersion: string | null }) {
   const dot = useChangelogDot(changelogVersion);
   return (
-    <aside className="sticky top-0 hidden h-dvh w-[184px] shrink-0 flex-col border-r border-line bg-sidebar px-3 pb-4 pt-5 xl:w-[204px] lg:flex">
+    <aside className="sticky top-0 hidden h-dvh w-[var(--sidebar-width)] shrink-0 flex-col border-r border-line bg-sidebar px-3 pb-4 pt-5 lg:flex">
       <Link to="/" className="mb-2 flex h-12 shrink-0 items-center px-2 text-ink" aria-label={`${SITE.name} 首页`}>
         <Wordmark size={21} />
       </Link>

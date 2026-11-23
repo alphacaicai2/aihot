@@ -113,13 +113,24 @@
   --breakpoint-2xl: 1536px;
 }
 
+/* Public and admin navigation share a content edge, including the centred tablet layout. */
+.page-frame {
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+  padding-inline: var(--page-gutter);
+}
+
+@media (width >= theme(--breakpoint-lg)) {
+  .page-frame { max-width: calc(var(--page-max-wide) + 2 * var(--page-gutter)); }
+}
+
 :root {
-  /* Page widths follow the screen's shape. Lists fill the screen up to 21:9
-     and centre beyond it (32:9); reading pages fill a 16:9 screen and centre on wider ones. A browser
-     window is shorter than its screen (tabs, address bar), so a 16:9 screen gives a window of about 2:1
-     and a 21:9 screen one of about 2.7:1. 236px is the sidebar and the main area's padding. */
+  /* Cap the shared frame on ultrawide screens. Long text has its own measure inside it. */
   --page-max-wide: max(1200px, calc(270dvh - 236px));
-  --page-max-reading: max(1100px, calc(200dvh - 236px));
+  --page-gutter: 16px;
+  @media (width >= theme(--breakpoint-lg)) { --page-gutter: 28px; }
+  --sidebar-width: 180px;
   color-scheme: light;
   --foreground: var(--ink);
   --bg: #faf9f6;

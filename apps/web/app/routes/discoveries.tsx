@@ -17,7 +17,7 @@ export const headers = () => ({ "Cache-Control": "public, max-age=0, s-maxage=60
 
 export default function Discoveries({ loaderData: { items } }: Route.ComponentProps) {
   return (
-    <div className="mx-auto max-w-[1060px] pb-6">
+    <div className="pb-6">
       <ResearchHeader icon={<IconDoc size={25} />} title="一手发现">过去七天，本站跟踪的公开信源中，仅有一个来源报道的精选事件。</ResearchHeader>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-line pb-2">
         <h2 className="text-[18px] font-bold">近七天的发现 <span className="num ml-1 text-xs font-normal text-ink-3">本页 {items.length} 条</span></h2>

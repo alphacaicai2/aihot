@@ -182,7 +182,7 @@ export default function CodexResetPage() {
   const m = d.monitor;
   return (
     <div className="pb-8">
-      <header className="flex flex-col gap-1 pb-4 pt-5 lg:flex-row lg:items-end lg:justify-between lg:pt-1">
+      <header className="flex flex-col gap-1 pb-4 pt-5 lg:flex-row lg:items-end lg:justify-between lg:pt-0">
         <div>
           <h1 className="text-[24px] font-semibold leading-[1.3] text-ink">Tibo重置监控</h1>
           <p className="mt-1.5 text-[13px] text-ink-3">Codex 额度重置与重置卡发放：什么时候生效、给谁、Tibo 原话</p>

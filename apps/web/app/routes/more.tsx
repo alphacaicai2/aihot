@@ -59,8 +59,8 @@ export default function MorePage() {
   const root = useRouteLoaderData<typeof rootLoader>("root");
   const changelogDot = useChangelogDot(root?.changelogVersion ?? null);
   return (
-    <div className="mx-auto max-w-[var(--page-max-reading)] pb-8">
-      <h1 className="pb-4 pt-5 text-[22px] font-bold text-ink lg:pt-1">更多</h1>
+    <div className="pb-8">
+      <h1 className="pb-4 pt-5 text-[22px] font-bold text-ink lg:pt-0">更多</h1>
       <div className="space-y-3 lg:grid lg:grid-cols-2 lg:items-start lg:gap-4 lg:space-y-0 2xl:grid-cols-3">
         {GROUPS.map((g) => (
           <Group key={g.title} title={g.title}>

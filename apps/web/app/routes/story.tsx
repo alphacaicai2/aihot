@@ -193,8 +193,8 @@ export default function StoryPage() {
   };
 
   return (
-    <div className="mx-auto max-w-[var(--page-max-reading)] pb-10">
-      <nav aria-label="位置" className="flex items-center gap-2.5 pb-4 pt-5 text-[12px] text-ink-4 lg:pb-5 lg:pt-4">
+    <div className="pb-10">
+      <nav aria-label="位置" className="flex items-center gap-2.5 pb-4 pt-5 text-[12px] text-ink-4 lg:pb-5 lg:pt-0">
         <Link to="/hot" className="inline-flex items-center gap-1.5 transition-colors hover:text-ink">
           <IconArrowLeft size={15} /> 热点榜
         </Link>
