@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { digestCoverage, type DigestEntry } from "./financing-digests.ts";
 import type { FinancingClaim } from "@aihot/contracts/financing";
 
-export type FinancingMaterial = { id: number; text: string; previousBatch?: number; format?: "transactions" | "rounds" };
+export type FinancingMaterial = { id: number; text: string; previousBatch?: number; format?: "transactions" | "rounds"; digestEntries?: DigestEntry[]; replacesEmptyBatch?: number; historicalDigest?: boolean };
 const field = z.string().trim().min(1).max(160);
 const quote = z.string().trim().min(1).max(1600);
 const candidate = z.object({
@@ -29,6 +30,8 @@ When a single recipient announces several financings together, return ONE object
 Example: "Atlas completed its seed and Series A rounds, raising $50M combined. Its Series A raised $35M led by Oak." Use rounds [{ "round":"seed" }, { "round":"Series A", "terms":"Its Series A raised $35M led by Oak.", "amountText":"$35M", "amountBasis":"round", "investors":[{"name":"Oak","quote":"led by Oak"}] }], with "$50M" in the parent only. For a single financing use the ordinary claim fields, including all attributable investors. A round with several investors or both debt and equity is not automatically several rounds.`;
 
 export function financingBatchProtocol(source?: FinancingMaterial) {
+  if (source?.digestEntries?.length) return { version: "financing-digest-v1", multi: true,
+    system: roundInstructions + "\nCheck each source digest entry. For a printed card, use the recipient printed directly before the region marker in the source, its stated round and amount, and its own named investors. Use a contiguous original passage including the recipient and the terms; the region and date symbols are part of the original text. Headings may omit the recipient; use the corresponding body section. Never invent missing entries or terms." };
   switch (source?.format) {
     case "rounds": return { version: "financing-transactions-v3", system: roundInstructions, multi: true };
     case "transactions": return { version: "financing-transactions-v2", system: transactionInstructions, multi: true };
@@ -234,7 +237,13 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
 export function financingBatchEntry(source: FinancingMaterial, value: unknown) {
   if (source.format === "transactions" || source.format === "rounds") {
     const { claims, review } = validateTransactions(source, value);
-    return { claim: claims.length === 1 ? claims[0]! : null, claims, review };
+    const claim = claims.length === 1 ? claims[0]! : null;
+    if (source.digestEntries?.length) {
+      const coverage = digestCoverage(source.digestEntries, claims);
+      const reason = coverage.missing.length && review.reason !== "invalid_result" ? "incomplete_roundup" : review.reason;
+      return { claim, claims, review: { ...review, reason, coverage } };
+    }
+    return { claim, claims, review };
   }
   const { claim, ...review } = validateFinancing(source, value);
   return { claim, claims: undefined, review };
