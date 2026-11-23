@@ -127,6 +127,8 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     }
     found = candidates.length;
     candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
+    // Invalid upstream dates are unknown, including in baseline signatures, backfill and storage.
+    for (const c of candidates) if (c.publishedAt && !Number.isFinite(c.publishedAt.getTime())) c.publishedAt = null;
     if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
 
     // An opt-in subscription baseline keeps the unimported stock out of later live polls. A new

@@ -70,7 +70,7 @@ test("JSON HTML scoping excludes related stories and refuses missing or ambiguou
 
 test("article JSON extraction does not claim the existing JSON request-body option", () => {
   assert.deepEqual(unsupportedConfig("json_list", { url: "https://example.org/api", method: "POST", bodyJson: { query: "query { posts { title } }", variables: { limit: 10 } }, bodyExtractionJson: { urlTemplate: "https://example.org/posts/{slug}", path: "content", format: "html", bodySelector: ".copy-body" } }), []);
-  assert.deepEqual(unsupportedConfig("rss", { bodyExtractionJson: { typo: true } }), ["bodyExtractionJson.typo"]);
+  assert.deepEqual(unsupportedConfig("rss", { bodyExtractionJson: { ...rule, typo: true } }), ["bodyExtractionJson.typo"]);
 });
 
 test("Sanity article blocks preserve complete ordered prose, links and image captions without CMS metadata", () => {
@@ -112,5 +112,5 @@ test("native Markdown requires an explicit document response and never confirms 
   assert.equal(bodyDocumentUrl("https://example.org/insights/original", "https://example.org/articles/{slug}.md"), "https://example.org/articles/original.md");
   assert.equal(bodyDocumentUrl("https://example.org/insights/original", "https://example.org/{unknown}.md"), null);
   assert.deepEqual(unsupportedConfig("web_list", { bodyExtractionMarkdown: { urlTemplate: "https://example.org{path}.md" } }), []);
-  assert.deepEqual(unsupportedConfig("rss", { bodyExtractionMarkdown: { typo: true } }), ["bodyExtractionMarkdown.typo"]);
+  assert.deepEqual(unsupportedConfig("rss", { bodyExtractionMarkdown: { urlTemplate: "https://example.org{path}.md", typo: true } }), ["bodyExtractionMarkdown.typo"]);
 });
