@@ -5,6 +5,7 @@ import { sql } from "../db.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { republishKey } from "../jobs/publication.ts";
 import { normalizeUrl } from "../lib/url.ts";
+import { longFailedSource } from "../sources/health.ts";
 import { fetchJsonList } from "../sources/json-list.ts";
 import { fetchRss } from "../sources/rss.ts";
 import { assertSupportedConfig } from "../sources/config-keys.ts";
@@ -27,30 +28,32 @@ export interface SourceListFilters {
 }
 
 export async function listSources(f: SourceListFilters) {
+  const healthFilter = f.health === "long_failed" ? longFailedSource() : sql`(${f.health ?? null}::text IS NULL OR s.health = ${f.health ?? null})`;
   const page = Math.max(1, f.page ?? 1);
   const q = f.q?.trim() ? `%${f.q.trim()}%` : null;
   const rows = await sql`
     SELECT s.id, s.name, s.kind, s.tier, s.participation_mode, s.enabled, s.health, s.fail_count, s.interval_minutes,
-           s.last_ok_at, s.last_fetch_at, s.last_error, s.first_party, s.next_fetch_at,
+           s.last_ok_at, s.last_fetch_at, s.last_error, s.first_party, s.next_fetch_at, ${longFailedSource()} AS long_failed,
            (SELECT count(*)::int FROM articles a WHERE a.source_id = s.id AND a.discovered_at > now() - interval '7 days') AS items_7d,
            (SELECT count(*)::int FROM publications p WHERE p.source_id = s.id AND p.selected AND p.discovered_at > now() - interval '30 days') AS selected_30d
     FROM sources s
     WHERE (${q}::text IS NULL OR s.name ILIKE ${q} OR s.id ILIKE ${q} OR s.config::text ILIKE ${q})
       AND (${f.kind ?? null}::text IS NULL OR s.kind = ${f.kind ?? null})
-      AND (${f.health ?? null}::text IS NULL OR s.health = ${f.health ?? null})
+      AND ${healthFilter}
       AND (${f.mode ?? null}::text IS NULL OR s.participation_mode = ${f.mode ?? null})
       AND (${f.enabled ?? null}::text IS NULL OR s.enabled = (${f.enabled ?? null} = 'true'))
     ORDER BY s.enabled DESC, CASE s.health WHEN 'failing' THEN 0 WHEN 'degraded' THEN 1 ELSE 2 END, s.name
     LIMIT 100 OFFSET ${(page - 1) * 100}`;
-  const [totals] = await sql<{ total: number; enabled: number; failing: number; degraded: number }[]>`
+  const [totals] = await sql<{ total: number; enabled: number; failing: number; degraded: number; long_failed: number }[]>`
     SELECT count(*)::int AS total, count(*) FILTER (WHERE enabled)::int AS enabled,
-           count(*) FILTER (WHERE health = 'failing')::int AS failing, count(*) FILTER (WHERE health = 'degraded')::int AS degraded
+           count(*) FILTER (WHERE health = 'failing')::int AS failing, count(*) FILTER (WHERE health = 'degraded')::int AS degraded,
+           count(*) FILTER (WHERE ${longFailedSource()})::int AS long_failed
     FROM sources`;
   return { page, rows, totals };
 }
 
 export async function sourceDetail(id: string) {
-  const [source] = await sql`SELECT * FROM sources WHERE id = ${id}`;
+  const [source] = await sql`SELECT *, ${longFailedSource()} AS long_failed FROM sources WHERE id = ${id}`;
   if (!source) return null;
   const runs = await sql`SELECT id, started_at, finished_at, status, found_count, new_count, error, detail FROM fetch_runs WHERE source_id = ${id} ORDER BY started_at DESC LIMIT 30`;
   const items = await sql`

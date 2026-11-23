@@ -25,6 +25,7 @@ interface Source {
   enabled: boolean;
   health: string;
   fail_count: number;
+  long_failed: boolean;
   last_fetch_at: string | null;
   last_ok_at: string | null;
   last_error: string | null;
@@ -163,7 +164,7 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
           value={
             <span className="inline-flex items-center gap-2 text-[18px]">
               <Dot tone={s.enabled ? healthTone(s.health) : "muted"} />
-              {s.enabled ? HEALTH_LABEL[s.health] ?? s.health : "已暂停"}
+              {s.long_failed ? "长期失效" : s.enabled ? HEALTH_LABEL[s.health] ?? s.health : "已暂停"}
             </span>
           }
           hint={s.fail_count ? `连续失败 ${s.fail_count} 次` : `上次成功 ${s.last_ok_at ? bj(s.last_ok_at) : "—"}`}
@@ -172,6 +173,9 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
         <Stat label="近 7 天" value={num(stats.last7d)} />
         <Stat label="入选精选" value={num(stats.selected)} />
       </div>
+      {s.long_failed && <div className="mb-3 rounded-card bg-surface px-4 py-3 text-[13px] text-ink-2 ring-1 ring-line">
+        此信源已至少 7 天未成功采集，且连续失败至少 5 次。持续失败时每天复查一次，恢复后按原频率采集。可保存新地址后预览，也可以立即采集。
+      </div>}
       {s.last_error && s.health !== "ok" && <div className="mb-5 rounded-card bg-hot-soft px-4 py-3 text-[13px] text-hot ring-1 ring-hot/20">{s.last_error}</div>}
 
       {preview && (

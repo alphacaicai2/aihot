@@ -9,6 +9,7 @@ import { BudgetExceededError } from "../providers/receipts.ts";
 import { fetchRss, type RssRead } from "./rss.ts";
 import { allowed, fetchDetail, fetchWebList, type DetailNeed } from "./web-list.ts";
 import { unsupportedConfig } from "./config-keys.ts";
+import { longFailedSource } from "./health.ts";
 import { fetchJsonList } from "./json-list.ts";
 import { fetchXSearch, planXShards, readXSearch, shardHandle, shardQuery, SHARDABLE_SQL, tweetToCandidate, type XBacklog, type XRead } from "./x.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
@@ -341,7 +342,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         fail_count = CASE WHEN ${budget} THEN fail_count ELSE fail_count + 1 END,
         last_error = ${message},
         health = CASE WHEN ${budget} THEN health WHEN fail_count + 1 >= 5 THEN 'failing' ELSE 'degraded' END,
-        next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 ELSE LEAST(interval_minutes * (fail_count + 2), 360) END),
+        next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 WHEN ${longFailedSource(true)} THEN greatest(interval_minutes, 1440) ELSE LEAST(interval_minutes * (fail_count + 2), 360) END),
         updated_at = now()
       WHERE id = ${sourceId}`;
     if (source.kind === "rss" && source.config.minifluxFeedId === undefined) {

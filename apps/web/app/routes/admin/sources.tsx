@@ -15,6 +15,7 @@ interface SourceRow {
   enabled: boolean;
   health: string;
   fail_count: number;
+  long_failed: boolean;
   interval_minutes: number;
   last_ok_at: string | null;
   last_fetch_at: string | null;
@@ -28,7 +29,7 @@ interface SourceRow {
 interface SourcesData {
   page: number;
   rows: SourceRow[];
-  totals: { total: number; enabled: number; failing: number; degraded: number };
+  totals: { total: number; enabled: number; failing: number; degraded: number; long_failed: number };
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -61,7 +62,7 @@ export default function Sources({ loaderData }: Route.ComponentProps) {
             <Input name="q" defaultValue={sp.get("q") ?? ""} placeholder="名称、ID 或地址" aria-label="搜索信源" />
           </Form>
           <div className="flex flex-wrap items-center gap-3">
-            <FilterChips param="health" options={[{ value: "", label: "全部" }, { value: "failing", label: "失败" }, { value: "degraded", label: "不稳定" }, { value: "paused", label: "暂停" }]} />
+            <FilterChips param="health" options={[{ value: "", label: "全部" }, { value: "failing", label: "失败" }, { value: "long_failed", label: "长期失效", count: totals.long_failed }, { value: "degraded", label: "不稳定" }, { value: "paused", label: "暂停" }]} />
             <Select
               aria-label="类型"
               className="!w-auto"
@@ -117,13 +118,13 @@ export default function Sources({ loaderData }: Route.ComponentProps) {
               render: (r) => (
                 <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                   <Dot tone={r.enabled ? healthTone(r.health) : "muted"} />
-                  {r.enabled ? HEALTH_LABEL[r.health] ?? r.health : "已暂停"}
+                  {r.long_failed ? "长期失效" : r.enabled ? HEALTH_LABEL[r.health] ?? r.health : "已暂停"}
                   {r.fail_count > 0 && <span className="num text-[11.5px] text-ink-4">×{r.fail_count}</span>}
                 </span>
               ),
             },
             { key: "ok", label: "上次成功", render: (r) => <Time at={r.last_ok_at} /> },
-            { key: "interval", label: "频率", align: "right", render: (r) => `${r.interval_minutes} 分` },
+            { key: "interval", label: "频率", align: "right", render: (r) => r.long_failed ? <span>下次复查 <Time at={r.next_fetch_at} /></span> : `${r.interval_minutes} 分` },
             { key: "items", label: "7 天条目", align: "right", render: (r) => num(r.items_7d) },
             { key: "sel", label: "30 天精选", align: "right", render: (r) => num(r.selected_30d) },
           ]}
