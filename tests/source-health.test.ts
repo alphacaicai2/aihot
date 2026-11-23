@@ -9,9 +9,10 @@ import { collectSource } from "@aihot/backend/sources/collect";
 
 const id = `source-health-${tag()}`;
 let available = false;
-const server = http.createServer((_req, res) => {
-  res.writeHead(available ? 200 : 404, { "content-type": "application/json" });
-  res.end(available ? "[]" : "");
+const server = http.createServer((req, res) => {
+  const ok = available && req.url !== "/gone";
+  res.writeHead(ok ? 200 : 404, { "content-type": "application/json" });
+  res.end(ok ? "[]" : "");
 });
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -52,4 +53,15 @@ test("long-failed pull sources stay enabled for daily checks and resume their co
   assert.equal(recovered.fail_count, 0);
   assert.ok(Math.abs(+recovered.next_fetch_at - +recovered.last_fetch_at - 3600000) < 1000);
   assert.equal((await sql`SELECT count(*)::int AS n FROM fetch_runs WHERE source_id=${id}`)[0]!.n, 2);
+});
+
+test("a daily source keeps its normal interval after the first failure", async () => {
+  const daily = id + "-daily";
+  await sql`INSERT INTO sources (id,name,kind,config,interval_minutes)
+    VALUES (${daily},'daily feed','json_list',${sql.json({url: url + "/gone"})},1440)`;
+  assert.equal((await collectSource(daily)).status, "failed");
+  const [row] = await sql`SELECT fail_count, next_fetch_at - last_fetch_at = interval '1 day' AS daily
+    FROM sources WHERE id=${daily}`;
+  assert.equal(row?.fail_count, 1);
+  assert.equal(row?.daily, true);
 });

@@ -1,3 +1,4 @@
+import { modelUsage, type UsageRow } from "./model-usage.ts";
 import { modelDisplayOptions } from "./model-display.ts";
 // Admin "模型与评测": the model each capability uses and where that choice comes from,
 // the prompt versions in use, quality / latency / cost of the last days per model, the switch history
@@ -8,26 +9,6 @@ import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type
 import { MODELS } from "../providers/llm.ts";
 import { audit } from "./auth.ts";
 
-interface UsageRow {
-  purpose: string;
-  service: string;
-  model: string | null;
-  prompt_version: string | null;
-  calls: number;
-  ok: number;
-  failed: number;
-  unknown: number;
-  p50: number | null;
-  p95: number | null;
-  tokens_in: string | null;
-  tokens_out: string | null;
-  actual_cost: string | null;
-  actual_calls: number;
-  currency: string | null;
-  official_estimate: string | null;
-  estimated_calls: number;
-}
-
 export async function modelsOverview(days = 7, period: "rolling" | "today" | "yesterday" = "rolling") {
   const now = new Date();
   const bjDay = Math.floor((now.getTime() + 8 * 3600_000) / 86400_000) * 86400_000 - 8 * 3600_000;
@@ -35,23 +16,7 @@ export async function modelsOverview(days = 7, period: "rolling" | "today" | "ye
   const until = period === "yesterday" ? new Date(bjDay) : now;
   const [sources, usage, prices, history, benches] = await Promise.all([
     modelSources(),
-    sql<UsageRow[]>`
-      SELECT r.purpose, a.service, a.model, r.request->>'promptVersion' AS prompt_version, count(*)::int AS calls,
-             count(*) FILTER (WHERE a.status = 'received')::int AS ok,
-             count(*) FILTER (WHERE a.status = 'failed')::int AS failed,
-             count(*) FILTER (WHERE a.status = 'unknown')::int AS unknown,
-             percentile_disc(0.5) WITHIN GROUP (ORDER BY a.latency_ms) AS p50,
-             percentile_disc(0.95) WITHIN GROUP (ORDER BY a.latency_ms) AS p95,
-             sum((a.usage->>'prompt_tokens')::bigint) AS tokens_in, sum((a.usage->>'completion_tokens')::bigint) AS tokens_out,
-             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, a.currency,
-             count(a.cost) FILTER (WHERE a.cost_basis = 'actual')::int AS actual_calls,
-             sum(estimate_deepseek_v41_flash_cny(a.usage, a.started_at))
-               FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash')) AS official_estimate,
-             count(estimate_deepseek_v41_flash_cny(a.usage, a.started_at))
-               FILTER (WHERE a.model IN ('deepseek-v4.1-flash', 'deepseek-flash'))::int AS estimated_calls
-      FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
-      WHERE a.started_at >= ${since} AND a.started_at < ${until} AND a.origin = 'live' AND a.model IS NOT NULL
-      GROUP BY 1, 2, 3, 4, a.currency ORDER BY 1, 5 DESC`,
+    modelUsage(sql, since, until, false),
     sql<{ service: string; model: string; currency: string; input_per_mtok: string | null; output_per_mtok: string | null }[]>`
       SELECT service, model, currency, input_per_mtok, output_per_mtok FROM service_prices`,
     sql<{ at: Date; actor: string; subject: string; reason: string | null; before: unknown; after: unknown }[]>`

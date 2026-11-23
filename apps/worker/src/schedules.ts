@@ -1,3 +1,4 @@
+import { backfillModelUsage } from "@aihot/backend/admin/model-usage";
 import { refreshFinancingIndex } from "@aihot/backend/publication/financing-index";
 import { runFinancingBatch } from "@aihot/backend/editorial/financing-sweep";
 // Cron-style schedules (Asia/Shanghai). Each run is recorded in job_runs; missed slots run once.
@@ -38,6 +39,7 @@ interface Scheduled {
 const collecting = process.env.COLLECT_ENABLED !== "false";
 
 export const SCHEDULES: Scheduled[] = [
+  { name: "models.usage-backfill", cron: "* * * * *", run: backfillModelUsage },
   { name: "financing.index", cron: "* * * * *", run: refreshFinancingIndex },
   { name: "financing.extract", cron: "* * * * *", run: runFinancingBatch },
   { name: "content.sweep", cron: "*/5 * * * *", run: sweepUnprocessed },

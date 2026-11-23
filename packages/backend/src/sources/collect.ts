@@ -342,7 +342,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         fail_count = CASE WHEN ${budget} THEN fail_count ELSE fail_count + 1 END,
         last_error = ${message},
         health = CASE WHEN ${budget} THEN health WHEN fail_count + 1 >= 5 THEN 'failing' ELSE 'degraded' END,
-        next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 WHEN ${longFailedSource(true)} THEN greatest(interval_minutes, 1440) ELSE LEAST(interval_minutes * (fail_count + 2), 360) END),
+        next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 WHEN ${longFailedSource(true)} THEN greatest(interval_minutes, 1440) ELSE greatest(interval_minutes, LEAST(interval_minutes * (fail_count + 2), 360)) END),
         updated_at = now()
       WHERE id = ${sourceId}`;
     if (source.kind === "rss" && source.config.minifluxFeedId === undefined) {
