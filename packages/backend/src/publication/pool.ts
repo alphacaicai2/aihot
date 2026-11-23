@@ -27,7 +27,7 @@ const MAX_QUEUED_SEARCHES = Number(process.env.SEARCH_MAX_QUEUE || 8);
 let running = 0;
 const waiters: Array<() => void> = [];
 
-export async function withSearchCapacity<T>(fn: (db: Db) => Promise<T>): Promise<T> {
+export async function withSearchCapacity<T>(fn: (db: Db) => Promise<T>, repeatableRead = false): Promise<T> {
   if (running >= MAX_CONCURRENT_SEARCHES) {
     if (waiters.length >= MAX_QUEUED_SEARCHES) throw new SearchBusyError(5);
     await new Promise<void>((resolve, reject) => {
@@ -45,7 +45,7 @@ export async function withSearchCapacity<T>(fn: (db: Db) => Promise<T>): Promise
   }
   running += 1;
   try {
-    return await withCustomPlans(fn);
+    return await withCustomPlans(fn, undefined, repeatableRead);
   } catch (error) {
     if (["57014", "55P03"].includes(String((error as { code?: string }).code))) throw new SearchBusyError(5);
     throw error;

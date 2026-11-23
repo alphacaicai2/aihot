@@ -6,6 +6,7 @@ import { decodeCursor, encodeCursor, InvalidCursorError, queryBinding } from "..
 import { listedCondition } from "./items.ts";
 import { companyCondition, dealInvestorCondition, dealRows, financingClaims, namedDeal } from "./research.ts";
 import { financingInvestorNames } from "./investors.ts";
+import { financingRounds, type RoundSource } from "./financing-rounds.ts";
 import { withSearchCapacity } from "./pool.ts";
 
 export interface FinancingQuery { from?: string | null; to?: string | null; company?: string | null; investor?: string | null; investorExact?: boolean; cursor?: string | null; limit?: number }
@@ -23,34 +24,49 @@ export async function loadFinancing(query: FinancingQuery, now = new Date()): Pr
   const publicDeal = sql`${listedCondition(now)} AND p.eligible AND (p.category='financing' OR an.output ? 'financingClaims') AND ${namedDeal}`;
   return withSearchCapacity(async db => {
     const originals = query.investor?.trim() ? await financingInvestorNames(db, now, query.investor, !!query.investorExact) : [];
-    const groups = await db<{ id: string; latest: Date }[]>`
-      WITH matches AS (
-        SELECT ${key} AS id, max(p.timeline_at) AS latest ${joins}
-        WHERE ${publicDeal}
-          ${range ? sql`AND p.timeline_at >= ${range.start} AND p.timeline_at < ${range.end}` : sql``}
-          ${companyCondition(query.company, sql`lower(deal.claim->>'company')`)} ${dealInvestorCondition(query.investor, originals, query.investorExact)}
-        GROUP BY ${key})
-      SELECT * FROM matches ${cursor ? sql`WHERE (latest, id) < (${new Date(cursor.at)}, ${cursor.id})` : sql``}
-      ORDER BY latest DESC, id DESC LIMIT ${limit + 1}`;
+    type Member = RoundSource & { seq: number; timeline_at: Date; matches: boolean };
+    const sources = await db<Member[]>`
+      SELECT ${key} AS base_id, p.article_id, deal.seq, review.round_id AS reviewed_id,
+        p.timeline_at, p.published_at AS reported_at, deal.claim->>'company' AS company,
+        deal.claim->>'round' AS stage, deal.claim->>'amountText' AS amount, deal.claim->>'currency' AS currency,
+        deal.claim->>'kind' AS kind, deal.claim->>'amountBasis' AS basis, deal.claim->>'status' AS status,
+        (true ${range ? sql`AND p.timeline_at >= ${range.start} AND p.timeline_at < ${range.end}` : sql``}
+         ${companyCondition(query.company, sql`lower(deal.claim->>'company')`)}
+         ${dealInvestorCondition(query.investor, originals, query.investorExact)}) AS matches
+      ${joins} LEFT JOIN financing_round_sources review ON review.article_id=p.article_id
+        AND review.company=deal.claim->>'company' AND review.evidence=deal.claim->>'evidence'
+      WHERE ${publicDeal}
+      ORDER BY p.timeline_at DESC,p.article_id DESC,deal.seq`;
+    const groups = [];
+    for (const [id, members] of financingRounds(sources)) {
+      const matching = members.filter(m => m.matches);
+      if (!matching.length) continue;
+      const latest = Math.max(...matching.map(m => m.timeline_at.getTime()));
+      if (cursor && (latest > Date.parse(cursor.at) || (latest === Date.parse(cursor.at) && id >= cursor.id))) continue;
+      groups.push({ id, latest, members });
+    }
+    groups.sort((a,b) => b.latest - a.latest || (a.id < b.id ? 1 : -1));
     const page = groups.slice(0, limit);
     if (!page.length) return { events: [], hasMore: false, nextCursor: null };
-    const rows = await db<{ group_id: string; id: string; title: string; url: string; source_name: string; published_at: Date | null; claim: FinancingClaim; report_count: number }[]>`
-      WITH reports AS (SELECT ${key} AS group_id, p.article_id AS id, p.title, p.url, s.name AS source_name, p.published_at,
-        deal.claim, p.timeline_at,
-        row_number() OVER (PARTITION BY ${key} ORDER BY p.timeline_at DESC, p.article_id DESC) AS rn,
-        count(*) OVER (PARTITION BY ${key}) AS report_count
+
+    const articleIds = [...new Set(page.flatMap(g => g.members.map(m => m.article_id)))];
+    const details = await db<{ id: string; seq: number; title: string; url: string; source_name: string; published_at: Date | null; claim: FinancingClaim }[]>`
+      SELECT p.article_id AS id,deal.seq,p.title,p.url,s.name AS source_name,p.published_at,deal.claim
       ${joins} JOIN sources s ON s.id=p.source_id
-      WHERE ${publicDeal} AND ${key} IN ${sql(page.map(g => g.id))}
-      ) SELECT * FROM reports WHERE rn <= 50 ORDER BY timeline_at DESC, id DESC`;
-    const events = page.map(g => {
-      const reports: FinancingReport[] = rows.filter(r => r.group_id === g.id).map(r => ({ id: r.id, title: r.title, url: r.url,
-        sourceName: r.source_name, publishedAt: r.published_at?.toISOString() ?? null, claim: r.claim }));
+      WHERE p.article_id IN ${sql(articleIds)} AND ${publicDeal}`;
+    const reportsByKey = new Map(details.map(r => [r.id + ":" + r.seq, {
+      id: r.id, title: r.title, url: r.url, sourceName: r.source_name, publishedAt: r.published_at?.toISOString() ?? null, claim: r.claim,
+    }]));
+    const events = page.map(({ id, latest, members }) => {
+      members.sort((a,b) => b.timeline_at.getTime() - a.timeline_at.getTime() || b.article_id.localeCompare(a.article_id));
+      const reports: FinancingReport[] = members.map(m => reportsByKey.get(m.article_id + ":" + m.seq)!);
       const signatures = new Set(reports.map(r => JSON.stringify([r.claim.round, r.claim.amountText, r.claim.currency, r.claim.amountBasis, r.claim.status])));
-      return { id: g.id, latestAt: g.latest.toISOString(), reports, reportCount: Number(rows.find(r => r.group_id === g.id)?.report_count ?? 0), differingClaims: signatures.size > 1 };
+      return { id, latestAt: new Date(latest).toISOString(), reports, reportCount: reports.length, differingClaims: signatures.size > 1 };
     });
-    const last = page.at(-1)!;
-    return { events, hasMore: groups.length > limit, nextCursor: groups.length > limit ? encodeCursor("fin1", { at: last.latest.toISOString(), id: last.id, binding }) : null };
-  });
+    const hasMore = groups.length > limit;
+    const last = events.at(-1)!;
+    return { events, hasMore, nextCursor: hasMore ? encodeCursor("fin1", { at: last.latestAt, id: last.id, binding }) : null };
+  }, true);
 }
 
 /** CSV exports stay bounded to the same page and cannot execute spreadsheet formulas. */

@@ -163,6 +163,28 @@ test("roundup deals paginate independently and company, investor and CSV filters
   assert.equal((await financing(new URLSearchParams({investor:"甲基金",investorMode:"exact"}).toString())).json().events.length, 1);
 });
 
+test("one reviewed round shows every source when an investor matches only one report in a roundup", async () => {
+  const rid = "1e181a1e-a31f-49fd-8224-15c0f91e4d23";
+  const id = ids.get("ROUND")!;
+  const weekly = ids.get("WEEKLY")!;
+  try {
+    await sql`INSERT INTO financing_round_sources(article_id,company,evidence,round_id)
+      SELECT p.article_id,c->>'company',c->>'evidence',${rid}
+      FROM publications p JOIN analyses a ON a.id=p.analysis_id, jsonb_array_elements(a.output->'financingClaims') c
+      WHERE p.article_id=${id} OR (p.article_id=${weekly} AND c->>'company'='镁伽科技')`;
+    const url = "/api/v1/financing?limit=1&investor=" + encodeURIComponent("甲基金");
+    const {events,hasMore} = (await app.inject({method:"GET",url})).json();
+    assert.equal(hasMore,false);
+    assert.equal(events.length,1);
+    assert.equal(events[0].id,"round:" + rid);
+    assert.equal(events[0].reportCount,2);
+    assert.deepEqual(new Set(events[0].reports.map((r: {id:string}) => r.id)),new Set([id,weekly]));
+    const csv = (await app.inject({method:"GET",url:url + "&format=csv"})).body;
+    assert.equal(csv.split("\r\n").length,3);
+    assert.doesNotMatch(csv,/Isomorphic/);
+  } finally { await sql`DELETE FROM financing_round_sources WHERE round_id=${rid}`; }
+});
+
 test("site, public API and RSS filter financing while excluding product background and opinions", async () => {
   for (const url of ["/api/site/pool?category=financing", "/api/v1/items?mode=all&category=financing", "/feed/category/financing.xml"]) {
     const res = await app.inject({ method: "GET", url });

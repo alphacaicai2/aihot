@@ -1846,7 +1846,7 @@
       "get": {
         "operationId": "financing",
         "summary": "Financing events and source claims",
-        "description": "Returns only named financing transactions with source evidence. Roundups may contribute several events. Company and investor filters match the same transaction. Single-deal reports grouped by fact and recipient can include differing terms. CSV contains the current page only. No model calls occur on reads.",
+        "description": "Returns only named financing transactions with source evidence. Roundups may contribute several events. Company and investor filters match the same transaction. Multiple reports of one financing round share one event with all its public sources and their original terms. CSV contains the current page only. No model calls occur on reads.",
         "parameters": [
           {
             "name": "from",
@@ -3749,7 +3749,7 @@
                 },
                 "reportCount": {
                   "type": "integer",
-                  "description": "Total public reports in the event; reports contains at most the latest 50."
+                  "description": "Number of public source reports for this transaction. All are included in reports."
                 }
               }
             }
