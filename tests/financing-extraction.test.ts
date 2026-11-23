@@ -61,3 +61,15 @@ test("roundup input preserves named recipients deep inside the original report",
   const original = "本周市场简讯。".repeat(1250) + "本周海外榜首是 Isomorphic Labs。";
   assert.match(financingText("全球投融资周报", null, original, true), /Isomorphic Labs/);
 });
+
+test("stored answers without a passage use the named evidence and its immediately adjacent investor list", () => {
+  const evidence = "甲科技 完成E轮融资，融资金额近2亿美元";
+  const investors = "投资方：甲基金 乙创投";
+  const source = { id: 1, text: evidence + " " + investors + "。丙公司获得50亿美元融资，投资方：丙基金。" };
+  const claim = { company: "甲科技", evidence, kind: "company_round", round: "E轮", amountText: "近2亿美元",
+    investors: [{name:"甲基金",quote:investors}, {name:"丙基金",quote:"投资方：丙基金"}] };
+  const result = validateTransactions(source, [claim]);
+  assert.equal(result.claims[0]?.amountText, "近2亿美元");
+  assert.deepEqual(result.claims[0]?.investors, ["甲基金"]);
+  assert.equal(validateTransactions(source,[{...claim,amountText:"50亿美元"}]).claims[0]?.amountText,null);
+});

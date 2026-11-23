@@ -112,6 +112,23 @@ export function validateFinancing(source: FinancingMaterial, value: unknown) {
   return { claim, investorEvidence, reason: investorEvidence.length ? "named_investors" : "no_verified_investor" };
 }
 
+// Some providers return only the named evidence quote. Keep it as the transaction
+// boundary, extending it only for a verbatim investor list immediately following it.
+function evidencePassage(text: string, evidence: string, investors: unknown) {
+  const end = text.indexOf(evidence) + evidence.length;
+  const tail = text.slice(end, end + 1600 - evidence.length);
+  const separator = /^[\s，,。.;；：:]*/u.exec(tail)![0];
+  const list = tail.slice(separator.length);
+  if (!/^(?:投资方|投资机构|领投方|本轮(?:由|融资由)|investors?\s*:|led by)/iu.test(list) || !Array.isArray(investors)) return evidence;
+  let length = 0;
+  for (const investor of investors) {
+    if (typeof investor?.quote === "string" && list.startsWith(investor.quote)) {
+      length = Math.max(length, investor.quote.length);
+    }
+  }
+  return length ? evidence + separator + list.slice(0, length) : evidence;
+}
+
 /** Scope every field to the cited transaction before matching quotes, even when the
  * article contains several companies or several rounds of the same company. */
 export function validateTransactions(source: FinancingMaterial, value: unknown) {
@@ -122,7 +139,9 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
   let rejected = 0;
   const candidates = Array.isArray(value) ? value : [];
   for (const item of candidates) {
-    const passage = typeof item?.passage === "string" && item.passage.length <= 1600 && present(item.passage);
+    const quoted = typeof item?.passage === "string" && item.passage.length <= 1600 && present(item.passage);
+    const evidence = typeof item?.evidence === "string" && item.evidence.length <= 1600 && present(item.evidence);
+    const passage = quoted || (evidence && evidencePassage(source.text, evidence, item.investors));
     const result = passage && validateFinancing({ id: source.id, text: passage }, item);
     if (!result || !result.claim || !sourceQuotes(result.claim.evidence)(result.claim.company) ||
         /[；;丨|]|(?:周报|月报)$/.test(result.claim.company)) {
