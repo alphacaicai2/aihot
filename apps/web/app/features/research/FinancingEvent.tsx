@@ -3,6 +3,7 @@ import type { FinancingClaim, FinancingReport, FinancingResponse } from "@aihot/
 import { beijingDate } from "@aihot/contracts/time";
 import { Badge } from "../../components/ui/Badge";
 import { IconChevronDown, IconExternal } from "../../components/icons";
+import { financingCompanyPath } from "../../lib/financing-navigation";
 
 const statusLabel = { planned: "计划中", ongoing: "进行中", announced: "已宣布", closed: "已完成", unknown: "状态未明确" };
 const basisLabel = { round: "本轮金额", cumulative: "累计金额", target: "目标金额", unknown: "金额口径未明确" };
@@ -15,8 +16,8 @@ function Recipient({ claim }: { claim: FinancingClaim }) {
   const { pathname, search } = useLocation();
   if (pathname !== "/financing" && pathname !== "/financing/") return <>{claim.company}</>;
   if (claim.kind !== "company_round") return <>{claim.company}</>;
-  return <Link to={`/financing/company?${new URLSearchParams({ name: claim.company })}`}
-    state={{ listSearch: search }} className="text-accent underline decoration-accent/40 underline-offset-4 hover:decoration-current"
+  return <Link to={financingCompanyPath(claim.company, search)}
+    className="text-accent underline decoration-accent/40 underline-offset-4 hover:decoration-current"
     aria-label={`查看${claim.company}的融资历史`}>{claim.company}</Link>;
 }
 

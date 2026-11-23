@@ -10,15 +10,7 @@ import { ResearchHeader } from "../features/research/ResearchHeader";
 import { dateProblem } from "../lib/date-range";
 import { FinancingFilters } from "../features/research/FinancingFilters";
 import { FinancingEvent } from "../features/research/FinancingEvent";
-
-function financingQuery(params: URLSearchParams) {
-  const query = new URLSearchParams();
-  for (const key of ["company", "investor", "investorMode", "from", "to", "cursor"]) {
-    const value = params.get(key)?.trim();
-    if (value) query.set(key, value);
-  }
-  return query;
-}
+import { financingQuery } from "../lib/financing-navigation";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireMembership(request, "financing");

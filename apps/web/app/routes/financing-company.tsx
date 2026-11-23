@@ -1,4 +1,4 @@
-import { data, Link, useLocation } from "react-router";
+import { data, Link } from "react-router";
 import { beijingDate } from "@aihot/contracts/time";
 import type { FinancingResponse } from "@aihot/contracts/financing";
 import type { Route } from "./+types/financing-company";
@@ -7,6 +7,7 @@ import { buttonClass } from "../components/ui/Controls";
 import { FinancingEvent } from "../features/research/FinancingEvent";
 import { ApiError } from "../lib/api.server";
 import { memberGet, offerMembership, privateHeaders } from "../lib/membership.server";
+import { financingCompanyPath, financingListSearch } from "../lib/financing-navigation";
 import { listPath, pageMeta } from "../lib/seo";
 
 const path = "/financing/company";
@@ -17,7 +18,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const api = listPath("/api/site/financing/company", { name, cursor: params.get("cursor") });
   try {
     const history = await memberGet<FinancingResponse>(request, api);
-    return { name, history };
+    return { name, history, listSearch: financingListSearch(params) };
   } catch (error) {
     if (request.signal.aborted) throw error;
     const status = error instanceof ApiError ? error.status : 503;
@@ -35,10 +36,8 @@ export const meta: Route.MetaFunction = ({ loaderData }) => pageMeta({
 export const headers = () => privateHeaders;
 
 export default function FinancingCompany({ loaderData }: Route.ComponentProps) {
-  const { name, history } = loaderData;
+  const { name, history, listSearch } = loaderData;
   const summary = history.historySummary;
-  const { state } = useLocation();
-  const listSearch = typeof state?.listSearch === "string" && state.listSearch.startsWith("?") ? state.listSearch : "";
   return <div className="mx-auto max-w-3xl pb-6">
     <Link to={{ pathname: "/financing", search: listSearch }} className="mb-3 inline-flex min-h-10 items-center gap-1 text-sm text-ink-3 hover:text-accent">
       <IconArrowLeft size={15} /> 返回融资数据库
@@ -54,7 +53,7 @@ export default function FinancingCompany({ loaderData }: Route.ComponentProps) {
       <p className="mb-3 mt-1 text-[13px] text-ink-3">按最近报道时间排列，可展开查看每笔记录的来源。</p>
       <div className="grid gap-2.5">{history.events.map(event => <FinancingEvent key={event.id} event={event} history />)}</div>
       {history.nextCursor && <div className="mt-5 text-center">
-        <Link to={listPath(path, { name, cursor: history.nextCursor })} state={{ listSearch }} className={buttonClass("secondary", "lg")}>
+        <Link to={financingCompanyPath(name, listSearch, history.nextCursor)} className={buttonClass("secondary", "lg")}>
           更早记录 <IconArrowRight size={15} />
         </Link>
       </div>}
