@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { financingText, validateFinancing } from "../packages/backend/src/editorial/financing-extraction.ts";
+import { financingText, validateFinancing, validateTransactions } from "../packages/backend/src/editorial/financing-extraction.ts";
 
 test("only institution names with supporting quotes in this report are published", () => {
   const text = "星辰完成近亿元A轮融资。此轮由蓝海创投领投。";
@@ -40,4 +40,24 @@ test("an HTML-encoded source keeps a literal attribution for a readable investor
 test("a lead investor at the end of a long feed excerpt reaches extraction", () => {
   const excerpt = "Introduction. ".repeat(450) + "FirstMark is excited to lead Fragment’s Series A.";
   assert.match(financingText("Our investment in Fragment",excerpt,null),/FirstMark is excited to lead/);
+});
+
+test("a roundup claim can only use fields from its own named transaction passage", () => {
+  const first = "甲公司获50亿美元投资。";
+  const second = "镁伽科技完成近2亿美元E轮融资，乙基金领投。";
+  const source = { id: 1, text: first + second };
+  const claim = { company: "甲公司", passage: first, evidence: first, kind: "company_round", amountText: "近2亿美元",
+    round: "E轮", investors: [{ name: "乙基金", quote: "乙基金领投" }] };
+  const { claims, review } = validateTransactions(source, [claim, claim,
+    { ...claim, company: "镁伽科技" }, { ...claim, evidence: second }]);
+  assert.equal(claims.length, 1);
+  assert.equal(review.rejected, 2);
+  assert.equal(claims[0]?.amountText, null);
+  assert.equal(claims[0]?.round, null);
+  assert.deepEqual(claims[0]?.investors, []);
+});
+
+test("roundup input preserves named recipients deep inside the original report", () => {
+  const original = "本周市场简讯。".repeat(1250) + "本周海外榜首是 Isomorphic Labs。";
+  assert.match(financingText("全球投融资周报", null, original, true), /Isomorphic Labs/);
 });

@@ -1846,7 +1846,7 @@
       "get": {
         "operationId": "financing",
         "summary": "Financing events and source claims",
-        "description": "Reads current public eligible financing reports, grouped by fact (not by story, which may span rounds). Matching a company or investor selects events, then returns their public source reports, including differing terms. Missing structured claims are null. CSV contains the current page only. No model calls occur on reads.",
+        "description": "Returns only named financing transactions with source evidence. Roundups may contribute several events. Company and investor filters match the same transaction. Single-deal reports grouped by fact and recipient can include differing terms. CSV contains the current page only. No model calls occur on reads.",
         "parameters": [
           {
             "name": "from",
@@ -3742,14 +3742,7 @@
                         "format": "date-time"
                       },
                       "claim": {
-                        "anyOf": [
-                          {
-                            "$ref": "#/components/schemas/FinancingClaim"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                        "$ref": "#/components/schemas/FinancingClaim"
                       }
                     }
                   }

@@ -12,7 +12,7 @@ export interface FinancingClaim {
 }
 export interface FinancingReport {
   id: string; title: string; url: string; sourceName: string; publishedAt: string | null;
-  claim: FinancingClaim | null;
+  claim: FinancingClaim;
 }
 export interface FinancingResponse {
   events: Array<{ id: string; latestAt: string; reports: FinancingReport[]; reportCount: number; differingClaims: boolean }>;

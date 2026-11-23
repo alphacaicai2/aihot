@@ -4,24 +4,38 @@ import { sql } from "../db.ts";
 const literal = (s: string) => `%${s.toLowerCase().replace(/[\\%_]/g, c => `\\${c}`)}%`;
 
 /** Known company aliases share one search; unknown names are still searchable. */
-export function companyCondition(company?: string | null) {
+export function companyCondition(company?: string | null, target = sql`p.search_text`) {
   if (!company?.trim()) return sql``;
   const name = company.trim().toLowerCase();
   const found = Object.entries(ENTITIES).find(([id, e]) => id.toLowerCase() === name || e.aliases.some(a => a.toLowerCase() === name));
   const aliases = found ? [...new Set([found[0], ...found[1].aliases])].slice(0, 20) : [company.trim()];
-  const conditions = aliases.map(a => sql`p.search_text LIKE ${literal(a)}`);
+  const conditions = aliases.map(a => sql`${target} LIKE ${literal(a)}`);
   return sql`AND (${conditions.reduce((a, b) => sql`${a} OR ${b}`)} OR EXISTS (
     SELECT 1 FROM research_entities e, unnest(e.aliases) alias
     WHERE EXISTS (SELECT 1 FROM unnest(e.aliases) needle WHERE lower(needle) = ${name})
-      AND position(lower(alias) in p.search_text) > 0))`;
+      AND position(lower(alias) in ${target}) > 0))`;
 }
 
-export function investorCondition(investor?: string | null, originals: string[] = [], exact = false) {
+// Older analyses store a single claim. An empty array is authoritative for reviewed roundups.
+export const financingClaims = sql`CASE
+  WHEN jsonb_typeof(an.output->'financingClaims')='array' THEN an.output->'financingClaims'
+  WHEN jsonb_typeof(an.output->'financing')='object' THEN jsonb_build_array(an.output->'financing')
+  ELSE '[]'::jsonb END`;
+export const dealRows = sql`jsonb_array_elements(${financingClaims}) WITH ORDINALITY AS deal(claim, seq)`;
+export const namedDeal = sql`nullif(btrim(deal.claim->>'company'), '') IS NOT NULL
+  AND nullif(btrim(deal.claim->>'evidence'), '') IS NOT NULL`;
+export const dealInvestors = sql`jsonb_array_elements_text(CASE WHEN jsonb_typeof(deal.claim->'investors')='array'
+  THEN deal.claim->'investors' ELSE '[]'::jsonb END) AS inv(name)`;
+
+export function dealInvestorCondition(investor?: string | null, originals: string[] = [], exact = false) {
   if (!investor?.trim()) return sql``;
   const literalMatch = exact ? sql`false` : sql`lower(inv.name) LIKE ${literal(investor.trim())}`;
   const match = originals.length ? sql`(${literalMatch} OR btrim(inv.name) IN ${sql(originals)})` : literalMatch;
-  return sql`AND EXISTS (SELECT 1 FROM analyses an,
-    jsonb_array_elements_text(CASE WHEN jsonb_typeof(an.output->'financing'->'investors') = 'array'
-      THEN an.output->'financing'->'investors' ELSE '[]'::jsonb END) AS inv(name)
-    WHERE an.id = p.analysis_id AND ${match})`;
+  return sql`AND EXISTS (SELECT 1 FROM ${dealInvestors} WHERE ${match})`;
+}
+
+export function investorCondition(investor?: string | null) {
+  if (!investor?.trim()) return sql``;
+  return sql`AND EXISTS (SELECT 1 FROM analyses an, ${dealRows}
+    WHERE an.id=p.analysis_id AND ${namedDeal} ${dealInvestorCondition(investor)})`;
 }

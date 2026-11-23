@@ -2,6 +2,7 @@ import { INVESTOR_ALIASES } from "@aihot/industry/investors";
 import { investorSearchKey, type InvestorOption } from "@aihot/contracts/financing";
 import { type Db } from "../db.ts";
 import { listedCondition } from "./items.ts";
+import { dealInvestors, dealRows, namedDeal } from "./research.ts";
 import { withSearchCapacity } from "./pool.ts";
 
 const known = new Map(INVESTOR_ALIASES.flatMap(group => group.map(alias => [investorSearchKey(alias), group] as const)));
@@ -32,9 +33,8 @@ export async function investorDirectory(db: Db, now: Date) {
   const rows = await db<{name:string; reports:number}[]>`
     SELECT btrim(inv.name) AS name, count(DISTINCT p.article_id)::int AS reports
     FROM publications p JOIN analyses an ON an.id=p.analysis_id
-    CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(an.output->'financing'->'investors')='array'
-      THEN an.output->'financing'->'investors' ELSE '[]'::jsonb END) inv(name)
-    WHERE ${listedCondition(now)} AND p.eligible AND p.category='financing' AND btrim(inv.name)<>''
+    CROSS JOIN LATERAL ${dealRows} CROSS JOIN LATERAL ${dealInvestors}
+    WHERE ${listedCondition(now)} AND ${namedDeal} AND p.eligible AND p.category='financing' AND btrim(inv.name)<>''
     GROUP BY btrim(inv.name) ORDER BY reports DESC, name`;
   return groupInvestorNames(rows);
 }

@@ -46,7 +46,7 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
   if (results?.nextCursor) next.set("cursor", results.nextCursor);
   return (
     <div className="pb-6">
-      <ResearchHeader title="融资数据库" icon={<IconChart size={25} />}>按事件归并融资报道。金额、轮次与进展由模型从各篇报道提取，可展开核对原文。</ResearchHeader>
+      <ResearchHeader title="融资数据库" icon={<IconChart size={25} />}>按单笔交易收录公司融资与基金募资。可按公司、投资机构或日期筛选，展开查看报道原文。</ResearchHeader>
       <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-5 lg:grid-cols-[250px_minmax(0,1fr)] xl:grid-cols-[280px_minmax(0,1fr)] xl:gap-7">
         <FinancingFilters key={key} params={params} initialError={problem} />
         <section aria-labelledby="financing-results" className="min-w-0">
@@ -62,9 +62,9 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
             <div className="grid gap-2.5">{results.events.map(event => <FinancingEvent key={event.id} event={event} />)}</div>
           ) : (
             <div className="card">
-              <EmptyState title={problem ? "请检查日期范围" : constraints.length ? "没有匹配的融资事件" : "暂时没有融资报道"}
+              <EmptyState title={problem ? "请检查日期范围" : constraints.length ? "没有匹配的融资事件" : "暂时没有融资记录"}
                 action={constraints.length || problem ? <Link to="/financing" className={buttonClass("secondary")}>清除筛选</Link> : <Link to="/all" className={buttonClass("secondary")}>浏览全部动态 <IconArrowRight size={14} /></Link>}>
-                {problem || (constraints.length ? "试试公司简称、移除机构条件，或扩大日期范围。" : "收录融资报道后，这里会按最近的站内时间排列。")}
+                {problem || (constraints.length ? "试试公司简称、移除机构条件，或扩大日期范围。" : "有可核对的交易记录后，将按最近报道时间显示。")}
               </EmptyState>
             </div>
           )}
