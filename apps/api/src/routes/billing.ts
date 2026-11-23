@@ -1,4 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { checkoutDestinationKey, memberDestination, membershipOffer } from "@aihot/contracts/member-destination";
+import { packDestination } from "@aihot/contracts/member-destination.server";
+import { cookie } from "@aihot/backend/lib/cookies";
 import { config } from "@aihot/backend/config";
 import { memberIdentity, identityAccess } from "@aihot/backend/reader/membership";
 import { billingCheckout, billingPortal, InvalidStripeWebhook, processBillingWebhook } from "@aihot/backend/reader/billing";
@@ -10,16 +13,21 @@ export async function registerBilling(app: FastifyInstance) {
 
   async function changeBilling(req: FastifyRequest, reply: FastifyReply, checkout: boolean) {
     if (req.headers.origin !== new URL(config.siteUrl).origin) return reply.code(403).send();
+    const target = memberDestination((req.query as { return?: string }).return);
     const identity = await memberIdentity(req.headers.cookie);
-    if (!identity) return reply.redirect("/membership?billing=login", 303);
-    if ("administrator" in identity || (checkout && (await identityAccess(identity)).access)) return reply.redirect("/membership", 303);
+    if (!identity) return reply.redirect(membershipOffer(target, ["billing", "login"]), 303);
+    if ("administrator" in identity || (checkout && (await identityAccess(identity)).access)) return reply.redirect(target ?? "/membership", 303);
     const reader = identity.reader;
     try {
-      const url = await (checkout ? billingCheckout(reader.google_subject, reader.email) : billingPortal(reader.google_subject));
+      const url = await (checkout ? billingCheckout(reader.google_subject, reader.email, target) : billingPortal(reader.google_subject, target));
+      // Checkout URLs are immutable and a reader can resume an existing open Stripe session.
+      // Keep its navigation context on this site, independently of Stripe's idempotency key.
+      if (checkout) reply.header("Set-Cookie", cookie(checkoutDestinationKey, target ? packDestination(target) : "", target ? 86400 : 0,
+        config.siteUrl.startsWith("https://"), "/membership"));
       return reply.redirect(url, 303);
     } catch {
       req.log.warn({ operation: checkout ? "checkout" : "portal" }, "Stripe billing unavailable");
-      return reply.redirect("/membership?billing=unavailable", 303);
+      return reply.redirect(membershipOffer(target, ["billing", "unavailable"]), 303);
     }
   }
   app.post("/api/reader/billing/checkout", (req, reply) => changeBilling(req, reply, true));

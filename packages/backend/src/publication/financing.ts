@@ -1,27 +1,76 @@
 // All claims are joined through the currently published analysis, never a newer unpublished run.
 import type { FinancingClaim, FinancingResponse, FinancingReport } from "@aihot/contracts/financing";
 import { researchDates } from "@aihot/contracts/research";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { decodeCursor, encodeCursor, InvalidCursorError, queryBinding } from "../lib/cursor.ts";
-import { listedCondition } from "./items.ts";
-import { companyCondition, dealInvestorCondition, dealRows, financingClaims, namedDeal } from "./research.ts";
+import { financingIndexReady, financingJoins, financingSources, publicFinancing, type Mention } from "./financing-index.ts";
+import { companyCondition, dealInvestorCondition } from "./research.ts";
 import { financingInvestorNames } from "./investors.ts";
-import { financingRounds, type RoundSource } from "./financing-rounds.ts";
+import { financingRounds } from "./financing-rounds.ts";
 import { withSearchCapacity } from "./pool.ts";
 
 export interface FinancingQuery { from?: string | null; to?: string | null; company?: string | null; companyHistory?: string; investor?: string | null; investorExact?: boolean; cursor?: string | null; limit?: number }
-export async function loadFinancing(query: FinancingQuery, now = new Date()): Promise<FinancingResponse> {
+type Cursor = { at: string; id: string; binding: string } | null;
+type Filter = ReturnType<typeof companyCondition>;
+interface RoundPage {
+  groups: { id: string; latest: number; members: Mention[] }[];
+  historyRecords: number;
+  latestReport: number;
+  hasMore: boolean;
+}
+
+async function livePage(db: Db, now: Date, filter: Filter, history: boolean, cursor: Cursor, limit: number): Promise<RoundPage> {
+  const groups = [];
+  let historyRecords = 0;
+  let latestReport = -Infinity;
+  for (const [id, members] of financingRounds(await financingSources(db, now, filter))) {
+    if (history) for (const m of members) m.timeline_at = m.reported_at ?? m.timeline_at;
+    const matching = members.filter(m => m.matches);
+    if (!matching.length) continue;
+    const latest = Math.max(...matching.map(m => m.timeline_at.getTime()));
+    historyRecords++;
+    latestReport = Math.max(latestReport, latest);
+    if (cursor && (latest > Date.parse(cursor.at) || (latest === Date.parse(cursor.at) && id >= cursor.id))) continue;
+    groups.push({ id, latest, members });
+  }
+  groups.sort((a,b) => b.latest - a.latest || (a.id < b.id ? 1 : -1));
+  return { groups: groups.slice(0, limit), hasMore: groups.length > limit, historyRecords, latestReport };
+}
+
+async function indexedPage(db: Db, filter: Filter, history: boolean, cursor: Cursor, limit: number): Promise<RoundPage> {
+  const timeline = history ? sql`coalesce(deal.reported_at,deal.timeline_at)` : sql`deal.timeline_at`;
+  const after = cursor ? sql`WHERE (latest,round_id) < (${new Date(cursor.at)}, ${cursor.id})` : sql``;
+  const rounds = await db<{ round_id: string; latest: Date; records: number; latest_report: Date }[]>`
+    WITH matching AS (
+      SELECT deal.round_id, max(${timeline}) AS latest FROM financing_index_members deal
+      WHERE true ${filter} GROUP BY deal.round_id
+    )
+    SELECT * FROM (SELECT matching.* ${history ? sql`, count(*) OVER () AS records, max(latest) OVER () AS latest_report` : sql``}
+      FROM matching) rounds ${after} ORDER BY latest DESC, round_id DESC LIMIT ${limit+1}`;
+  const groups = rounds.slice(0, limit).map(r => ({ id: r.round_id, latest: r.latest.getTime(), members: [] as Mention[] }));
+  if (groups.length) {
+    const byId = new Map(groups.map(g => [g.id, g.members]));
+    const mentions = await db<(Mention & {round_id: string})[]>`
+      SELECT deal.round_id, deal.article_id, deal.seq, deal.preferred, ${timeline} AS timeline_at
+      FROM financing_index_members deal WHERE deal.round_id IN ${sql(groups.map(g => g.id))}
+      ORDER BY deal.timeline_at DESC, deal.article_id DESC, deal.seq`;
+    for (const m of mentions) byId.get(m.round_id)!.push(m);
+  }
+  return { groups, hasMore: rounds.length > limit, historyRecords: rounds[0]?.records ?? 0,
+    latestReport: rounds[0]?.latest_report?.getTime() ?? -Infinity };
+}
+
+export function loadFinancing(query: FinancingQuery, now = new Date()) {
+  return withSearchCapacity(db => readFinancing(db, query, now), true);
+}
+
+// A single repeatable-read snapshot covers the index generation, matches and original reports.
+export async function readFinancing(db: Db, query: FinancingQuery, now: Date, useIndex = true): Promise<FinancingResponse> {
   const range = researchDates(query.from, query.to);
   const limit = Math.max(1, Math.min(100, query.limit ?? 40));
   const binding = queryBinding({ from: query.from ?? null, to: query.to ?? null, company: query.company ?? null, investor: query.investor ?? null, ...(query.companyHistory ? { companyHistory: query.companyHistory } : {}), ...(query.investorExact ? {exact:true} : {}) });
   const cursor = query.cursor ? decodeCursor<{ at: string; id: string; binding: string }>("fin1", query.cursor) : null;
   if (cursor && (cursor.binding !== binding || typeof cursor.id !== "string" || !Number.isFinite(Date.parse(cursor.at)))) throw new InvalidCursorError("financing cursor does not match filters");
-  // A roundup has only one article-level fact. It cannot identify each of its transactions.
-  const key = sql`CASE WHEN jsonb_array_length(${financingClaims}) > 1 THEN 'deal:' || p.article_id || ':' || deal.seq
-    ELSE coalesce('fact:' || f.public_id || ':' || lower(btrim(deal.claim->>'company')), 'item:' || p.article_id) END`;
-  const joins = sql`FROM publications p JOIN analyses an ON an.id=p.analysis_id AND an.article_id=p.article_id
-    LEFT JOIN facts f ON f.id=p.fact_id CROSS JOIN ${dealRows}`;
-  const publicDeal = sql`${listedCondition(now)} AND p.eligible AND (p.category='financing' OR an.output ? 'financingClaims') AND ${namedDeal}`;
   // Profile names identify recipients. Topic keywords and substring searches can also match other companies.
   const recipient = sql`lower(btrim(deal.claim->>'company'))`;
   const company = query.companyHistory?.trim().toLowerCase();
@@ -30,67 +79,41 @@ export async function loadFinancing(query: FinancingQuery, now = new Date()): Pr
       SELECT lower(btrim(alias)) FROM research_entities e, unnest(array_prepend(e.name, e.aliases)) alias
       WHERE EXISTS (SELECT 1 FROM unnest(array_prepend(e.name, e.aliases)) n WHERE lower(btrim(n)) = ${company})))`
     : companyCondition(query.company, sql`lower(deal.claim->>'company')`);
-  return withSearchCapacity(async db => {
-    const originals = query.investor?.trim() ? await financingInvestorNames(db, now, query.investor, !!query.investorExact) : [];
-    type Member = RoundSource & { seq: number; timeline_at: Date; preferred: boolean | null; matches: boolean };
-    const sources = await db<Member[]>`
-      SELECT ${key} AS base_id, p.article_id, deal.seq, coalesce(deal.round_id,review.round_id) AS reviewed_id, deal.preferred,
-        ${company ? sql`coalesce(p.published_at,p.timeline_at)` : sql`p.timeline_at`} AS timeline_at, p.published_at AS reported_at, deal.claim->>'company' AS company,
-        deal.claim->>'round' AS stage, deal.claim->>'amountText' AS amount, deal.claim->>'currency' AS currency,
-        deal.claim->>'kind' AS kind, deal.claim->>'amountBasis' AS basis, deal.claim->>'status' AS status,
-        deal.claim->'investors' AS investors, deal.claim->>'recordType' AS record_type, deal.claim->>'evidence' AS evidence,
-        (true ${range ? sql`AND p.timeline_at >= ${range.start} AND p.timeline_at < ${range.end}` : sql``}
-         ${companyFilter}
-         ${dealInvestorCondition(query.investor, originals, query.investorExact)}) AS matches
-      ${joins} LEFT JOIN financing_round_sources review ON review.article_id=p.article_id
-        AND review.company=deal.claim->>'company' AND review.evidence=deal.claim->>'evidence'
-      WHERE ${publicDeal}
-      ORDER BY p.timeline_at DESC,p.article_id DESC,deal.seq`;
-    const groups = [];
-    let historyRecords = 0;
-    let latestReport = -Infinity;
-    for (const [id, members] of financingRounds(sources)) {
-      const matching = members.filter(m => m.matches);
-      if (!matching.length) continue;
-      const latest = Math.max(...matching.map(m => m.timeline_at.getTime()));
-      if (company) {
-        historyRecords++;
-        latestReport = Math.max(latestReport, latest);
-      }
-      if (cursor && (latest > Date.parse(cursor.at) || (latest === Date.parse(cursor.at) && id >= cursor.id))) continue;
-      groups.push({ id, latest, members });
-    }
-    groups.sort((a,b) => b.latest - a.latest || (a.id < b.id ? 1 : -1));
-    const page = groups.slice(0, limit);
-    if (!page.length) return { events: [], hasMore: false, nextCursor: null };
+  const indexed = useIndex && await financingIndexReady(db, now);
+  const originals = query.investor?.trim() ? await financingInvestorNames(db, now, query.investor, !!query.investorExact, indexed) : [];
+  const dateColumn = indexed ? sql`deal.timeline_at` : sql`p.timeline_at`;
+  const filter = sql`${range ? sql`AND ${dateColumn} >= ${range.start} AND ${dateColumn} < ${range.end}` : sql``}
+    ${companyFilter} ${dealInvestorCondition(query.investor, originals, query.investorExact)}`;
+  const { groups: page, hasMore, historyRecords, latestReport } = indexed
+    ? await indexedPage(db, filter, !!company, cursor, limit)
+    : await livePage(db, now, filter, !!company, cursor, limit);
+  if (!page.length) return { events: [], hasMore: false, nextCursor: null };
 
-    const articleIds = [...new Set(page.flatMap(g => g.members.map(m => m.article_id)))];
-    const details = await db<{ id: string; seq: number; title: string; url: string; source_name: string; published_at: Date | null; claim: FinancingClaim }[]>`
-      SELECT p.article_id AS id,deal.seq,p.title,p.url,s.name AS source_name,p.published_at,deal.claim
-      ${joins} JOIN sources s ON s.id=p.source_id
-      WHERE p.article_id IN ${sql(articleIds)} AND ${publicDeal}`;
-    const reportsByKey = new Map(details.map(r => [r.id + ":" + r.seq, {
-      id: r.id, title: r.title, url: r.url, sourceName: r.source_name, publishedAt: r.published_at?.toISOString() ?? null, claim: r.claim,
-    }]));
-    const events = page.map(({ id, latest, members }) => {
-      members.sort((a,b) => Number(!!b.preferred) - Number(!!a.preferred) || b.timeline_at.getTime() - a.timeline_at.getTime() || b.article_id.localeCompare(a.article_id));
-      const mentions = members.map(m => reportsByKey.get(m.article_id + ":" + m.seq)!);
-      const byArticle = new Map<string, FinancingReport>();
-      for (const report of mentions) {
-        const existing = byArticle.get(report.id);
-        if (existing) (existing.additionalClaims ??= []).push(report.claim);
-        else byArticle.set(report.id,{...report});
-      }
-      const reports = [...byArticle.values()];
-      const signatures = new Set(mentions.map(r => JSON.stringify([r.claim.round, r.claim.amountText, r.claim.currency, r.claim.amountBasis, r.claim.status])));
-      return { id, latestAt: new Date(latest).toISOString(), reports, reportCount: reports.length, differingClaims: signatures.size > 1 };
-    });
-    const hasMore = groups.length > limit;
-    const last = events.at(-1)!;
-    return { events, hasMore, ...(company ? { historySummary: {
-      records: historyRecords, latestAt: new Date(latestReport).toISOString(),
-    } } : {}), nextCursor: hasMore ? encodeCursor("fin1", { at: last.latestAt, id: last.id, binding }) : null };
-  }, true);
+  const articleIds = [...new Set(page.flatMap(g => g.members.map(m => m.article_id)))];
+  const details = await db<{ id: string; seq: number; title: string; url: string; source_name: string; published_at: Date | null; claim: FinancingClaim }[]>`
+    SELECT p.article_id AS id,deal.seq,p.title,p.url,s.name AS source_name,p.published_at,deal.claim
+    ${financingJoins} JOIN sources s ON s.id=p.source_id
+    WHERE p.article_id IN ${sql(articleIds)} AND ${publicFinancing(now)}`;
+  const reportsByKey = new Map(details.map(r => [r.id + ":" + r.seq, {
+    id: r.id, title: r.title, url: r.url, sourceName: r.source_name, publishedAt: r.published_at?.toISOString() ?? null, claim: r.claim,
+  }]));
+  const events = page.map(({ id, latest, members }) => {
+    members.sort((a,b) => Number(!!b.preferred) - Number(!!a.preferred) || b.timeline_at.getTime() - a.timeline_at.getTime() || b.article_id.localeCompare(a.article_id));
+    const mentions = members.map(m => reportsByKey.get(m.article_id + ":" + m.seq)!);
+    const byArticle = new Map<string, FinancingReport>();
+    for (const report of mentions) {
+      const existing = byArticle.get(report.id);
+      if (existing) (existing.additionalClaims ??= []).push(report.claim);
+      else byArticle.set(report.id,{...report});
+    }
+    const reports = [...byArticle.values()];
+    const signatures = new Set(mentions.map(r => JSON.stringify([r.claim.round, r.claim.amountText, r.claim.currency, r.claim.amountBasis, r.claim.status])));
+    return { id, latestAt: new Date(latest).toISOString(), reports, reportCount: reports.length, differingClaims: signatures.size > 1 };
+  });
+  const last = events.at(-1)!;
+  return { events, hasMore, ...(company ? { historySummary: {
+    records: historyRecords, latestAt: new Date(latestReport).toISOString(),
+  } } : {}), nextCursor: hasMore ? encodeCursor("fin1", { at: last.latestAt, id: last.id, binding }) : null };
 }
 
 /** CSV exports stay bounded to the same page and cannot execute spreadsheet formulas. */

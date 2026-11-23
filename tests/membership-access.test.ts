@@ -61,6 +61,10 @@ test("verified readers, legacy cookies, email grants, paid expiry, revocation an
     assert.equal((await app.inject({ method: "POST", url: "/api/admin/memberships", headers: { cookie: adminCookie }, payload: { email } })).statusCode, 403);
     assert.equal((await grant("POST")).statusCode, 200);
     assert.equal((await membership()).json().source, "grant");
+    const specification = await app.inject({ url: "/openapi-v1.json", headers: readerHeaders });
+    assert.equal(specification.statusCode, 200);
+    assert.deepEqual(specification.json().security, [{ agentToken: [] }]);
+    assert.equal(specification.json().components.securitySchemes.agentToken.scheme, "bearer");
     assert.equal((await content(readerHeaders)).headers["cache-control"], "private, no-store");
     assert.equal((await content(readerHeaders)).statusCode, 200);
     assert.equal((await rotate({ ...readerHeaders, origin: "https://other.example" })).statusCode, 403);

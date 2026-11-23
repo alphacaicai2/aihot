@@ -1,12 +1,12 @@
 // Collection run for one source: fetch listing → filter → store material → enqueue processing.
 // A failed fetch never advances the success cursor; the source's health reflects consecutive failures.
-import { sql } from "../db.ts";
+import { sql, type Tx } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { identityKeyFor, upsertMaterial } from "../content/materials.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
 import { BudgetExceededError } from "../providers/receipts.ts";
-import { fetchRss } from "./rss.ts";
+import { fetchRss, type RssRead } from "./rss.ts";
 import { allowed, fetchDetail, fetchWebList, type DetailNeed } from "./web-list.ts";
 import { unsupportedConfig } from "./config-keys.ts";
 import { fetchJsonList } from "./json-list.ts";
@@ -62,7 +62,7 @@ const DAY_MS = 86_400_000;
 /** A listing title that is no headline: a label that swallowed its summary, or a call to action. */
 const needsTitle = (title: string) => title.length > 100 || /^(read more|learn more|continue reading|more|阅读全文|阅读更多|查看详情|了解更多)$/i.test(title.trim());
 
-async function store(sourceId: string, candidates: Candidate[], backfill: string | null): Promise<{ created: number; revised: number }> {
+async function store(sourceId: string, candidates: Candidate[], backfill: string | null, tx?: Tx): Promise<{ created: number; revised: number }> {
   let created = 0;
   let revised = 0;
   const seen = new Set<string>();
@@ -73,13 +73,43 @@ async function store(sourceId: string, candidates: Candidate[], backfill: string
     const key = identityKeyFor(material);
     if (seen.has(key)) continue;
     seen.add(key);
-    const res = await upsertMaterial(material);
+    const res = await upsertMaterial(material, tx);
     if (res.created) created += 1;
     if (res.revised) revised += 1;
     // Extraction first when the source wants full text and none came with the listing, else analysis.
-    if (res.created || res.revised) await queueProcessing(res.articleId);
+    if (res.created || res.revised) await queueProcessing(res.articleId, { db: tx });
   }
   return { created, revised };
+}
+
+interface RssBacklog {
+  fetchId: number;
+  nextPage: number;
+  pages: number;
+  mode: string;
+  validator: RssRead["validator"];
+}
+
+type SavedEntry = Omit<Candidate, "publishedAt" | "sourceUpdatedAt" | "discoveredAt"> & {
+  publishedAt?: string | null; sourceUpdatedAt?: string | null; discoveredAt?: string;
+};
+
+async function readRssPage(sourceId: string, backlog: RssBacklog) {
+  const [row] = await sql<{ entries: SavedEntry[] }[]>`
+    SELECT entries FROM source_rss_pages WHERE source_id=${sourceId} AND fetch_id=${backlog.fetchId} AND page=${backlog.nextPage}`;
+  return row?.entries.map(c => ({ ...c,
+    publishedAt: c.publishedAt ? new Date(c.publishedAt) : null,
+    sourceUpdatedAt: c.sourceUpdatedAt ? new Date(c.sourceUpdatedAt) : null,
+    discoveredAt: c.discoveredAt ? new Date(c.discoveredAt) : undefined,
+  }));
+}
+
+/** Check the cursor again after fetching outside the transaction. */
+async function lockSourceCursor(tx: Tx, source: SourceRow) {
+  const [current] = await tx`SELECT id FROM sources WHERE id=${source.id} AND kind=${source.kind}
+    AND config=${tx.json(source.config as never)} AND participation_mode=${source.participation_mode}
+    AND cursor IS NOT DISTINCT FROM ${source.cursor ? tx.json(source.cursor as never) : null}::jsonb FOR NO KEY UPDATE`;
+  return !!current;
 }
 
 export async function collectSource(sourceId: string, opts: { force?: boolean } = {}): Promise<CollectResult> {
@@ -102,11 +132,37 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     const unsupported = unsupportedConfig(source.kind, source.config);
     if (unsupported.length) throw new FetchError(`unsupported config: ${unsupported.join(", ")}`);
     let candidates: Candidate[];
-    let nextCursor: Record<string, unknown> = { ...(source.cursor ?? {}) };
+    const nextCursor: Record<string, unknown> = { ...(source.cursor ?? {}) };
     let detail: Record<string, unknown> | null = null;
-    if (source.kind === "rss") {
-      const rss = await fetchRss(source, opts);
+    const nativeRss = source.kind === "rss" && source.config.minifluxFeedId === undefined;
+    const saved = source.cursor?.rssBacklog as RssBacklog | undefined;
+    let backlog = nativeRss && saved?.mode === source.participation_mode &&
+      saved.validator.configHash === sha256(stableJson(source.config)) ? saved : undefined;
+    let validator: RssRead["validator"] | undefined;
+    delete nextCursor.rssBacklog;
+    const superseded = async (): Promise<CollectResult> => {
+      await sql`UPDATE fetch_runs SET status='skipped', finished_at=now() WHERE id=${run!.id}`;
+      return { sourceId, status: "skipped", found, created: 0, revised: 0 };
+    };
+    if (backlog) {
+      const entries = await readRssPage(sourceId, backlog);
+      if (!entries) {
+        // Another collector may have committed this page while we were loading it.
+        const current = await loadSource(sourceId);
+        if (current?.cursor?.rssBacklog?.fetchId !== backlog.fetchId ||
+            current.cursor.rssBacklog.nextPage !== backlog.nextPage) return superseded();
+        throw new Error("RSS backlog page missing");
+      }
+      candidates = entries;
+      validator = backlog.validator;
+      if (backlog.nextPage + 1 < backlog.pages) nextCursor.rssBacklog = { ...backlog, nextPage: backlog.nextPage + 1 };
+      else nextCursor.rss = validator;
+    } else if (source.kind === "rss") {
+      // Older collectors could save validators after storing only the first 60 entries.
+      const legacyWindow = nativeRss && !source.cursor?.rss?.fullWindow;
+      const rss = await fetchRss(source, { force: opts.force || legacyWindow });
       candidates = rss.candidates;
+      validator = rss.validator;
       warning = rss.warning ?? null;
       // The first import has a smaller backfill cap than later runs: allow the next run to read
       // the ordinary window before accepting 304s. Persist validators only after store succeeds.
@@ -126,8 +182,10 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
       detail = { pages: x.pages, truncated: x.truncated, backlog: x.backlog.length, backlogPages: x.backlogPages, dropped: x.dropped };
     }
     found = candidates.length;
-    candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
-    if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+    if (!backlog) {
+      candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
+      if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+    }
 
     // An opt-in subscription baseline keeps the unimported stock out of later live polls. A new
     // URL still enters normally; changed stock is collected as an update to an existing baseline.
@@ -135,7 +193,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     if (source.config._aihot?.skipInitialRemainder === true && source.kind !== "x_search" && source.config.minifluxFeedId === undefined) {
       initialRemainder = { ...(source.cursor?.initialRemainder ?? {}) };
       const seen = new Set<string>();
-      candidates = candidates.filter((c) => {
+      if (!backlog) candidates = candidates.filter((c) => {
         const key = sha256(identityKeyFor({ ...c, sourceId, via: "fetch" }));
         if (seen.has(key)) return false;
         seen.add(key);
@@ -154,9 +212,49 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     if (firstImport) {
       const cutoff = Date.now() - backfillMonths * 30 * 86400000;
       candidates = candidates.filter((c) => !c.publishedAt || c.publishedAt.getTime() >= cutoff).slice(0, backfillLimit);
+    } else if (nativeRss && candidates.length > MAX_ITEMS_PER_RUN) {
+      // Keep the first mention, including when a duplicate would land on a later page.
+      const seen = new Set<string>();
+      const unique = candidates.filter(c => {
+        const key = identityKeyFor({ ...c, sourceId, via: "fetch" });
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      candidates = unique.slice(0, MAX_ITEMS_PER_RUN);
+      if (unique.length > MAX_ITEMS_PER_RUN) {
+        const snapshot: RssBacklog = { fetchId: run!.id, nextPage: 0, pages: Math.ceil(unique.length / MAX_ITEMS_PER_RUN),
+          mode: source.participation_mode, validator: validator! };
+        const stagedCursor = { ...source.cursor, rssBacklog: snapshot };
+        const observedAt = new Date();
+        const staged = await sql.begin(async tx => {
+          if (!await lockSourceCursor(tx, source)) return false;
+          await tx`DELETE FROM source_rss_pages WHERE source_id=${sourceId}`;
+          for (let page = 0; page < snapshot.pages; page++) {
+            const entries = unique.slice(page * MAX_ITEMS_PER_RUN, (page + 1) * MAX_ITEMS_PER_RUN)
+              .map(entry => ({ ...entry, discoveredAt: observedAt }));
+            await tx`INSERT INTO source_rss_pages(source_id, fetch_id, page, entries)
+              VALUES (${sourceId}, ${snapshot.fetchId}, ${page}, ${tx.json(entries as never)})`;
+          }
+          await tx`UPDATE sources SET cursor=${tx.json(stagedCursor as never)} WHERE id=${sourceId}`;
+          return true;
+        });
+        if (!staged) return superseded();
+        source.cursor = stagedCursor;
+        backlog = snapshot;
+        candidates = candidates.map(entry => ({ ...entry, discoveredAt: observedAt }));
+        nextCursor.rssBacklog = { ...snapshot, nextPage: 1 };
+        // Do not acknowledge this response until all its material and jobs have committed.
+        if (source.cursor.rss) nextCursor.rss = source.cursor.rss;
+        else delete nextCursor.rss;
+      }
     } else if (source.kind !== "x_search") {
       // X keeps every post it read: its watermark already covers them, so a cut here would lose them.
       candidates = candidates.slice(0, MAX_ITEMS_PER_RUN);
+    }
+
+    if (nativeRss && !nextCursor.rssBacklog && nextCursor.rss) {
+      nextCursor.rss = { ...nextCursor.rss, fullWindow: true };
     }
 
     // Detail pages only for material we have not seen (bounded per run), and only for what the listing lacks.
@@ -201,8 +299,6 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
       }
     }
 
-    ({ created, revised } = await store(sourceId, candidates, firstImport ? "first-import" : null));
-
     // Only a successful storage removes a changed entry from the suppressed baseline. Entries
     // beyond this run's cap stay suppressed (or pending when changed) until a later successful run.
     if (initialRemainder) {
@@ -212,11 +308,28 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
 
     if (firstImport) nextCursor.initializedAt = new Date().toISOString();
     nextCursor.lastOkAt = new Date().toISOString();
-    await sql`
-      UPDATE sources SET last_fetch_at = now(), last_ok_at = now(), fail_count = 0,
-        health = ${warning ? "degraded" : "ok"}, last_error = ${warning}, cursor = ${sql.json(nextCursor as never)}, updated_at = now(),
-        next_fetch_at = now() + make_interval(mins => interval_minutes)
-      WHERE id = ${sourceId}`;
+    const savePage = async (tx?: Tx) => {
+      const db = tx ?? sql;
+      ({ created, revised } = await store(sourceId, candidates, firstImport ? "first-import" : null, tx));
+      await db`
+        UPDATE sources SET last_fetch_at = now(), last_ok_at = now(), fail_count = 0,
+          health = ${warning ? "degraded" : "ok"}, last_error = ${warning}, cursor = ${db.json(nextCursor as never)}, updated_at = now(),
+          next_fetch_at = now() + make_interval(mins => CASE WHEN ${!!nextCursor.rssBacklog} THEN 0 ELSE interval_minutes END)
+        WHERE id = ${sourceId}`;
+    };
+    if (nativeRss || saved) {
+      const committed = await sql.begin(async tx => {
+        // Serialize commits, not network reads. A manual and a scheduled poll may overlap.
+        if (!await lockSourceCursor(tx, source)) return false;
+        if (saved && !backlog) await tx`DELETE FROM source_rss_pages WHERE source_id=${sourceId}`;
+        if (backlog) await tx`DELETE FROM source_rss_pages WHERE source_id=${sourceId} AND fetch_id=${backlog.fetchId} AND page=${backlog.nextPage}`;
+        await savePage(tx);
+        return true;
+      });
+      if (!committed) return superseded();
+    } else {
+      await savePage();
+    }
     await sql`UPDATE fetch_runs SET status = 'ok', finished_at = now(), found_count = ${found}, new_count = ${created},
                 detail = ${detail ? sql.json(detail as never) : null} WHERE id = ${run!.id}`;
     return { sourceId, status: "ok", found, created, revised };

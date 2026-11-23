@@ -1,3 +1,5 @@
+import { packDestination, unpackDestination } from "@aihot/contracts/member-destination.server";
+import { memberDestination } from "@aihot/contracts/member-destination";
 import { createHash, randomBytes } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 import { config, credential } from "../config.ts";
@@ -24,13 +26,17 @@ function settings() {
 
 export const googleLoginEnabled = () => settings() !== null;
 
+function returnAfterLogin(destination: unknown) {
+  return destination === "/membership" ? destination : memberDestination(destination) ?? "/";
+}
+
 export async function startGoogleLogin(destination?: string) {
   const opts = settings();
   if (!opts) return null;
   const state = randomToken();
   const nonce = randomToken();
   const verifier = randomToken();
-  const flow = await new SignJWT({ state, nonce, verifier, returnTo: destination === "/membership" ? destination : "/" }).setProtectedHeader({ alg: "HS256" })
+  const flow = await new SignJWT({ state, nonce, verifier, returnTo: packDestination(returnAfterLogin(destination)) }).setProtectedHeader({ alg: "HS256" })
     .setAudience(flowAudience).setExpirationTime("10m").sign(opts.signingKey);
   const params = new URLSearchParams({
     client_id: opts.clientId, redirect_uri: opts.redirectUri, response_type: "code", scope: "openid email",
@@ -73,7 +79,7 @@ export async function finishGoogleLogin(code: string, state: string, flow: strin
     await tx`INSERT INTO reader_sessions (id_hash, google_subject, expires_at)
              VALUES (${sha256(token)}, ${subject}, ${new Date(Date.now() + SESSION_SECONDS * 1000)})`;
   });
-  return { token, returnTo: request.returnTo === "/membership" ? "/membership" : "/" };
+  return { token, returnTo: returnAfterLogin(unpackDestination(request.returnTo)) };
 }
 
 const legacySessionName = "reader_session";

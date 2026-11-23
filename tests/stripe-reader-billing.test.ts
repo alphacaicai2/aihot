@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { billingCheckout, billingPortal, billingStatus, InvalidStripeWebhook, processBillingWebhook } from "../packages/backend/src/reader/billing.ts";
 import Fastify from "fastify";
 import { registerBilling } from "../apps/api/src/routes/billing.ts";
@@ -53,6 +53,8 @@ test("verified Stripe customers, concurrent Checkout, signed and reordered membe
       checkoutRequests++;
       assert.equal(params.get("customer"),customer);
       assert.equal(params.get("mode"),"subscription");
+      assert.equal(params.get("success_url"),config.siteUrl + "/membership?checkout=success");
+      assert.equal(params.get("cancel_url"),config.siteUrl + "/membership?checkout=canceled");
       assert.equal(params.get("line_items[0][price]"),priceId);
       assert.equal(params.get("subscription_data[metadata][application]"),"caolu_reader_membership_v1");
       assert.ok(new Headers(init?.headers).get("idempotency-key"));
@@ -97,6 +99,10 @@ test("verified Stripe customers, concurrent Checkout, signed and reordered membe
       headers: { origin: new URL(config.siteUrl).origin }, payload: { email } });
     assert.equal(guest.statusCode, 303);
     assert.equal(guest.headers.location, "/membership?billing=login");
+    const target = "/agent?tab=rss";
+    const continued = await app.inject({ method: "POST", url: checkoutPath + "?" + new URLSearchParams({ return: target }),
+      headers: { origin: new URL(config.siteUrl).origin } });
+    assert.equal(new URL(continued.headers.location!, config.siteUrl).searchParams.get("return"), target);
     assert.deepEqual(await billingStatus(subject), {customer:false,subscribed:false});
     price.unit_amount = 700;
     await assert.rejects(billingCheckout(subject, email),/Invalid Stripe membership price/);
@@ -104,6 +110,18 @@ test("verified Stripe customers, concurrent Checkout, signed and reordered membe
     price.unit_amount = 500;
     assert.deepEqual(await Promise.all([billingCheckout(subject, email.toUpperCase()),billingCheckout(subject, email)]),[checkoutUrl,checkoutUrl]);
     assert.equal(customerRequests,1);
+    assert.equal(checkoutRequests,1);
+    const token = randomUUID();
+    await sql`INSERT INTO reader_sessions (id_hash,google_subject,expires_at)
+      VALUES (${createHash("sha256").update(token).digest("hex")}, ${subject}, now()+interval '1 hour')`;
+    const restart = await app.inject({ method: "POST", url: checkoutPath + "?" + new URLSearchParams({ return: target }),
+      cookies: { [config.siteUrl.startsWith("https://") ? "__Host-caolu_reader" : "caolu_reader"]: token },
+      headers: { origin: new URL(config.siteUrl).origin } });
+    assert.equal(restart.headers.location,checkoutUrl);
+    const continuation = restart.cookies.find(c => c.name === "caolu_checkout_return")!;
+    assert.equal(decodeURIComponent(continuation.value),target);
+    assert.equal(continuation.httpOnly,true);
+    assert.equal(continuation.path,"/membership");
     assert.equal(checkoutRequests,1);
     sessionStatus = "complete";
     assert.equal(await billingCheckout(subject, email),portalUrl);

@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "{{siteName}} Public API",
+    "title": "{{siteName}} Member API",
     "version": "2.0.0",
-    "description": "Anonymous, read-only API for clients and Agents. No API key is required.\n\nPicking an endpoint: show recent or today's items -> /api/v1/items. Show what is trending right now -> /api/v1/hot-topics. Show the daily digest -> /api/v1/dailies/latest. Keep a complete local copy of the selected set -> /api/v1/selected/snapshot once, then /api/v1/selected/changes forever.\n\nHow often to poll: use each response's Cache-Control s-maxage as the minimum interval, and always send If-None-Match: an unchanged resource answers 304 with an empty body. On 429 or 503, honour Retry-After. There is no push channel (no SSE, webhooks or streaming): poll on an interval.\n\nTitles and summaries are generated from third-party sources; the original is always linked in links.original.",
+    "description": "Read-only membership API for clients and Agents. Create an Agent token at {{siteUrl}}/agent and send it in the Authorization: Bearer <token> header on every request. The service checks the account’s current membership on each request.\n\nPicking an endpoint: show recent or today's items -> /api/v1/items. Show what is trending right now -> /api/v1/hot-topics. Show the daily digest -> /api/v1/dailies/latest. Keep a complete local copy of the selected set -> /api/v1/selected/snapshot once, then /api/v1/selected/changes forever.\n\nHow often to poll: poll no more often than once per minute, honor longer documented intervals, and send If-None-Match when available: an unchanged resource answers 304 with an empty body. On 429 or 503, honour Retry-After. There is no push channel (no SSE, webhooks or streaming): poll on an interval.\n\nTitles and summaries are generated from third-party sources; the original is always linked in links.original.",
     "termsOfService": "{{siteUrl}}/terms"
   },
   "servers": [
@@ -161,23 +161,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -311,23 +299,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -469,23 +445,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -570,7 +534,7 @@
       "get": {
         "operationId": "hotTopics",
         "summary": "List current multi-source hot topics",
-        "description": "The current {{siteName}} Top 10, ranked by multi-source coverage and discussion heat. Each item includes a one-based rank; internal and display heat values are not returned. Uses the latest successfully published ranking, normally refreshed every five minutes. Shared caches use a 60s freshness window; poll no faster than s-maxage and use If-None-Match. If an item includes links.story, it is a human-facing HTML URL: extract its final publicId path segment and call /api/v1/stories/{publicId} for timeline JSON. Never request links.story as an API. When absent, do not construct a story id.",
+        "description": "The current {{siteName}} Top 10, ranked by multi-source coverage and discussion heat. Each item includes a one-based rank; internal and display heat values are not returned. Uses the latest successfully published ranking, normally refreshed every five minutes. Poll no more often than once per minute and use If-None-Match. If an item includes links.story, it is a human-facing HTML URL: extract its final publicId path segment and call /api/v1/stories/{publicId} for timeline JSON. Never request links.story as an API. When absent, do not construct a story id.",
         "responses": {
           "200": {
             "description": "OK",
@@ -627,23 +591,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -805,23 +757,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "404": {
             "description": "Machine-readable problem response.",
@@ -991,23 +931,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -1141,23 +1069,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "404": {
             "description": "Machine-readable problem response.",
@@ -1334,23 +1250,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "404": {
             "description": "Machine-readable problem response.",
@@ -1541,23 +1445,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -1735,23 +1627,11 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
           "403": {
-            "description": "Machine-readable problem response.",
-            "headers": {
-              "X-Request-Id": {
-                "description": "Support correlation identifier for this failed request.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "405": {
             "description": "Machine-readable problem response.",
@@ -1889,7 +1769,14 @@
           {
             "name": "investorMode",
             "in": "query",
-            "schema": { "type": "string", "enum": ["contains", "exact"], "default": "contains" },
+            "schema": {
+              "type": "string",
+              "enum": [
+                "contains",
+                "exact"
+              ],
+              "default": "contains"
+            },
             "description": "Exact matches one investor and its known aliases. Contains also matches literal substrings."
           },
           {
@@ -1940,6 +1827,12 @@
           },
           "400": {
             "description": "Invalid filters or cursor"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/MembershipRequired"
           },
           "503": {
             "description": "Search busy; honor Retry-After"
@@ -3842,6 +3735,40 @@
           }
         }
       }
+    },
+    "securitySchemes": {
+      "agentToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Read-only Agent token issued from {{siteUrl}}/agent to an eligible account."
+      }
+    },
+    "responses": {
+      "AuthenticationRequired": {
+        "description": "Missing or invalid Agent token.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "MembershipRequired": {
+        "description": "The identified account is not entitled to this feature.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      }
     }
-  }
+  },
+  "security": [
+    {
+      "agentToken": []
+    }
+  ]
 }

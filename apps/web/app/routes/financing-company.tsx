@@ -22,7 +22,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   } catch (error) {
     if (request.signal.aborted) throw error;
     const status = error instanceof ApiError ? error.status : 503;
-    if (status === 401 || status === 403) throw offerMembership("financing", name || undefined);
+    if (status === 401 || status === 403) throw offerMembership(request, "financing");
     throw data({ message: status === 404 ? "not_found" : status === 400 ? "bad_request" : "unavailable" }, {
       status: status === 404 || status === 400 ? status : 503, headers: privateHeaders,
     });

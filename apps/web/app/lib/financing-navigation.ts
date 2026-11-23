@@ -1,11 +1,6 @@
-export function financingQuery(params: URLSearchParams) {
-  const query = new URLSearchParams();
-  for (const key of ["company", "investor", "investorMode", "from", "to", "cursor"]) {
-    const value = params.get(key)?.trim();
-    if (value) query.set(key, value);
-  }
-  return query;
-}
+import { financingQuery } from "@aihot/contracts/member-destination";
+
+export { financingQuery };
 
 export function financingCompanyPath(name: string, listSearch: string, historyCursor?: string | null) {
   const params = new URLSearchParams({ name });

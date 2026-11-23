@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useRevalidator } from "react-router";
+import { checkoutDestinationCookie } from "@aihot/contracts/member-destination.server";
+import { checkoutDestinationKey, memberDestination, membershipOffer, offerDestination } from "@aihot/contracts/member-destination";
+import { Link, redirect, useRevalidator } from "react-router";
 import type { SiteStats } from "@aihot/contracts/site";
 import { MCP_TOOL_NAMES as T } from "@aihot/contracts/mcp";
 import { SITE, withSubject } from "@aihot/industry/site";
@@ -30,6 +32,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     getMembership(request),
     apiGet<SiteStats>("/api/site/stats", { signal: request.signal }).catch(() => null),
   ]);
+  const checkout = params.get("checkout");
+  const target = offerDestination(params);
+  if (membership.access && target) throw redirect(target, { headers: privateHeaders });
+  const checkoutReturn = !target && (checkout === "success" || checkout === "canceled");
+  const returnTo = target ?? (checkoutReturn ? checkoutDestinationCookie(request.headers.get("cookie")) : null);
+  const offer = new URL(membershipOffer(returnTo), request.url).searchParams;
   const [adminSession, reader] = membership.admin
     ? await Promise.all([
         adminGet<{ csrf: string }>(request, "/api/admin/me"),
@@ -42,10 +50,10 @@ export async function loader({ request }: Route.LoaderArgs) {
     base: siteUrl(),
     adminCsrf: adminSession?.csrf,
     readerEmail: reader.email,
-    checkout: params.get("checkout"),
+    checkout, checkoutReturn, returnTo,
     billing: params.get("billing"),
-    feature: params.get("feature"),
-    company: params.get("company")?.trim().slice(0, 120) || null,
+    feature: offer.get("feature"),
+    company: offer.get("company")?.trim().slice(0, 120) || null,
   };
 }
 
@@ -189,25 +197,27 @@ function EmailConfirmation({ email }: { email: string }) {
 
 function ActionControls({
   membership,
-  pending,
+  pending, returnTo,
   size = "lg",
 }: {
   membership: Membership;
   pending: boolean;
+  returnTo: string | null;
   size?: "md" | "lg";
 }) {
   const { access, email, admin, customer, billingReady } = membership;
+  const returnQuery = returnTo ? "?" + new URLSearchParams({ return: returnTo }) : "";
   if (access) {
     return (
       <div className="flex flex-wrap items-center gap-2.5">
-        <Link to="/financing" className={buttonClass("primary", size)}>
-          进入融资数据库 <IconArrowRight size={15} />
+        <Link to={returnTo ?? "/financing"} className={buttonClass("primary", size)}>
+          {returnTo ? "继续访问会员内容" : "进入融资数据库"} <IconArrowRight size={15} />
         </Link>
         <Link to="/agent" className={buttonClass("secondary", size)}>
           配置 Agent 接入
         </Link>
         {customer && billingReady && (
-          <form method="post" action="/api/reader/billing/portal">
+          <form method="post" action={"/api/reader/billing/portal" + returnQuery}>
             <button type="submit" className={buttonClass("ghost", "md")}>
               管理 Stripe 订阅
             </button>
@@ -219,7 +229,7 @@ function ActionControls({
   if (!email && !admin) {
     return (
       <div className="space-y-2">
-        <a href="/api/reader/google?return=/membership" className={`${buttonClass("primary", size)} w-full justify-center sm:w-auto`}>
+        <a href={"/api/reader/google?" + new URLSearchParams({ return: returnTo ?? "/membership" })} className={`${buttonClass("primary", size)} w-full justify-center sm:w-auto`}>
           使用 Google 登录并开通
         </a>
         <p className="text-[12px] leading-relaxed text-ink-4">登录后进入 Stripe 安全结账 · 支持随时在 Stripe 后台取消续订</p>
@@ -236,7 +246,11 @@ function ActionControls({
   }
   return (
     <div className="space-y-2">
-      <form method="post" action="/api/reader/billing/checkout">
+      <form method="post" action={"/api/reader/billing/checkout" + returnQuery}
+        onSubmit={() => {
+          // Open Checkout sessions are shared by a reader; billing can start from two different tabs.
+          try { sessionStorage.setItem(checkoutDestinationKey, returnTo ?? ""); } catch { /* server cookie fallback */ }
+        }}>
         <button type="submit" className={`${buttonClass("primary", size)} w-full justify-center sm:w-auto`}>
           订阅会员 · US$5 / 月
         </button>
@@ -362,10 +376,23 @@ function AgentSampleCard({ base }: { base: string }) {
 }
 
 export default function MembershipPage({ loaderData }: Route.ComponentProps) {
-  const { membership, stats, base, adminCsrf, readerEmail, checkout, billing, feature, company } = loaderData;
+  const { membership, stats, base, adminCsrf, readerEmail, checkout, billing, feature, company, checkoutReturn, returnTo } = loaderData;
   const { access, email, admin, customer, billingReady, source } = membership;
   const { revalidate } = useRevalidator();
   const pending = checkout === "success" && !access;
+
+  useEffect(() => {
+    if (!checkoutReturn) return;
+    let target = returnTo;
+    try {
+      const saved = sessionStorage.getItem(checkoutDestinationKey);
+      if (saved !== null) {
+        target = memberDestination(saved);
+        sessionStorage.removeItem(checkoutDestinationKey);
+      }
+    } catch { /* use the server cookie when browser storage is unavailable */ }
+    if (target) window.location.replace(membershipOffer(target, ["checkout", checkout!]));
+  }, [checkoutReturn, checkout, returnTo]);
 
   useEffect(() => {
     // The browser can present a legacy /api/reader cookie that this page's SSR loader cannot see.
@@ -556,7 +583,7 @@ export default function MembershipPage({ loaderData }: Route.ComponentProps) {
               </p>
             )}
 
-            <ActionControls membership={membership} pending={pending} />
+            <ActionControls membership={membership} pending={pending} returnTo={returnTo} />
 
             {email && membership.emailConfirmed === false && (
               <p className="text-[12.5px] text-ink-3">
@@ -664,7 +691,7 @@ export default function MembershipPage({ loaderData }: Route.ComponentProps) {
             <p className="mt-1 text-[13.5px] text-ink-3">US$5 / 月解锁融资数据库与 Agent 全链路接入，可随时在 Stripe 取消续订。</p>
           </div>
           <div className="shrink-0">
-            <ActionControls membership={membership} pending={pending} size="md" />
+            <ActionControls membership={membership} pending={pending} returnTo={returnTo} size="md" />
           </div>
         </section>
       )}

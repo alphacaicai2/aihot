@@ -288,12 +288,35 @@ test("membership gates private HTML and single-fetch data and forwards financing
       if (!suffix) assert.match(await member.text(), path === "/agent" ? /生成访问令牌/ : /导出本页 CSV/);
     }
   }
-  const companyAnon = await fetch(origin + "/financing/company?name=OpenAI", { redirect: "manual" });
+  const filters = new URLSearchParams({ company: "OpenAI", investor: "A+B", investorMode: "exact", cursor: "list+/=" });
+  const company = "/financing/company?" + new URLSearchParams({ name: "OpenAI", list: filters.toString(), cursor: "old+/=" });
+  const companyAnon = await fetch(origin + company, { redirect: "manual" });
   assert.equal(companyAnon.status, 302);
-  assert.equal(companyAnon.headers.get("location"), "/membership?feature=financing&company=OpenAI");
+  const navigation = await fetch(origin + company.replace("/company?", "/company.data?") + "&_routes=routes%2Ffinancing-company");
+  assert.equal(navigation.status, 202);
+  const navigationBody = await navigation.text();
+  assert.ok(navigationBody.includes(encodeURIComponent(company)), navigationBody);
+  const offer = new URL(companyAnon.headers.get("location")!, origin);
+  assert.equal(offer.pathname, "/membership");
+  assert.equal(offer.searchParams.get("return"), company);
+  assert.equal(offer.searchParams.get("company"), "OpenAI");
+  const companyMember = await fetch(offer, { headers, redirect: "manual" });
+  assert.equal(companyMember.headers.get("location"), company);
+  const agent = await fetch(origin + "/agent?tab=rss", { redirect: "manual" });
+  const agentOffer = new URL(agent.headers.get("location")!, origin);
+  assert.equal(agentOffer.searchParams.get("return"), "/agent?tab=rss");
+  const agentMember = await fetch(agentOffer, { headers, redirect: "manual" });
+  assert.equal(agentMember.headers.get("location"), "/agent?tab=rss");
   assert.equal(companyAnon.headers.get("cache-control"), "private, no-store");
-  const companyPrompt = await fetch(origin + "/membership?feature=financing&company=OpenAI");
-  assert.match(await companyPrompt.text(), /查看「OpenAI」的完整历次融资记录需要读者会员权限/);
+  const companyPage = await (await fetch(offer)).text();
+  assert.match(companyPage, /查看「OpenAI」的完整历次融资记录需要读者会员权限/);
+  const loginHref = companyPage.match(/href="([^"]*api\/reader\/google[^"]*)"/)![1];
+  assert.equal(new URL(loginHref.replaceAll("&amp;", "&"), origin).searchParams.get("return"), company);
+
+  const comeback = await fetch(origin + "/membership?checkout=success", {
+    headers: { cookie: headers.cookie + "; caolu_checkout_return=" + encodeURIComponent(company) },
+  });
+  assert.match(await comeback.text(), /继续访问会员内容/);
 
   const member = await fetch(origin + "/membership", { headers });
   const readerPage = await member.text();

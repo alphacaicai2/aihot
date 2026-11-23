@@ -4,6 +4,7 @@ import http from 'node:http';
 import { after, test } from 'node:test';
 import { config } from '@aihot/backend/config';
 import { sql, closeDb } from '@aihot/backend/db';
+import { sha256, stableJson } from '@aihot/backend/lib/ids';
 import { stopBoss } from '@aihot/backend/jobs/queue';
 import { collectSource } from '@aihot/backend/sources/collect';
 import { previewSource } from '@aihot/backend/admin/sources';
@@ -13,17 +14,20 @@ let version = 1;
 let broken = false;
 let redirectNew = false;
 const requests: Array<{ path: string; etag?: string; modified?: string }> = [];
+let burstBarrier: (() => Promise<void>) | undefined;
+const burstDate = new Date().toUTCString();
 const modified = 'Mon, 28 Sep 2026 10:00:00 GMT';
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const path = req.url ?? '/';
   requests.push({ path, etag: req.headers['if-none-match'], modified: req.headers['if-modified-since'] });
   if (path === '/redirect') { res.writeHead(302, { location: redirectNew ? '/new.xml' : '/old.xml' }); res.end(); return; }
+  if (path === '/burst.xml' && burstBarrier) await burstBarrier();
   const etag = path === '/modified.xml' ? undefined : path === '/feed.xml' ? `"v${version}"` : '"shared"';
   if ((etag && req.headers['if-none-match'] === etag) || (!etag && req.headers['if-modified-since'] === modified)) {
     res.writeHead(304, { ...(etag ? { etag } : {}), 'last-modified': modified }); res.end(); return;
   }
-  const entries = Array.from({ length: path === '/feed.xml' ? 40 : 1 }, (_, i) =>
-    `<item><title>Entry ${i} ${path === '/feed.xml' && i === 0 ? version : path} ${T}</title><link>https://example.org/rss-conditional-${T}/${path.replaceAll('/', '')}/${i}</link><pubDate>${new Date(Date.now() - 1000 * i).toUTCString()}</pubDate></item>`).join('');
+  const entries = Array.from({ length: path === '/feed.xml' ? 40 : path === '/burst.xml' ? 122 : path === '/retry.xml' ? 61 : 1 }, (_, i) =>
+    `<item><title>Entry ${i} ${path === '/feed.xml' && i === 0 ? version : path} ${T}</title><link>https://example.org/rss-conditional-${T}/${path.replaceAll('/', '')}/${i}</link><pubDate>${path === '/burst.xml' ? burstDate : new Date(Date.now() - 1000 * i).toUTCString()}</pubDate></item>`).join('');
   res.writeHead(200, { 'content-type': 'application/rss+xml', ...(etag ? { etag } : {}), 'last-modified': modified });
   res.end(broken ? '<not-feed/>' : `<rss version="2.0"><channel><title>Feed</title>${entries}</channel></rss>`);
 });
@@ -83,4 +87,66 @@ test('Last-Modified works without ETag and changing redirect targets cannot acce
   assert.equal((await collectSource(redirect)).created, 1, 'new destination is fetched without old destination validators');
   assert.equal(requests.at(-1)!.path, '/new.xml');
   assert.equal(requests.at(-1)!.etag, undefined);
+});
+
+test('a native RSS burst drains durable pages in order before conditional polling resumes', async () => {
+  const id = `rss-burst-${T}`;
+  const hits = () => requests.filter(r => r.path === '/burst.xml').length;
+  await source(id, '/burst.xml');
+  // Simulate an old collector which had already acknowledged the full response.
+  const legacy = { configHash: sha256(stableJson({ feedUrl: base + '/burst.xml' })),
+    etag: '"shared"', lastModified: null, responseUrl: base + '/burst.xml' };
+  await sql`UPDATE sources SET cursor=cursor || ${sql.json({ rss: legacy })} WHERE id=${id}`;
+  // Make both jobs fetch from the same cursor before either can commit its snapshot.
+  let received = 0;
+  const both = Promise.withResolvers<void>();
+  burstBarrier = () => { if (++received === 2) both.resolve(); return both.promise; };
+  const concurrent = await Promise.all([collectSource(id), collectSource(id)]).finally(() => { burstBarrier = undefined; });
+  assert.equal(concurrent.reduce((n, r) => n + r.created, 0), 60);
+  const afterFirst = await cursor(id);
+  assert.deepEqual(afterFirst.rss, legacy);
+  assert.ok(requests.filter(r => r.path === '/burst.xml').every(r => !r.etag), 're-read the legacy window once');
+  assert.equal(afterFirst.rssBacklog.nextPage, 1);
+  const pages = async () => (await sql`SELECT jsonb_array_length(entries) AS n FROM source_rss_pages
+    WHERE source_id=${id} ORDER BY page`).map(r => r.n);
+  assert.deepEqual(await pages(), [60, 2]);
+  const initialReads = hits();
+  // Even if the feed disappears, workers restart from the captured material.
+  broken = true;
+  try {
+    assert.equal((await collectSource(id)).created, 60);
+    assert.deepEqual((await cursor(id)).rss, legacy);
+    assert.deepEqual(await pages(), [2]);
+    assert.equal((await collectSource(id)).created, 2);
+    assert.equal(hits(), initialReads);
+  } finally { broken = false; }
+  assert.deepEqual(await pages(), []);
+  const final = await cursor(id);
+  assert.equal(final.rssBacklog, undefined);
+  assert.equal(final.rss.etag, '"shared"');
+  assert.equal((await collectSource(id)).found, 0);
+  assert.equal(requests.at(-1)!.etag, '"shared"');
+  const [last] = await sql`SELECT published_at FROM articles WHERE source_id=${id} AND url LIKE '%/121'`;
+  assert.equal(last!.published_at.toUTCString(), burstDate);
+});
+
+test('a failed first page is retried from the stored feed after the publisher drops it', async () => {
+  const id = `rss-retry-${T}`;
+  await source(id, '/retry.xml');
+  await sql`ALTER TABLE articles ADD CONSTRAINT rss_test_page_write CHECK (url NOT LIKE '%/retry.xml/30') NOT VALID`;
+  try {
+    assert.equal((await collectSource(id)).status, 'failed');
+    assert.equal((await cursor(id)).rssBacklog.nextPage, 0);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM articles WHERE source_id=${id}`)[0]!.n, 0);
+  } finally {
+    await sql`ALTER TABLE articles DROP CONSTRAINT rss_test_page_write`;
+  }
+  const before = requests.filter(r => r.path === '/retry.xml').length;
+  broken = true;
+  try {
+    assert.equal((await collectSource(id)).created, 60);
+    assert.equal((await collectSource(id)).created, 1);
+  } finally { broken = false; }
+  assert.equal(requests.filter(r => r.path === '/retry.xml').length, before);
+  assert.equal((await cursor(id)).rssBacklog, undefined);
 });

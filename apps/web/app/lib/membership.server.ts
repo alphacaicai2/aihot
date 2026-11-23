@@ -1,3 +1,4 @@
+import { memberDestination, membershipOffer } from "@aihot/contracts/member-destination";
 import { data, redirect } from "react-router";
 import { ApiError, apiGet } from "./api.server";
 
@@ -30,15 +31,15 @@ export async function getMembership(request: Request): Promise<Membership> {
   }
 }
 
-export function offerMembership(feature: "agent" | "financing", company?: string) {
-  const params = new URLSearchParams({ feature });
-  if (company) params.set("company", company);
-  return redirect(`/membership?${params}`, { headers: privateHeaders });
+export function offerMembership(request: Request, feature: "agent" | "financing") {
+  const url = new URL(request.url);
+  const target = memberDestination(url.pathname.replace(/\.data$/, "").replace(/\/$/, "") + url.search) ?? "/" + feature;
+  return redirect(membershipOffer(target), { headers: privateHeaders });
 }
 
 export async function requireMembership(request: Request, feature: "agent" | "financing") {
   const membership = await getMembership(request);
-  if (!membership.access) throw offerMembership(feature);
+  if (!membership.access) throw offerMembership(request, feature);
   return membership;
 }
 
@@ -47,7 +48,7 @@ export async function financingData<T>(request: Request, path: string) {
     return await memberGet<T>(request, path);
   } catch (error) {
     if (request.signal.aborted) throw error;
-    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) throw offerMembership("financing");
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) throw offerMembership(request, "financing");
     const status = error instanceof ApiError && error.status === 400 ? 400 : 503;
     throw data({ message: "融资查询暂时不可用" }, { status, headers: privateHeaders });
   }

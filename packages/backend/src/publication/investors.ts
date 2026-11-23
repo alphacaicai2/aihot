@@ -1,8 +1,8 @@
 import { INVESTOR_ALIASES } from "@aihot/industry/investors";
 import { investorSearchKey, type InvestorOption } from "@aihot/contracts/financing";
-import { type Db } from "../db.ts";
-import { listedCondition } from "./items.ts";
-import { dealInvestors, dealRows, namedDeal } from "./research.ts";
+import { sql, type Db } from "../db.ts";
+import { financingIndexReady, financingJoins, publicFinancing } from "./financing-index.ts";
+import { dealInvestors } from "./research.ts";
 import { withSearchCapacity } from "./pool.ts";
 
 const known = new Map(INVESTOR_ALIASES.flatMap(group => group.map(alias => [investorSearchKey(alias), group] as const)));
@@ -29,23 +29,24 @@ export function groupInvestorNames(rows: { name: string; reports: number }[]): E
   return [...groups.values()].sort((a,b) => b.popularity - a.popularity || a.name.localeCompare(b.name, "zh-CN"));
 }
 
-export async function investorDirectory(db: Db, now: Date) {
+export async function investorDirectory(db: Db, now: Date, indexed = false) {
+  const source = indexed ? sql`FROM financing_index_members deal` : financingJoins;
+  const article = indexed ? sql`deal.article_id` : sql`p.article_id`;
   const rows = await db<{name:string; reports:number}[]>`
-    SELECT btrim(inv.name) AS name, count(DISTINCT p.article_id)::int AS reports
-    FROM publications p JOIN analyses an ON an.id=p.analysis_id
-    CROSS JOIN ${dealRows} CROSS JOIN LATERAL ${dealInvestors}
-    WHERE ${listedCondition(now)} AND ${namedDeal} AND p.eligible AND (p.category='financing' OR an.output ? 'financingClaims') AND btrim(inv.name)<>''
+    SELECT btrim(inv.name) AS name, count(DISTINCT ${article})::int AS reports
+    ${source} CROSS JOIN LATERAL ${dealInvestors}
+    WHERE ${indexed ? sql`true` : publicFinancing(now)} AND btrim(inv.name)<>''
     GROUP BY btrim(inv.name) ORDER BY reports DESC, name`;
   return groupInvestorNames(rows);
 }
 
 export function loadInvestorOptions(now = new Date()) {
-  return withSearchCapacity(async db => (await investorDirectory(db,now)).map(({name, aliases}) => ({ name, aliases })));
+  return withSearchCapacity(async db => (await investorDirectory(db,now,await financingIndexReady(db,now))).map(({name, aliases}) => ({ name, aliases })), true);
 }
 
-export async function financingInvestorNames(db: Db, now: Date, input: string, exact: boolean) {
+export async function financingInvestorNames(db: Db, now: Date, input: string, exact: boolean, indexed = false) {
   const key = investorSearchKey(input);
   if (!exact && !known.has(key)) return [];
-  const directory = await investorDirectory(db,now);
+  const directory = await investorDirectory(db,now,indexed);
   return directory.find(group => [group.name,...group.aliases].some(name => investorSearchKey(name) === key))?.originals ?? [];
 }

@@ -212,9 +212,16 @@ async function markUnknown(tx: Db, receiptId: number, reason: string) {
  * they are released like any other unknown outcome even when nothing retries them.
  */
 export async function markStalePendingReceipts(): Promise<number> {
-  const stale = await sql<{ id: number }[]>`SELECT id FROM receipts WHERE status = 'pending' AND updated_at < ${new Date(Date.now() - PENDING_STALE_MS)}`;
-  for (const r of stale) await sql.begin((tx) => markUnknown(tx, r.id, "placeholder went stale without a recorded result"));
-  return stale.length;
+  const cutoff = new Date(Date.now() - PENDING_STALE_MS);
+  const reason = "placeholder went stale without a recorded result";
+  return sql.begin(async tx => {
+    // UPDATE rechecks the predicate after a concurrent response writer releases its row lock.
+    const changed = await tx<{ id: number }[]>`UPDATE receipts SET status='unknown', error=${reason}, updated_at=now()
+      WHERE status='pending' AND updated_at < ${cutoff} RETURNING id`;
+    if (changed.length) await tx`UPDATE receipt_attempts SET status='unknown', error=${reason}, finished_at=now()
+      WHERE status='pending' AND receipt_id = ANY(${tx.array(changed.map(row => row.id))}::bigint[])`;
+    return changed.length;
+  });
 }
 
 export async function completeReceipt(db: Db, receiptId: number): Promise<void> {

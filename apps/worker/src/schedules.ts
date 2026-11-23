@@ -1,3 +1,4 @@
+import { refreshFinancingIndex } from "@aihot/backend/publication/financing-index";
 import { runFinancingBatch } from "@aihot/backend/editorial/financing-sweep";
 // Cron-style schedules (Asia/Shanghai). Each run is recorded in job_runs; missed slots run once.
 import type { PgBoss } from "pg-boss";
@@ -37,6 +38,7 @@ interface Scheduled {
 const collecting = process.env.COLLECT_ENABLED !== "false";
 
 export const SCHEDULES: Scheduled[] = [
+  { name: "financing.index", cron: "* * * * *", run: refreshFinancingIndex },
   { name: "financing.extract", cron: "* * * * *", run: runFinancingBatch },
   { name: "content.sweep", cron: "*/5 * * * *", run: sweepUnprocessed },
   // Full-text translations of newly selected items (model calls; off with MODEL_CALLS_ENABLED=false).

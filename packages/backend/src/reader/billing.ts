@@ -1,10 +1,11 @@
 import Stripe from "stripe";
+import { membershipOffer } from "@aihot/contracts/member-destination";
 import { config, credential } from "../config.ts";
 import { sql, type Tx } from "../db.ts";
 
 const setting = (name: string) => credential("integrations", name);
 const application = "caolu_reader_membership_v1";
-const memberUrl = () => config.siteUrl + "/membership";
+const memberUrl = (target: string | null = null) => config.siteUrl + membershipOffer(target);
 const normalize = (email: string) => email.trim().toLowerCase();
 const idOf = (value: string | { id: string } | null | undefined) => typeof value === "string" ? value : value?.id;
 
@@ -53,19 +54,19 @@ function monthlyPrice(price: Stripe.Price): boolean {
     && price.recurring.usage_type === "licensed" && !price.transform_quantity;
 }
 
-async function portalUrl(stripe: Stripe, customer: string) {
+async function portalUrl(stripe: Stripe, customer: string, target: string | null) {
   const configuration = setting("STRIPE_PORTAL_CONFIGURATION_ID") ?? undefined;
-  const session = await stripe.billingPortal.sessions.create({ customer, configuration, return_url: memberUrl() });
+  const session = await stripe.billingPortal.sessions.create({ customer, configuration, return_url: memberUrl(target) });
   return session.url;
 }
 
-export async function billingPortal(googleSubject: string): Promise<string> {
+export async function billingPortal(googleSubject: string, target: string | null = null): Promise<string> {
   const [account] = await sql<Account[]>`SELECT stripe_customer FROM reader_billing_accounts WHERE google_subject=${googleSubject}`;
-  if (!account?.stripe_customer) return memberUrl();
-  return portalUrl(stripeSettings().stripe, account.stripe_customer);
+  if (!account?.stripe_customer) return memberUrl(target);
+  return portalUrl(stripeSettings().stripe, account.stripe_customer, target);
 }
 
-export async function billingCheckout(googleSubject: string, verifiedEmail: string): Promise<string> {
+export async function billingCheckout(googleSubject: string, verifiedEmail: string, target: string | null = null): Promise<string> {
   const email = normalize(verifiedEmail);
   const { stripe, price } = stripeSettings();
   const configuredPrice = await stripe.prices.retrieve(price);
@@ -81,7 +82,7 @@ export async function billingCheckout(googleSubject: string, verifiedEmail: stri
         // Incomplete, past-due, or active subscriptions must be managed, never duplicated.
         const sub = previous.subscription;
         if (!sub || typeof sub === "string") throw new Error("Missing Checkout subscription");
-        if (sub.status !== "canceled" && sub.status !== "incomplete_expired") return portalUrl(stripe, customer);
+        if (sub.status !== "canceled" && sub.status !== "incomplete_expired") return portalUrl(stripe, customer, target);
       } else if (previous.status !== "expired") {
         throw new Error("Unexpected Checkout session state");
       }

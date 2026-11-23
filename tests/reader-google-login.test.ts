@@ -20,7 +20,8 @@ test("Google sign-in creates only a reader session and logout revokes it", async
   const client = "test-reader-client";
   process.env.GOOGLE_CLIENT_ID = client;
   process.env.GOOGLE_CLIENT_SECRET = "test-reader-secret";
-  const start = await app.inject("/api/reader/google");
+  const destination = "/financing/company?" + new URLSearchParams({ name: "公司", list: "investor=A%2BB", cursor: "old" });
+  const start = await app.inject("/api/reader/google?" + new URLSearchParams({ return: destination }));
   const google = new URL(String(start.headers.location));
   const params = google.searchParams;
   assert.equal(google.origin, "https://accounts.google.com");
@@ -65,7 +66,7 @@ test("Google sign-in creates only a reader session and logout revokes it", async
   assert.equal((await finish()).headers.location, "/#google-login-failed");
   verified = true;
   const result = await finish();
-  assert.equal(result.headers.location, "/");
+  assert.equal(result.headers.location, destination);
   assert.equal(result.cookies.find(c => c.name === flow.name)?.maxAge, 0);
   const session = result.cookies.find(c => c.name === (config.siteUrl.startsWith("https://") ? "__Host-caolu_reader" : "caolu_reader"))!;
   assert.equal(session.httpOnly, true);
@@ -76,7 +77,7 @@ test("Google sign-in creates only a reader session and logout revokes it", async
   const member = () => app.inject({ url: "/api/reader/membership", cookies: readerCookies });
   assert.equal((await member()).json().emailConfirmed, false);
   hd = "example.com";
-  assert.equal((await finish()).headers.location, "/");
+  assert.equal((await finish()).headers.location, destination);
   assert.equal((await member()).json().emailConfirmed, true);
   assert.equal((await me()).headers["cache-control"], "private, no-store");
   assert.equal((await app.inject({ url: "/api/auth/check", cookies: readerCookies })).statusCode, 401);

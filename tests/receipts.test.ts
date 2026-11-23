@@ -9,7 +9,7 @@ import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { chatJson, ModelOutputError } from "@aihot/backend/providers/llm";
 import { embeddingsAvailable } from "@aihot/backend/providers/embeddings";
-import { BudgetExceededError, paidRequest, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, markStalePendingReceipts, paidRequest, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 import { autoReleaseUnknownReceipts } from "@aihot/backend/admin/runs";
 
 const usage = { prompt_tokens: 80, completion_tokens: 20, total_tokens: 100 };
@@ -118,4 +118,39 @@ test("an unknown outcome is released automatically once, so a lost answer costs 
   assert.equal(await status(), "unknown", "a second loss waits for the admin");
   await assert.rejects(paidRequest(req, lost), ReceiptUnknownError);
   assert.equal(sent, 2);
+});
+
+test("stale cleanup respects a response being committed and marks only outstanding attempts", async () => {
+  const pending = async () => {
+    const [r] = await sql`INSERT INTO receipts(logical_key,service,purpose,status,updated_at)
+      VALUES (${tag()}, 'test', 'cleanup_race', 'pending', now() - interval '30 minutes') RETURNING id`;
+    await sql`INSERT INTO receipt_attempts(receipt_id,attempt,service,status) VALUES (${r!.id},1,'test','pending')`;
+    return r!.id;
+  };
+  const delivered = await pending();
+  const expired = await pending();
+  let cleanup!: Promise<number>;
+  await sql.begin(async tx => {
+    await tx`UPDATE receipts SET status='received',updated_at=now(),received_at=now() WHERE id=${delivered}`;
+    await tx`UPDATE receipt_attempts SET status='received' WHERE receipt_id=${delivered}`;
+    const [writer] = await tx`SELECT pg_backend_pid() AS pid`;
+    cleanup = markStalePendingReceipts();
+    // Wait until the cleaner is blocked on our uncommitted receipt. Its original
+    // snapshot still sees a stale pending row; after commit it must preserve the answer.
+    for (let attempt = 0; ; attempt++) {
+      const [r] = await sql`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+        WHERE ${writer!.pid} = ANY(pg_blocking_pids(pid))) AS waiting`;
+      if (r!.waiting) break;
+      assert.ok(attempt < 200, "cleanup should be waiting for the response transaction");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  });
+  await cleanup;
+  const status = async (id: number) => {
+    const [r] = await sql`SELECT r.status AS receipt,a.status AS attempt FROM receipts r JOIN receipt_attempts a
+      ON a.receipt_id=r.id WHERE r.id=${id}`;
+    return [r!.receipt, r!.attempt];
+  };
+  assert.deepEqual(await status(delivered), ["received", "received"]);
+  assert.deepEqual(await status(expired), ["unknown", "unknown"]);
 });

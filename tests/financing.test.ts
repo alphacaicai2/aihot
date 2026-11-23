@@ -7,6 +7,8 @@ import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { analyzeArticle } from "@aihot/backend/editorial/analyze";
 import { runFinancingBatch } from "@aihot/backend/editorial/financing-sweep";
+import { refreshFinancingIndex, financingIndexReady } from "@aihot/backend/publication/financing-index";
+import { loadFinancing } from "@aihot/backend/publication/financing";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { composeDaily } from "@aihot/backend/reports/compose";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -197,10 +199,42 @@ test("one reviewed round shows every source when an investor matches only one re
     assert.equal(events[0].id,"round:" + rid);
     assert.equal(events[0].reportCount,2);
     assert.deepEqual(new Set(events[0].reports.map((r: {id:string}) => r.id)),new Set([id,weekly]));
+    const live = await authedGet(url + "&format=csv");
+    await refreshFinancingIndex();
+    assert.ok(await financingIndexReady(sql,new Date()));
+    assert.deepEqual((await authedGet(url)).json().events, events);
     const csv = (await authedGet(url + "&format=csv")).body;
+    assert.equal(csv, live.body);
     assert.equal(csv.split("\r\n").length,3);
     assert.doesNotMatch(csv,/Isomorphic/);
   } finally { await sql`DELETE FROM financing_round_sources WHERE round_id=${rid}`; }
+});
+
+test("indexed financing pages retain live filter, cursor, and timed visibility semantics", async () => {
+  const article = ids.get("ROUND")!;
+  const base = new Date();
+  const release = new Date(+base + 86_400_000);
+  const urls = ["/api/v1/financing?limit=1", "/api/v1/financing?company=镁伽",
+    "/api/v1/financing?investor=a16z&investorMode=exact", "/api/site/financing/company?name=镁伽科技",
+    "/api/site/financing/investors"].map(encodeURI);
+  const first = await authedGet(urls[0]);
+  urls.push(urls[0] + "&cursor=" + first.json().nextCursor);
+  const live = await Promise.all(urls.map(async url => (await authedGet(url)).json()));
+  await refreshFinancingIndex();
+  assert.deepEqual(await Promise.all(urls.map(async url => (await authedGet(url)).json())), live);
+  const [previous] = await sql`SELECT selected, visible_after FROM publications WHERE article_id=${article}`;
+  try {
+    await sql`UPDATE publications SET selected=true,visible_after=${release} WHERE article_id=${article}`;
+    assert.equal(await financingIndexReady(sql,new Date()),false);
+    await refreshFinancingIndex();
+    const hidden = await loadFinancing({ companyHistory:"某AI公司" });
+    assert.ok(hidden.events.every(e => e.reports.every(r => r.id !== article)));
+    assert.equal(await financingIndexReady(sql,release),false);
+    const visible = await loadFinancing({ companyHistory:"某AI公司" }, release);
+    assert.ok(visible.events.some(e => e.reports.some(r => r.id === article)));
+  } finally {
+    await sql`UPDATE publications SET selected=${previous.selected},visible_after=${previous.visible_after} WHERE article_id=${article}`;
+  }
 });
 
 test("site, public API and RSS filter financing while excluding product background and opinions", async () => {
