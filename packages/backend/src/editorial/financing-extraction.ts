@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { cardPattern, digestCoverage, printedCard, printedRecipient, type DigestEntry } from "./financing-digests.ts";
+import { cardPattern, digestCoverage, financingSections, printedCard, printedRecipient, type DigestEntry } from "./financing-digests.ts";
 import type { FinancingClaim } from "@aihot/contracts/financing";
 
 export type FinancingMaterial = { id: number; text: string; previousBatch?: number; format?: "transactions" | "rounds"; digestEntries?: DigestEntry[]; replacesEmptyBatch?: number; historicalDigest?: boolean };
@@ -194,6 +194,58 @@ const roundDetails = candidate.pick({ round: true, amountText: true, currency: t
 const multipleRounds = /(?:两|二|三|四|五|多|[2-9])\s*(?:个|笔)?\s*轮(?:次|融资|募资)?|(?:two|three|four|five|multiple|several|[2-9])\s+(?:financing |funding |separate )?rounds?\b/iu;
 const namedRounds = /(?:pre[- ]?)?(?:种子|天使|[a-h][0-9]?)(?:\+{1,3}|加)?\s*轮|(?:pre[- ])?seed\b|series\s+[a-h](?:[0-9]|\+{1,3})?(?![a-z])/giu;
 
+// Find the named party in the grammatical list receiving the investment role. A name
+// elsewhere in a long quote (e.g. a commercial partner) is insufficient.
+function namedInvestorRole(quote: string, name: string, names: string[]) {
+  if (/[〔〕]/u.test(quote)) return false;
+  let text = quoteIndex(quote).folded;
+  let wanted = "";
+  for (const [i,n] of names.entries()) {
+    const label = "〔" + i + "〕";
+    text = text.replaceAll(quoteIndex(n).folded,label);
+    if (n === name) wanted = label;
+  }
+  const list = "〔[0-9]+〕(?:[、,，和与及\\s]+〔[0-9]+〕)*";
+  const roles = new RegExp("(?:^|[、，,:：;；\\s]|由|获|包括)" + list + "(?:及其(?:下属|旗下)基金)?(?:等(?:机构|投资方)?)?(?:共同|主要|联合)?(?:领投|跟投|参投|追加投资|联合投资|共同投资|投资|参与(?:增资|投资|融资))|(?:投资者|投资人|投资方)(?:包括|为|有)" + list, "gu");
+  return Boolean(wanted) && [...text.matchAll(roles)].some(m=>m[0].includes(wanted));
+}
+
+// Require the returned investor and role together in the same sentence of the named
+// section. Inspect the unabridged sentence so shortening a quote cannot remove a qualifier.
+function sectionInvestors(text: string, claim: FinancingClaim, investors: unknown) {
+  const excluded = /此前|曾经|曾(?:参与|领投|跟投|投资)|早前|去年|过往|历史|上一轮|上轮|前一轮|拟|意向|洽谈|潜在|可能|预计|计划|有望|考虑|或将|将(?:参与|投资|领投|跟投)|尚未|未(?:参与|出资|投资)|未具名|顾问|承销商/u;
+  const normStage = (s: string) => s.normalize("NFKC").toLowerCase().replace(/\s/g,"");
+  const tranche = /首笔|第一笔|首批|首期|首关|首次交割/u.exec(claim.evidence + " " + text)?.[0];
+  const proofs: Array<{name:string; quote:string}> = [];
+  const candidates = Array.isArray(investors) ? investors : [];
+  const names = [...new Set<string>(candidates.map(v=>v?.name).filter(n=>typeof n === "string" && n.trim()))].sort((a,b)=>b.length - a.length);
+  for (const v of candidates) {
+    if (typeof v?.name !== "string" || typeof v?.quote !== "string" || proofs.some(p=>p.name===v.name)) continue;
+    if (!namedInvestorRole(v.quote,v.name,names) || /(?:旗下|下属)(?:的)?(?:[数多一二两三四五六七八九十\d]+[家只支个]|基金$)/u.test(v.name)) continue;
+    for (const [sentence] of text.matchAll(/[^。！？；;\n]+[。！？；;]?/gu)) {
+      if (sentence.length > 600 || excluded.test(sentence) || !sourceQuotes(sentence)(v.quote)) continue;
+      const opening = sentence.trimStart();
+      const current = normStage(claim.company);
+      const stage = normStage(claim.round ?? "");
+      if (!/^(?:本轮|本次|此次|新一轮|该轮|首关|首笔|首期|首批|首次交割)/u.test(opening) &&
+          !normStage(opening).startsWith(current) && !(stage && normStage(opening).startsWith(stage))) continue;
+      if (!namedInvestorRole(sentence,v.name,names)) continue;
+      const cited = sourceQuotes(v.quote)(v.name);
+      if (!cited) continue;
+      const spelled = sourceQuotes(sentence)(v.name);
+      if (!spelled || /^(?:的)?(?:旗下|下属|管理的|通过其)/u.test(sentence.slice(sentence.indexOf(spelled) + spelled.length).trim())) continue;
+      const stages = [...sentence.matchAll(namedRounds)].map(m=>normStage(m[0]));
+      if (stages.some(stage=>stage !== normStage(claim.round ?? ""))) continue;
+      if (!stages.length && !/本轮|本次|此次|新一轮|该轮|首关|首笔|首期|首批|首次交割/u.test(sentence)) continue;
+      // A whole-round list does not identify who funded an individual closing/tranche.
+      if (tranche && !sentence.includes(tranche)) continue;
+      proofs.push({name:v.name,quote:sentence.trim()});
+      break;
+    }
+  }
+  return proofs;
+}
+
 // A single passage can announce several rounds while allocating only some terms.
 // Keep the common announcement as evidence and require round-specific quotes for terms.
 function disclosedRounds(passage: string, item: Record<string, unknown>, rounds: unknown[]) {
@@ -233,12 +285,17 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
   const seen = new Set<string>();
   let rejected = 0;
   const candidates = Array.isArray(value) ? value : [];
+  const sections = financingSections(source.text,source.digestEntries);
   const cards = source.digestEntries?.some(e => e.stage) ? [...source.text.matchAll(new RegExp(cardPattern,"gu"))] : [];
   for (const item of candidates) {
-    const quoted = typeof item?.passage === "string" && item.passage.length <= 1600 && present(item.passage);
-    const evidence = typeof item?.evidence === "string" && item.evidence.length <= 1600 && present(item.evidence);
+    const recipient = typeof item?.company === "string" ? item.company.normalize("NFKC").toLowerCase().replace(/\s/g,"") : "";
+    const matches = sections.filter(s => s.company === recipient);
+    const section = matches.length === 1 ? matches[0] : undefined;
+    const scoped = section ? sourceQuotes(section.text) : present;
+    const quoted = typeof item?.passage === "string" && item.passage.length <= 1600 && scoped(item.passage);
+    const evidence = typeof item?.evidence === "string" && item.evidence.length <= 1600 && scoped(item.evidence);
     const card = cards.length ? printedCardClaim(source,item,cards) : undefined;
-    const passage = quoted || (evidence && evidencePassage(source.text, evidence, item.investors));
+    const passage = quoted || (evidence && evidencePassage(section?.text ?? source.text, evidence, item.investors));
     if (!passage || (cards.length && !card?.claim)) { rejected++; continue; }
     let rounds: unknown[] | undefined;
     if (source.format === "rounds" && evidence) {
@@ -264,7 +321,9 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
         rejected++;
         continue;
       }
-      const { claim, investorEvidence } = result;
+      const { claim } = result;
+      const investorEvidence = section && !rounds ? sectionInvestors(section.text,claim,item.investors) : result.investorEvidence;
+      if (section && !rounds) claim.investors = investorEvidence.map(p=>p.name);
       if (rounds && entry.aggregate) {
         claim.amountBasis = "cumulative";
         claim.recordType = "aggregate_disclosure";

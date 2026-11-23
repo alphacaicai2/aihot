@@ -1,10 +1,11 @@
 import type { FinancingClaim } from "@aihot/contracts/financing";
+import { financingSections } from "./financing-digests.ts";
 import { sql } from "../db.ts";
 import { FinancingBatchAnswer, financingBatchEntry, type FinancingMaterial } from "./financing-extraction.ts";
 
 const key = (c: FinancingClaim) => JSON.stringify([c.company,c.kind,c.round,c.amountText,c.recordType]);
 
-/** Revalidate explicitly listed, finished printed-card digests from their original completed receipt.
+/** Revalidate explicitly listed, finished structured financing digests from their original completed receipt.
  * No provider or scheduler is involved. Keep accepted field values and skip edited/reconciled reports. */
 export async function replayFinancingDigests(ids: number[], apply = false) {
   if (!ids.length || ids.length > 150 || ids.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error("expected 1–150 positive analysis IDs");
@@ -25,7 +26,8 @@ export async function replayFinancingDigests(ids: number[], apply = false) {
       ORDER BY an.id ${apply ? tx`FOR UPDATE OF an` : tx``}`;
     const improved = [];
     for (const row of rows) {
-      if (!row.material.digestEntries?.some(e => e.stage) || !row.content) continue;
+      const {digestEntries, text} = row.material;
+      if (!row.content || (!digestEntries?.some(e => e.stage) && !financingSections(text,digestEntries).length)) continue;
       let parsed;
       try { parsed = FinancingBatchAnswer.parse(JSON.parse(row.content)); } catch { continue; }
       const entries = parsed.results.filter(r => r.id === row.id);

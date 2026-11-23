@@ -84,13 +84,13 @@ test("the worker repairs confirmed v1 omissions only and serves new digests befo
     assert.equal(partial.financingReview.coverage.missing.length, 1);
     assert.equal(await runFinancingBatch(), "idle");
     const normalized = financingBatchEntry({id:fix,text:original,format:"rounds",digestEntries:sections},claims).claims!;
-    async function finishedReceipt(id:number,status:string,prior=normalized.slice(0,0)) {
+    async function finishedReceipt(id:number,status:string,prior=normalized.slice(0,0),section?:{text:string; claims:unknown[]}) {
       const reply = claims.map((c,i)=>({...c,passage:undefined,evidence:deals[i]!.line.split("11-20 ")[1]}));
-      const material = [{id,format:"rounds",digestEntries:sections,text:original}];
+      const material = [{id,format:"rounds",digestEntries:section ? digestEntries(title,section.text,null) : sections,text:section?.text ?? original}];
       const [b] = await sql`INSERT INTO financing_extraction_batches(material,finished_at) VALUES (${sql.json(material)},now()) RETURNING id`;
       const [r] = await sql`INSERT INTO receipts(logical_key,purpose,subject,service,status,request,response)
         VALUES (${tag()},'financing_extract',${"financing-batch:"+b!.id},'llm',${status},'{"promptVersion":"financing-digest-v1"}',
-        ${sql.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({results:[{id,claims:reply}]})}}]})}) RETURNING id`;
+        ${sql.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({results:[{id,claims:section?.claims ?? reply}]})}}]})}) RETURNING id`;
       const out = {financingBatch:b!.id,financingClaims:prior,financingReview:{reason:"incomplete_roundup",version:"financing-digest-v1",receiptId:r!.id}};
       await sql`UPDATE analyses SET output=${sql.json(out as never)} WHERE id=${id}`;
     }
@@ -110,6 +110,25 @@ test("the worker repairs confirmed v1 omissions only and serves new digests befo
     assert.deepEqual(await replayFinancingDigests(ids,true),[]);
     assert.equal((await review(repair)).financingClaims[0].evidence,"已有已核原文");
     for (const id of [manual,unknown]) assert.equal((await review(id)).financingClaims.length,0);
+    const first = "甲科技完成 A 轮融资。";
+    const second = "乙科技完成 B 轮融资。";
+    const headingBody = "【甲科技完成A轮融资】" + first + "公司主营芯片。本轮由甲基金领投。【乙科技完成B轮融资】" + second;
+    const proposals = [
+      {company:"甲科技",evidence:first,round:"A 轮",kind:"company_round",investors:[{name:"甲基金",quote:"本轮由甲基金领投"}]},
+      {company:"乙科技",evidence:second,round:"B 轮",kind:"company_round",investors:[]},
+    ];
+    const untouched = financingBatchEntry({id:1,text:headingBody,format:"rounds"},proposals).claims!;
+    const sectionId = await article(headingBody,"financing");
+    const manualSection = await article(headingBody,"financing");
+    for (const id of [sectionId,manualSection]) await finishedReceipt(id,"completed",untouched,{text:headingBody,claims:proposals});
+    await sql`INSERT INTO financing_claim_reviews(article_id,company,evidence,part,original_claim,claim,round_id)
+      SELECT article_id,'甲科技',${first},1,'{}','{}',gen_random_uuid() FROM analyses WHERE id=${manualSection}`;
+    const headings = await replayFinancingDigests([sectionId,manualSection]);
+    assert.deepEqual(headings.map(r=>r.id),[sectionId]);
+    assert.deepEqual(await replayFinancingDigests([sectionId,manualSection],true),headings);
+    assert.deepEqual((await review(sectionId)).financingClaims[0].investors,["甲基金"]);
+    assert.deepEqual((await review(manualSection)).financingClaims[0].investors,[]);
+    assert.deepEqual(await replayFinancingDigests([sectionId,manualSection],true),[]);
     assert.equal(provider.hits(), 3);
   } finally {
     await provider.close();
@@ -143,4 +162,35 @@ test("a receipt may cite the body of a printed financing card; terms and investo
     assert.equal(partial.review.reason,"incomplete_roundup"); assert.equal(partial.claims?.length,1);
   }
   assert.equal(financingBatchEntry({...material,digestEntries:undefined},proposed).claims?.length,0);
+});
+
+test("section receipts bind current investors to their company, financing and closing", () => {
+  const first = "甲科技完成 A+ 轮融资，累计超过 1 亿美元。";
+  const second = "乙科技完成 B 轮融资首笔交割。";
+  const text = "【甲科技完成A+轮融资】" + first +
+    "新一轮由甲基金、乙基金联合投资。上一轮由旧基金领投。公司正洽谈由未来基金本轮跟投。" +
+    "本轮由顾问基金担任财务顾问。本轮由实投基金领投，商业伙伴亦出席。" +
+    "戊科技本轮由错企基金领投。本轮由大海基金领投。本轮由母公司旗下两只基金参与增资。本轮由福基金及其旗下基金主要领投。" +
+    "B轮由他轮基金领投。【新产品发布】产品发布会上，本轮由别处基金领投。" +
+    "【乙科技完成B轮融资】" + second + "本轮其他投资者包括整轮基金。首笔由首笔基金跟投。" +
+    "【其他企业完成C轮融资】本轮由邻企基金领投。";
+  const material={id:41,text,format:"rounds" as const,digestEntries:digestEntries("科技早报",text,null)};
+  const i=(name:string,quote:string)=>({name,quote});
+  const firstInvestors=[
+    i("甲基金","甲基金、乙基金联合投资"),i("乙基金","甲基金、乙基金联合投资"),
+    i("旧基金","旧基金领投"),i("未来基金","未来基金本轮跟投"),i("顾问基金","顾问基金担任财务顾问"),
+    i("实投基金","本轮由实投基金领投，商业伙伴亦出席"),i("商业伙伴","本轮由实投基金领投，商业伙伴亦出席"),
+    i("母公司","母公司旗下两只基金参与增资"),i("母公司旗下两只基金","母公司旗下两只基金参与增资"),
+    i("海基金","海基金领投"),i("错企基金","错企基金领投"),i("福基金","福基金及其旗下基金主要领投"),i("他轮基金","他轮基金领投"),i("别处基金","别处基金领投"),
+    i("首笔基金","首笔基金跟投"),i("邻企基金","邻企基金领投"),
+  ];
+  const value=[{company:"甲科技",round:"A+ 轮",kind:"company_round",amountText:"累计超过 1 亿美元",
+    amountBasis:"cumulative",evidence:first,investors:firstInvestors},
+    {company:"乙科技",round:"B 轮",kind:"company_round",evidence:second,investors:[
+      i("整轮基金","本轮其他投资者包括整轮基金"),i("首笔基金","首笔基金跟投"),i("邻企基金","邻企基金领投")]}];
+  const result=financingBatchEntry(material,value);
+  assert.deepEqual(result.claims?.map(c=>c.investors),[["甲基金","乙基金","实投基金","福基金"],["首笔基金"]]);
+  assert.equal(result.claims?.[0]?.amountBasis,"cumulative");
+  const noHeadings={...material,text:text.replace(/【[^】]*】/g,""),digestEntries:[{heading:"甲科技完成融资"},{heading:"乙科技获得融资"}]};
+  assert.deepEqual(financingBatchEntry(noHeadings,value).claims?.map(c=>c.investors),[[],[]]);
 });

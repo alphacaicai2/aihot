@@ -32,6 +32,28 @@ export function digestEntries(title: string, excerpt: string | null, body: strin
   return unique.length >= 2 ? unique.map(heading => ({ heading })) : [];
 }
 
+// Bound a named financing section at the next heading of any kind, including unrelated news.
+export function financingSections(text: string, entries?: DigestEntry[]) {
+  if (!entries?.length || entries.some(e => e.stage)) return [];
+  const headings = new Set(entries.map(e => compact(e.heading)));
+  const seen = new Set<string>();
+  const sections: Array<{company:string; text:string}> = [];
+  for (const line of text.split("\n")) {
+    const markers = [...line.matchAll(/【([^【】]+)】/gu)];
+    for (const [i,m] of markers.entries()) {
+      const title = m[1]!;
+      if (!headings.has(compact(title))) continue;
+      const company = title.split(/完成|获得|获|筹集|募集/u)[0]?.trim();
+      if (!company) continue;
+      const body = line.slice(m.index + m[0].length,markers[i + 1]?.index).trim();
+      if (!body || seen.has(body)) continue;
+      seen.add(body);
+      sections.push({company:compact(company),text:body});
+    }
+  }
+  return sections;
+}
+
 const stageName = (s: string) => compact(s).replace(/[-‐‑–—]/g, "").replace(/轮融资$/, "轮");
 const amountValue = (s: string) => compact(s).split(/[（(]/)[0]!.replace(/(?:人民币|美元|欧元|韩元|港元|英镑|元)$/, "");
 const denomination = (s: string) => /人民币|美元|欧元|韩元|港元|英镑/.exec(s)?.[0];
