@@ -42,6 +42,8 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
   ].filter(Boolean);
   const csv = new URLSearchParams(query);
   csv.set("format", "csv");
+  const aggregates = results?.events.filter(e => e.reports[0]?.claim.recordType === "aggregate_disclosure").length ?? 0;
+  const unresolved = results?.events.filter(e => e.reports[0]?.claim.recordType === "unresolved").length ?? 0;
   const next = new URLSearchParams(query);
   if (results?.nextCursor) next.set("cursor", results.nextCursor);
   return (
@@ -53,7 +55,7 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2">
             <div className="flex flex-wrap items-baseline gap-2">
               <h2 id="financing-results" className="text-[18px] font-bold">融资事件</h2>
-              {results && <span className="num text-xs text-ink-3">本页 {results.events.length} 起</span>}
+              {results && <span className="num text-xs text-ink-3">本页 {results.events.length - aggregates - unresolved} 笔交易{aggregates > 0 && ` · ${aggregates} 条合计披露`}{unresolved > 0 && ` · ${unresolved} 条待核实`}</span>}
             </div>
             {results && <a className={buttonClass("secondary", "md")} href={`/api/v1/financing?${csv}`}><IconDownload size={15} />导出本页 CSV</a>}
           </div>

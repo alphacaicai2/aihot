@@ -3,10 +3,9 @@ import { sql } from "../db.ts";
 import { chatJson } from "../providers/llm.ts";
 import { BudgetExceededError, completeReceipt } from "../providers/receipts.ts";
 import { modelFor } from "./models.ts";
-import { FinancingBatchAnswer, financingInstructions, financingText, transactionInstructions, financingBatchEntry, type FinancingMaterial } from "./financing-extraction.ts";
+import { FinancingBatchAnswer, financingBatchProtocol, financingText, financingBatchEntry, type FinancingMaterial } from "./financing-extraction.ts";
 
 const batchSize = 5;
-const transactionVersion = "financing-transactions-v2";
 
 async function enqueueFinancing() {
   return sql.begin(async tx => {
@@ -24,7 +23,7 @@ async function enqueueFinancing() {
       LEFT JOIN article_revisions r ON r.article_id=a.id AND r.revision=an.input_revision
       WHERE (p.category='financing' OR ${weekly}) AND p.eligible AND p.visibility='public'
         AND (NOT (coalesce(an.output,'{}'::jsonb) ? 'financingBatch') OR (
-          (an.output->'financingReview'->>'version') IS DISTINCT FROM ${transactionVersion} AND EXISTS (
+          coalesce(an.output->'financingReview'->>'version','') NOT IN ('financing-transactions-v2','financing-transactions-v3') AND EXISTS (
             SELECT 1 FROM financing_extraction_batches old
             WHERE old.id=(an.output->>'financingBatch')::bigint AND old.finished_at IS NOT NULL)
           AND ${weekly}))
@@ -32,7 +31,7 @@ async function enqueueFinancing() {
     const batches: FinancingMaterial[][] = [];
     let regular: FinancingMaterial[] = [];
     for (const row of rows) {
-      const entry: FinancingMaterial = { id: row.id, format: "transactions",
+      const entry: FinancingMaterial = { id: row.id, format: "rounds",
         text: [financingText(row.title, row.excerpt, row.body, row.roundup),
           ...(row.figures ?? []).map(figure => figure.text)].filter(Boolean).join("\n") };
       // Give long roundups their own input and answer budget.
@@ -64,8 +63,7 @@ export async function runFinancingBatch() {
     // validation upgrade instead of paying to produce the same text again.
     const subject = "financing-batch:" + batch.id;
     // Existing in-flight batches must keep their original prompt and receipt identity.
-    const multi = batch.material[0]?.format === "transactions";
-    const version = multi ? transactionVersion : "financing-investors-v1";
+    const { multi, version, system } = financingBatchProtocol(batch.material[0]);
     const [stored] = await sql<{id:number; content:string}[]>`
       SELECT id, response->'choices'->0->'message'->>'content' AS content FROM receipts
       WHERE purpose='financing_extract' AND subject=${subject} AND request->>'promptVersion'=${version}
@@ -78,7 +76,7 @@ export async function runFinancingBatch() {
     }
     const res = recovered && stored ? {data:recovered, receiptId:stored.id} : await chatJson({
       model: await modelFor("structure"), fallback: false, purpose:"financing_extract", subject,
-      promptVersion: version, system: multi ? transactionInstructions : financingInstructions, user: JSON.stringify(batch.material),
+      promptVersion: version, system, user: JSON.stringify(batch.material),
       schema: FinancingBatchAnswer, maxTokens: multi ? 12000 : 5000, temperature: 0, timeoutMs: 120000,
     });
     const byId = new Map<number, unknown>();

@@ -33,7 +33,7 @@ export async function investorDirectory(db: Db, now: Date) {
   const rows = await db<{name:string; reports:number}[]>`
     SELECT btrim(inv.name) AS name, count(DISTINCT p.article_id)::int AS reports
     FROM publications p JOIN analyses an ON an.id=p.analysis_id
-    CROSS JOIN LATERAL ${dealRows} CROSS JOIN LATERAL ${dealInvestors}
+    CROSS JOIN ${dealRows} CROSS JOIN LATERAL ${dealInvestors}
     WHERE ${listedCondition(now)} AND ${namedDeal} AND p.eligible AND (p.category='financing' OR an.output ? 'financingClaims') AND btrim(inv.name)<>''
     GROUP BY btrim(inv.name) ORDER BY reports DESC, name`;
   return groupInvestorNames(rows);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { financingText, validateFinancing, validateTransactions } from "../packages/backend/src/editorial/financing-extraction.ts";
+import { financingBatchProtocol, financingText, validateFinancing, validateTransactions } from "../packages/backend/src/editorial/financing-extraction.ts";
 
 test("only institution names with supporting quotes in this report are published", () => {
   const text = "星辰完成近亿元A轮融资。此轮由蓝海创投领投。";
@@ -72,4 +72,49 @@ test("stored answers without a passage use the named evidence and its immediatel
   assert.equal(result.claims[0]?.amountText, "近2亿美元");
   assert.deepEqual(result.claims[0]?.investors, ["甲基金"]);
   assert.equal(validateTransactions(source,[{...claim,amountText:"50亿美元"}]).claims[0]?.amountText,null);
+});
+
+test("one announcement retains two named rounds, with amounts and investors only where allocated", () => {
+  const evidence = "星辰完成A轮和B轮融资，合计5000万美元。";
+  const terms = "B轮融资3000万美元，由乙基金领投。";
+  const passage = evidence + terms;
+  const source = { id: 1, text: passage, format: "rounds" as const };
+  const deal = { company: "星辰", evidence, passage, amountText: "5000万美元", currency: "USD", kind: "company_round",
+    rounds: [
+      { round: "A轮", amountText: "5000万美元", terms: evidence, investors: [{name:"乙基金",quote:"乙基金领投"}] },
+      { round: "B轮", amountText: "3000万美元", currency: "USD", terms, investors: [{name:"乙基金",quote:"乙基金领投"}] },
+    ] };
+  const { claims } = validateTransactions(source, [deal]);
+  assert.deepEqual(claims.map(c => [c.round, c.amountText, c.currency, c.investors, c.evidence]), [
+    ["A轮", null, null, [], evidence], ["B轮", "3000万美元", "USD", ["乙基金"], evidence],
+  ]);
+  const flat = validateTransactions(source, [{ ...deal, rounds: undefined, round: "A轮", amountBasis: "round" }]);
+  assert.deepEqual(flat.claims.map(c => [c.round, c.amountText]), [["A轮", null], ["B轮", null]]);
+});
+
+test("unallocated multi-round totals stay cumulative and a single deal cannot be relabeled as multiple rounds", () => {
+  const evidence = "甲公司连续完成两轮融资，合计近亿元人民币。";
+  const entry = { company: "甲公司", kind: "company_round", evidence, amountText: "近亿元人民币", currency: "CNY", rounds: [] };
+  const source = { id: 1, format: "rounds" as const, text: evidence };
+  const claim = validateTransactions(source, [entry]).claims[0];
+  assert.equal(claim?.amountBasis, "cumulative");
+  assert.equal(claim?.round, null);
+  assert.equal(claim?.amountText, "近亿元人民币");
+  assert.equal(claim?.recordType, "aggregate_disclosure");
+
+  const oneRound = "甲公司A轮融资近亿元人民币。";
+  const original = validateTransactions({ ...source, text: oneRound }, [{ ...entry, evidence: oneRound, amountBasis: "round", round: "A轮" }]).claims[0];
+  assert.equal(original?.recordType, undefined);
+  assert.equal(original?.round, "A轮");
+});
+
+test("stored batches keep their original systems and receipt versions", () => {
+  const source = { id: 1, text: "original material" };
+  assert.equal(financingBatchProtocol(source).version, "financing-investors-v1");
+  const v2 = financingBatchProtocol({ ...source, format: "transactions" });
+  const v3 = financingBatchProtocol({ ...source, format: "rounds" });
+  assert.equal(v2.version, "financing-transactions-v2");
+  assert.equal(v3.version, "financing-transactions-v3");
+  assert.ok(v3.system.startsWith(v2.system));
+  assert.doesNotMatch(v2.system, /rounds array/);
 });

@@ -3741,6 +3741,10 @@
                         ],
                         "format": "date-time"
                       },
+                      "additionalClaims": {
+                        "type": "array",
+                        "items": { "$ref": "#/components/schemas/FinancingClaim" }
+                      },
                       "claim": {
                         "$ref": "#/components/schemas/FinancingClaim"
                       }
@@ -3771,6 +3775,11 @@
           "evidence"
         ],
         "properties": {
+          "recordType": {
+            "type": "string",
+            "enum": ["aggregate_disclosure", "unresolved"],
+            "description": "合计披露或交易归属待核实的报道单列。"
+          },
           "round": {
             "type": [
               "string",

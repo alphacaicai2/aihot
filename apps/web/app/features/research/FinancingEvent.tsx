@@ -11,14 +11,22 @@ function amount(claim: FinancingClaim) {
   return [claim.amountText, claim.currency].filter(Boolean).join(" ");
 }
 
-function Report({ report }: { report: FinancingReport }) {
-  const c = report.claim;
+function ClaimDetails({ claim: c }: { claim: FinancingClaim }) {
   const fields = [
     [c.kind === "fund_raise" ? "基金" : "公司", c.company],
     [basisLabel[c.amountBasis], c.amountText ? amount(c) : "金额未披露"],
     ["轮次", c.round ?? "未披露"], ["交易状态", statusLabel[c.status]],
     ["投资机构", c.investors.join("、") || "未披露"], ...(c.valuationText ? [["估值", c.valuationText]] : []),
   ];
+  return <>
+      <dl className="my-2 grid grid-cols-2 gap-x-3 gap-y-2 rounded-control bg-surface p-3 sm:grid-cols-3">
+        {fields.map(([name, value]) => <div key={name}><dt className="text-xs text-ink-4">{name}</dt><dd className="mt-0.5 text-[13px] font-medium text-ink-2">{value}</dd></div>)}
+      </dl>
+      <blockquote className="border-l-2 border-accent/50 pl-3 text-[13px] leading-relaxed text-ink-3">{c.evidence}</blockquote>
+  </>;
+}
+
+function Report({ report }: { report: FinancingReport }) {
   return (
     <li className="min-w-0 py-3.5 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-3">
@@ -26,10 +34,7 @@ function Report({ report }: { report: FinancingReport }) {
         {report.publishedAt && <time className="num" dateTime={report.publishedAt}>{beijingDate(report.publishedAt)}</time>}
       </div>
       <Link to={`/items/${report.id}`} className="mt-1 block w-fit text-[15px] font-semibold leading-relaxed text-ink hover:text-accent hover:underline">{report.title}</Link>
-      <dl className="my-2 grid grid-cols-2 gap-x-3 gap-y-2 rounded-control bg-surface p-3 sm:grid-cols-3">
-        {fields.map(([name, value]) => <div key={name}><dt className="text-xs text-ink-4">{name}</dt><dd className="mt-0.5 text-[13px] font-medium text-ink-2">{value}</dd></div>)}
-      </dl>
-      <blockquote className="border-l-2 border-accent/50 pl-3 text-[13px] leading-relaxed text-ink-3">{c.evidence}</blockquote>
+      {[report.claim,...report.additionalClaims ?? []].map((claim,i) => <ClaimDetails key={i} claim={claim} />)}
       <a className="mt-1 inline-flex min-h-10 items-center gap-1 text-[13px] font-medium text-accent hover:underline" href={report.url} target="_blank" rel="noreferrer">查看原文 <IconExternal size={13} /></a>
     </li>
   );
@@ -52,6 +57,8 @@ export function FinancingEvent({ event }: { event: FinancingResponse["events"][n
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
               <span className="num sm:hidden">{date}</span>
               <span>{event.reportCount} 篇报道</span>
+              {claim.recordType === "aggregate_disclosure" && <Badge tone="amber">合计披露</Badge>}
+              {claim.recordType === "unresolved" && <Badge tone="amber">交易归属待核实</Badge>}
               {event.differingClaims && <Badge tone="amber">来源口径有差异</Badge>}
             </span>
             <span className="mt-1 block text-[17px] font-bold leading-snug text-ink">{claim.company}</span>

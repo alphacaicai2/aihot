@@ -209,3 +209,49 @@ test("daily reports put financing in its own section", async () => {
   assert.deepEqual(new Set(section.items.filter((i) => selected.includes(i.itemId)).map((i) => i.itemId)), new Set(selected));
   assert.equal(report!.content.sections.some((s) => s.label !== "投融资动态" && s.items.some((i) => selected.includes(i.itemId))), false);
 });
+
+test("two reviewed rounds in one passage preserve the source and independent search fields", async () => {
+  const article = ids.get("WEEKLY")!;
+  const [raw] = await sql`SELECT c FROM publications p JOIN analyses a ON a.id=p.analysis_id,
+    jsonb_array_elements(a.output->'financingClaims') c WHERE p.article_id=${article} AND c->>'company'='镁伽科技'`;
+  assert.ok(raw?.c);
+  try {
+    for (const [i, stage] of ["种子轮","A轮"].entries()) {
+      const claim = { ...raw.c, round:stage, amountText:null, currency:null, amountBasis:"unknown", investors:[stage + "基金"] };
+      await sql`INSERT INTO financing_claim_reviews(article_id,company,evidence,part,original_claim,claim,round_id)
+        VALUES (${article},${raw.c.company},${raw.c.evidence},${i+1},${sql.json(raw.c)},${sql.json(claim)},gen_random_uuid())`;
+    }
+    const [url, company] = ["/api/v1/financing?", "镁伽"];
+    const result = (await app.inject({method:"GET",url:url+new URLSearchParams({company})})).json();
+    assert.deepEqual(new Set(result.events.map((e: {reports:{claim:{round:string}}[]}) => e.reports[0]!.claim.round)),new Set(["种子轮","A轮"]));
+    const only = (await app.inject({method:"GET",url:url+new URLSearchParams({company,investor:"A轮基金"})})).json();
+    assert.equal(only.events.length,1);
+    assert.equal(only.events[0].reports[0].id,article);
+    assert.equal(only.events[0].reports[0].claim.round,"A轮");
+    assert.equal(only.events[0].reports[0].claim.amountText,null);
+  } finally { await sql`DELETE FROM financing_claim_reviews WHERE article_id=${article}`; }
+});
+
+test("two reviewed mentions in one article keep both quotes and count as one report", async () => {
+  const article = ids.get("WEEKLY")!;
+  const [raw] = await sql`SELECT c FROM publications p JOIN analyses a ON a.id=p.analysis_id,
+    jsonb_array_elements(a.output->'financingClaims') c WHERE p.article_id=${article} AND c->>'company'='镁伽科技'`;
+  assert.ok(raw?.c);
+  const id = "39867ca1-ad76-45b2-b136-e24b18e62209";
+  try {
+    for (const [i, quote] of [robotDeal,"本轮由甲基金领投。"].entries()) {
+      const claim = {...raw.c,evidence:quote};
+      await sql`INSERT INTO financing_claim_reviews(article_id,company,evidence,part,original_claim,claim,round_id)
+        VALUES (${article},${raw.c.company},${raw.c.evidence},${i+1},${sql.json(raw.c)},${sql.json(claim)},${id})`;
+    }
+    const url = "/api/v1/financing?company=" + encodeURIComponent("镁伽");
+    const {events} = (await app.inject({method:"GET",url})).json();
+    assert.equal(events.length,1);
+    assert.equal(events[0].reportCount,1);
+    const [r] = events[0].reports;
+    assert.deepEqual(new Set([r.claim.evidence,r.additionalClaims[0].evidence]),new Set([robotDeal,"本轮由甲基金领投。"]));
+    const csv = (await app.inject({method:"GET",url:url+"&format=csv"})).body;
+    assert.equal(csv.split("\r\n").length,3);
+    assert.ok(csv.includes("记录类型"));
+  } finally { await sql`DELETE FROM financing_claim_reviews WHERE article_id=${article}`; }
+});

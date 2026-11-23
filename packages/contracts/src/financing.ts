@@ -1,4 +1,5 @@
 export interface FinancingClaim {
+  recordType?: "aggregate_disclosure" | "unresolved";
   company: string;
   round: string | null;
   amountText: string | null;
@@ -13,6 +14,7 @@ export interface FinancingClaim {
 export interface FinancingReport {
   id: string; title: string; url: string; sourceName: string; publishedAt: string | null;
   claim: FinancingClaim;
+  additionalClaims?: FinancingClaim[];
 }
 export interface FinancingResponse {
   events: Array<{ id: string; latestAt: string; reports: FinancingReport[]; reportCount: number; differingClaims: boolean }>;

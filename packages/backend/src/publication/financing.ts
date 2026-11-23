@@ -20,16 +20,17 @@ export async function loadFinancing(query: FinancingQuery, now = new Date()): Pr
   const key = sql`CASE WHEN jsonb_array_length(${financingClaims}) > 1 THEN 'deal:' || p.article_id || ':' || deal.seq
     ELSE coalesce('fact:' || f.public_id || ':' || lower(btrim(deal.claim->>'company')), 'item:' || p.article_id) END`;
   const joins = sql`FROM publications p JOIN analyses an ON an.id=p.analysis_id AND an.article_id=p.article_id
-    LEFT JOIN facts f ON f.id=p.fact_id CROSS JOIN LATERAL ${dealRows}`;
+    LEFT JOIN facts f ON f.id=p.fact_id CROSS JOIN ${dealRows}`;
   const publicDeal = sql`${listedCondition(now)} AND p.eligible AND (p.category='financing' OR an.output ? 'financingClaims') AND ${namedDeal}`;
   return withSearchCapacity(async db => {
     const originals = query.investor?.trim() ? await financingInvestorNames(db, now, query.investor, !!query.investorExact) : [];
-    type Member = RoundSource & { seq: number; timeline_at: Date; matches: boolean };
+    type Member = RoundSource & { seq: number; timeline_at: Date; preferred: boolean | null; matches: boolean };
     const sources = await db<Member[]>`
-      SELECT ${key} AS base_id, p.article_id, deal.seq, review.round_id AS reviewed_id,
+      SELECT ${key} AS base_id, p.article_id, deal.seq, coalesce(deal.round_id,review.round_id) AS reviewed_id, deal.preferred,
         p.timeline_at, p.published_at AS reported_at, deal.claim->>'company' AS company,
         deal.claim->>'round' AS stage, deal.claim->>'amountText' AS amount, deal.claim->>'currency' AS currency,
         deal.claim->>'kind' AS kind, deal.claim->>'amountBasis' AS basis, deal.claim->>'status' AS status,
+        deal.claim->'investors' AS investors, deal.claim->>'recordType' AS record_type, deal.claim->>'evidence' AS evidence,
         (true ${range ? sql`AND p.timeline_at >= ${range.start} AND p.timeline_at < ${range.end}` : sql``}
          ${companyCondition(query.company, sql`lower(deal.claim->>'company')`)}
          ${dealInvestorCondition(query.investor, originals, query.investorExact)}) AS matches
@@ -58,9 +59,16 @@ export async function loadFinancing(query: FinancingQuery, now = new Date()): Pr
       id: r.id, title: r.title, url: r.url, sourceName: r.source_name, publishedAt: r.published_at?.toISOString() ?? null, claim: r.claim,
     }]));
     const events = page.map(({ id, latest, members }) => {
-      members.sort((a,b) => b.timeline_at.getTime() - a.timeline_at.getTime() || b.article_id.localeCompare(a.article_id));
-      const reports: FinancingReport[] = members.map(m => reportsByKey.get(m.article_id + ":" + m.seq)!);
-      const signatures = new Set(reports.map(r => JSON.stringify([r.claim.round, r.claim.amountText, r.claim.currency, r.claim.amountBasis, r.claim.status])));
+      members.sort((a,b) => Number(!!b.preferred) - Number(!!a.preferred) || b.timeline_at.getTime() - a.timeline_at.getTime() || b.article_id.localeCompare(a.article_id));
+      const mentions = members.map(m => reportsByKey.get(m.article_id + ":" + m.seq)!);
+      const byArticle = new Map<string, FinancingReport>();
+      for (const report of mentions) {
+        const existing = byArticle.get(report.id);
+        if (existing) (existing.additionalClaims ??= []).push(report.claim);
+        else byArticle.set(report.id,{...report});
+      }
+      const reports = [...byArticle.values()];
+      const signatures = new Set(mentions.map(r => JSON.stringify([r.claim.round, r.claim.amountText, r.claim.currency, r.claim.amountBasis, r.claim.status])));
       return { id, latestAt: new Date(latest).toISOString(), reports, reportCount: reports.length, differingClaims: signatures.size > 1 };
     });
     const hasMore = groups.length > limit;
@@ -76,8 +84,9 @@ export function financingCsv(data: FinancingResponse): string {
     if (/^[\s]*[=+@-]/.test(text)) text = "'" + text;
     return '"' + text.replaceAll('"', '""') + '"';
   };
-  const rows: unknown[][] = [["事件", "公司/基金", "轮次", "金额原文", "币种", "金额口径", "状态", "投资机构", "来源", "发布日期", "原文链接", "证据", "口径有差异"]];
-  for (const e of data.events) for (const r of e.reports) rows.push([e.id, r.claim.company, r.claim.round, r.claim.amountText,
-    r.claim.currency, r.claim.amountBasis, r.claim.status, r.claim.investors.join("; "), r.sourceName, r.publishedAt, r.url, r.claim.evidence, e.differingClaims ? "是" : "否"]);
+  const rows: unknown[][] = [["事件", "公司/基金", "轮次", "金额原文", "币种", "金额口径", "状态", "投资机构", "来源", "发布日期", "原文链接", "证据", "口径有差异", "记录类型"]];
+  for (const e of data.events) for (const r of e.reports) for (const claim of [r.claim,...r.additionalClaims ?? []]) rows.push([e.id, claim.company, claim.round, claim.amountText,
+    claim.currency, claim.amountBasis, claim.status, claim.investors.join("; "), r.sourceName, r.publishedAt, r.url, claim.evidence, e.differingClaims ? "是" : "否",
+    claim.recordType === "aggregate_disclosure" ? "合计披露" : claim.recordType === "unresolved" ? "交易归属待核实" : "交易"]);
   return "\uFEFF" + rows.map(row => row.map(cell).join(",")).join("\r\n");
 }
