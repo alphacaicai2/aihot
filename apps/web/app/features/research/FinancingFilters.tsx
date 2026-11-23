@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Form, Link } from "react-router";
 import { addDays, beijingDate } from "@aihot/contracts/time";
+import { Input } from "../../components/coss/input";
 import { dateProblem } from "../../lib/date-range";
 import { IconChevronDown, IconSearch } from "../../components/icons";
 import { Button } from "../../components/ui/Controls";
 
-const field = "mt-1.5 block h-11 w-full min-w-0 rounded-control border border-line-strong bg-surface px-2.5 text-base font-normal text-ink placeholder:text-ink-4 focus:border-accent lg:text-sm";
+const field = "mt-1.5 min-w-0 font-normal";
 const label = "min-w-0 text-[13px] font-semibold text-ink-2";
 
 export function FinancingFilters({ params, initialError }: { params: URLSearchParams; initialError: string | null }) {
@@ -43,10 +44,10 @@ export function FinancingFilters({ params, initialError }: { params: URLSearchPa
         <div className="pb-4 lg:pb-5">
           <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-1 lg:gap-4">
             <label className={label}>公司或基金
-              <input className={field} name="company" maxLength={120} defaultValue={params.get("company") ?? ""} placeholder="公司或基金名称" />
+              <Input nativeInput size="lg" className={field} name="company" maxLength={120} defaultValue={params.get("company") ?? ""} placeholder="公司或基金名称" />
             </label>
             <label className={label}>投资机构
-              <input className={field} name="investor" maxLength={120} defaultValue={params.get("investor") ?? ""} placeholder="机构名称" aria-describedby="investor-help" />
+              <Input nativeInput size="lg" className={field} name="investor" maxLength={120} defaultValue={params.get("investor") ?? ""} placeholder="机构名称" aria-describedby="investor-help" />
             </label>
           </div>
           <p id="investor-help" className="mt-2 text-xs leading-relaxed text-ink-4">机构筛选仅覆盖已提取投资方的报道。</p>
@@ -64,8 +65,8 @@ export function FinancingFilters({ params, initialError }: { params: URLSearchPa
                 {(from || to) && <button type="button" className="min-h-9 rounded-full px-2 text-xs text-ink-3 hover:text-accent" onClick={() => setRange("", "")}>不限日期</button>}
               </div>
               <div className="grid grid-cols-2 gap-2 min-[961px]:grid-cols-1">
-                <label className={label}>开始日期<input type="date" className={field} name="from" value={from} aria-describedby="fin-dates" onChange={e => setRange(e.target.value, to)} /></label>
-                <label className={label}>结束日期<input type="date" className={field} name="to" value={to} aria-describedby="fin-dates" onChange={e => setRange(from, e.target.value)} /></label>
+                <label className={label}>开始日期<Input nativeInput size="lg" type="date" className={field} name="from" value={from} aria-describedby="fin-dates" onChange={e => setRange(e.target.value, to)} /></label>
+                <label className={label}>结束日期<Input nativeInput size="lg" type="date" className={field} name="to" value={to} aria-describedby="fin-dates" onChange={e => setRange(from, e.target.value)} /></label>
               </div>
               <p id="fin-dates" className="mt-2 text-xs leading-relaxed text-ink-4">按北京时间检索，包含首尾两天。</p>
             </div>

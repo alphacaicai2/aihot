@@ -1,47 +1,33 @@
-import { forwardRef, type ButtonHTMLAttributes, type SelectHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, Ref, SelectHTMLAttributes } from "react";
+import { Button as CossButton, buttonVariants } from "../coss/button";
 import { IconChevronDown } from "../icons";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
-const VARIANTS: Record<Variant, string> = {
-  primary: "bg-accent text-accent-contrast hover:bg-accent-ink disabled:opacity-45",
-  secondary: "border border-line-strong bg-surface text-ink-2 hover:border-ink-4 hover:text-ink disabled:opacity-50",
-  ghost: "text-ink-3 hover:bg-bg-sunk hover:text-ink disabled:opacity-50",
-  danger: "bg-hot text-white hover:opacity-90 disabled:opacity-45",
-};
+const variants = { primary: "default", secondary: "outline", ghost: "ghost", danger: "destructive" } as const;
+const sizes = { sm: "sm", md: "default", lg: "xl" } as const;
+type Variant = keyof typeof variants;
+type Size = keyof typeof sizes;
 
-type Size = "sm" | "md" | "lg";
-const SIZES: Record<Size, string> = { sm: "h-8 px-3 text-[12.5px]", md: "h-9 px-4 text-[13.5px]", lg: "h-11 px-5 text-[14.5px]" };
-
-/** The pill button's classes, for links that look like buttons. */
-export function buttonClass(variant: Variant = "secondary", size: Size = "md"): string {
-  return `inline-flex items-center justify-center gap-1.5 rounded-full font-medium transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.98] ${SIZES[size]} ${VARIANTS[variant]}`;
+/** Used by links and form submit buttons that share the site's button styles. */
+export function buttonClass(variant: Variant = "secondary", size: Size = "md") {
+  return buttonVariants({ variant: variants[variant], size: sizes[size] });
 }
 
-export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }>(function Button(
-  { variant = "secondary", size = "md", className = "", ...rest },
-  ref,
-) {
-  return (
-    <button
-      ref={ref}
-      type="button"
-      className={`${buttonClass(variant, size)} ${className}`}
-      {...rest}
-    />
-  );
-});
+export function Button({
+  variant = "secondary", size = "md", ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size; ref?: Ref<HTMLButtonElement> }) {
+  return <CossButton variant={variants[variant]} size={sizes[size]} {...props} />;
+}
 
-/** Native select as a pill, like the site's other controls. */
 export function Select({ className = "", children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <span className={`relative inline-flex ${className}`}>
       <select
-        className="h-8 w-full cursor-pointer appearance-none rounded-full border border-line-strong bg-surface py-0 pl-3.5 pr-8 text-[12.5px] text-ink-2 outline-none transition-colors hover:border-ink-4 focus:border-accent"
+        className="h-8 w-full cursor-pointer appearance-none rounded-lg border border-input bg-background py-0 pl-3 pr-8 text-[13px] text-foreground shadow-xs/5 outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
         {...rest}
       >
         {children}
       </select>
-      <IconChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-4" />
+      <IconChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
     </span>
   );
 }

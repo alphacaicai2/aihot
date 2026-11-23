@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { SegmentedControl, SegmentedControlItem } from "../coss/segmented-control";
 import { IconMonitor, IconMoon, IconSun } from "../icons";
 import { resolvedTheme, setThemePreference, useThemePreference, type ThemePreference } from "../../lib/local-state";
 
@@ -16,40 +17,38 @@ export function ThemeSwitch({ className = "" }: { className?: string }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const current: Choice = !mounted ? "system" : (pref ?? "system");
-  const index = OPTIONS.findIndex((o) => o.key === current);
+  const groupName = useId();
 
   const choose = (key: Choice) => {
     const nextPref: ThemePreference = key === "system" ? null : key;
-    const apply = () => {
-      setThemePreference(nextPref);
-      document.documentElement.setAttribute("data-theme", resolvedTheme(nextPref));
-    };
+    setThemePreference(nextPref);
+    const apply = () => document.documentElement.setAttribute("data-theme", resolvedTheme(nextPref));
     const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
     if (doc.startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) doc.startViewTransition(apply);
     else apply();
   };
 
   return (
-    <div role="radiogroup" aria-label="外观" className={`relative grid h-[34px] grid-cols-3 rounded-full border border-line bg-bg-sunk p-[3px] ${className}`}>
-      <span
-        aria-hidden="true"
-        className="absolute inset-y-[3px] left-[3px] w-[calc((100%-6px)/3)] rounded-full border border-line bg-surface shadow-[var(--shadow-card)] transition-transform duration-200 ease-[var(--ease-out-quart)]"
-        style={{ transform: `translateX(${index * 100}%)` }}
-      />
-      {OPTIONS.map((o) => (
-        <button
-          key={o.key}
-          type="button"
-          role="radio"
-          aria-checked={current === o.key}
-          title={o.label}
-          onClick={() => choose(o.key)}
-          className={`relative z-10 flex items-center justify-center rounded-full transition-colors duration-150 ${current === o.key ? "text-ink" : "text-ink-4 hover:text-ink-2"}`}
+    <SegmentedControl role="radiogroup" aria-label="外观" className={`w-full ${className}`}>
+      {OPTIONS.map((option) => (
+        <SegmentedControlItem
+          key={option.key}
+          render={<label />}
+          title={option.label}
+          data-checked={current === option.key ? "" : undefined}
+          className="flex-1 has-[:focus-visible]:outline-ring"
         >
-          {o.icon}
-          <span className="sr-only">{o.label}</span>
-        </button>
+          <input
+            type="radio"
+            className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+            name={groupName}
+            checked={current === option.key}
+            onChange={() => choose(option.key)}
+          />
+          {option.icon}
+          <span className="sr-only">{option.label}</span>
+        </SegmentedControlItem>
       ))}
-    </div>
+    </SegmentedControl>
   );
 }

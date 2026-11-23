@@ -7,6 +7,7 @@ import { Collapse } from "../../components/ui/Presence";
 import type { TimelineCard, TimelineFilters, TimelineResponse } from "@aihot/contracts/site";
 import { FeedItem } from "./FeedItem";
 import { IconChevronDown } from "../../components/icons";
+import { Button } from "../../components/coss/button";
 import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
 import { beijingDate, beijingTime, beijingWeekday } from "../../lib/format";
@@ -49,14 +50,20 @@ export function DayHeader({ day, today, count, collapsed, onToggle }: { day: str
   return (
     <div className="sticky top-0 z-20 -mx-4 bg-daybar px-4 lg:mx-0 lg:bg-bg lg:px-0">
       {/* Phones: a full-width day bar. */}
-      <div className="flex h-9 items-center gap-2 lg:hidden">
-        <span className="text-[14px] font-bold text-ink">{day === today ? "今天" : date}</span>
+      <div className="flex min-h-10 items-center gap-2 lg:hidden">
+        <span className="text-[14px] font-semibold text-ink">{day === today ? "今天" : date}</span>
         {day === today && <span className="text-[12.5px] text-ink-4">{date}</span>}
         <span className="text-[12.5px] text-ink-4">{short}</span>
+        {count !== null && <span className="ml-auto text-xs text-ink-3">{count} 条</span>}
+        {onToggle && (
+          <Button variant="ghost" size="icon-sm" onClick={onToggle} aria-expanded={!collapsed} aria-label={collapsed ? `展开${date}` : `收起${date}`} className="text-ink-3 hover:bg-bg-sunk">
+            <IconChevronDown size={14} className={`transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+          </Button>
+        )}
       </div>
-      {/* Desktop: the date ends where the times end, the fold toggle sits on the rail. */}
-      <div className="hidden h-11 grid-cols-[64px_22px_minmax(0,1fr)] items-center lg:grid">
-        <button type="button" onClick={onToggle} disabled={!onToggle} className="justify-self-end whitespace-nowrap text-right text-[18px] font-semibold leading-6 text-ink">
+      {/* Desktop date and fold control stay together above the time rail. */}
+      <div className="hidden h-11 items-center gap-1 lg:flex">
+        <button type="button" onClick={onToggle} disabled={!onToggle} className="whitespace-nowrap text-left text-[16px] font-semibold leading-6 text-ink">
           {date}
         </button>
         {onToggle ? (
@@ -72,7 +79,7 @@ export function DayHeader({ day, today, count, collapsed, onToggle }: { day: str
         ) : (
           <span />
         )}
-        <span className="text-[13px] text-ink-4">
+        <span className="ml-1 text-[13px] text-ink-4">
           {weekday}
           {count !== null && (
             <>
@@ -322,14 +329,14 @@ export function FeedEnd({ loading, error, hasMore, manual, empty, onMore }: { lo
           <RingMark className="size-4 text-accent" spinning /> 正在加载
         </span>
       ) : error ? (
-        <button type="button" onClick={onMore} className="h-9 rounded-full border border-hot/30 px-4 text-[13px] text-hot hover:bg-hot-soft">
+        <Button onClick={onMore} variant="destructive-outline">
           加载失败，点此重试
-        </button>
+        </Button>
       ) : hasMore ? (
         manual && (
-          <button type="button" onClick={onMore} className="h-9 rounded-full border border-line-strong bg-surface px-5 text-[13px] font-medium text-ink-2 transition-colors hover:border-ink-4 hover:text-ink">
+          <Button onClick={onMore} variant="outline">
             加载更多
-          </button>
+          </Button>
         )
       ) : (
         !empty && <span className="text-[12px] text-ink-4">已经到底了</span>

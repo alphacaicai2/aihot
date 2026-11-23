@@ -5,7 +5,9 @@ import { Presence } from "../components/ui/Presence";
 import { pageMeta } from "../lib/seo";
 import { KEYS } from "../lib/local-state";
 import { IconCheck, IconClose, IconImage } from "../components/icons";
-import { RingMark } from "../components/Logo";
+import { Button } from "../components/coss/button";
+import { Input } from "../components/coss/input";
+import { Textarea } from "../components/coss/textarea";
 import { AsideCard, ReadingLayout } from "../components/ui/Page";
 
 /** Shared caches may keep this page for five minutes. */
@@ -149,7 +151,6 @@ export default function FeedbackPage() {
     );
   }
 
-  const field = "w-full rounded-card bg-bg-sunk text-ink outline-none ring-1 ring-inset ring-line-soft transition-[background-color,box-shadow] placeholder:text-ink-4 hover:ring-line-strong focus:bg-surface focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:ring-accent dark:bg-bg-muted/60 dark:focus:bg-surface";
   const label = "mb-2 block text-[13px] font-semibold text-ink";
   const canSend = draft.content.trim().length >= 2 && state.kind !== "sending";
   return (
@@ -181,7 +182,7 @@ export default function FeedbackPage() {
               想说点什么？
             </label>
             <div className="relative">
-              <textarea
+              <Textarea
                 id="fb-content"
                 required
                 rows={9}
@@ -189,7 +190,7 @@ export default function FeedbackPage() {
                 value={draft.content}
                 onChange={(e) => setDraft({ ...draft, content: e.target.value })}
                 placeholder="例如：我在搜索“OpenAI”时遇到……我原本想……"
-                className={`${field} block resize-y px-4 pb-8 pt-3.5 text-[14.5px] leading-relaxed`}
+                className="[&_textarea]:min-h-44 [&_textarea]:resize-y [&_textarea]:pb-8 [&_textarea]:leading-relaxed"
               />
               <span className="mono pointer-events-none absolute bottom-3 right-4 text-[11px] text-ink-4">
                 {draft.content.length} / {MAX_TEXT}
@@ -201,7 +202,7 @@ export default function FeedbackPage() {
             <label htmlFor="fb-email" className={label}>
               邮箱 <span className="font-normal text-ink-4">（选填）</span>
             </label>
-            <input id="fb-email" type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} placeholder="留下邮箱，我可以回信联系你" className={`${field} h-11 px-4 text-[14.5px]`} />
+            <Input nativeInput size="lg" id="fb-email" type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} placeholder="留下邮箱，我可以回信联系你" />
           </div>
 
           <div>
@@ -252,14 +253,9 @@ export default function FeedbackPage() {
             </Link>
             处理。
           </p>
-          <button
-            type="submit"
-            disabled={!canSend}
-            className="inline-flex h-10 shrink-0 items-center justify-center gap-2 self-start rounded-full bg-accent px-6 text-[14px] font-medium text-accent-contrast transition-[background-color,opacity] hover:bg-accent-ink disabled:bg-line-strong disabled:text-ink-4 sm:self-auto"
-          >
-            {state.kind === "sending" && <RingMark className="size-4" spinning />}
+          <Button type="submit" size="lg" disabled={!canSend} loading={state.kind === "sending"} className="self-start sm:self-auto">
             发送反馈
-          </button>
+          </Button>
         </div>
       </form>
     </ReadingLayout>

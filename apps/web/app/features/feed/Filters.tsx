@@ -1,8 +1,10 @@
 // Feed filters: the channel and category row, and search.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Form, Link, useNavigation, useSearchParams } from "react-router";
 import { CATEGORY_KEYS, CATEGORY_LABELS, CHANNEL_LABELS, type CategoryKey, type ChannelKey } from "@aihot/contracts/taxonomy";
 import { IconClose, IconSearch } from "../../components/icons";
+import { Button } from "../../components/coss/button";
+import { Input } from "../../components/coss/input";
 import { PillTabs } from "../../components/ui/Tabs";
 
 /** Same page with some query parameters changed (paging state dropped). */
@@ -55,6 +57,7 @@ export function SearchField({ action = "/all", defaultValue = "", keep = {}, var
   const [value, setValue] = useState(defaultValue);
   const navigation = useNavigation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const inputId = useId();
   useEffect(() => setValue(defaultValue), [defaultValue]);
   useSlashFocus(inputRef);
   useEffect(() => {
@@ -63,70 +66,38 @@ export function SearchField({ action = "/all", defaultValue = "", keep = {}, var
   const searching = navigation.state === "loading" && navigation.location?.pathname === action && !!new URLSearchParams(navigation.location.search).get("q");
   const hidden = Object.entries(keep).map(([k, v]) => (v ? <input key={k} type="hidden" name={k} value={v} /> : null));
 
-  if (variant === "bar") {
-    return (
-      <Form method="get" action={action} role="search" className="flex gap-2">
-        {hidden}
-        <label className="relative flex-1">
-          <span className="sr-only">搜索标题、摘要与正文</span>
-          <IconSearch size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-4" />
-          <input
-            ref={inputRef}
-            name="q"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="搜索标题、摘要…"
-            maxLength={200}
-            autoComplete="off"
-            enterKeyHint="search"
-            className="h-11 w-full rounded-full border border-line-strong bg-surface pl-10 pr-9 text-[15px] text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-4 focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-          />
-          {value && (
-            <button type="button" aria-label="清空" onClick={() => { setValue(""); inputRef.current?.focus(); }} className="absolute right-2.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-full text-ink-4">
-              <IconClose size={15} />
-            </button>
-          )}
-        </label>
-        <button type="submit" className={`h-11 shrink-0 rounded-full bg-accent px-5 text-[14.5px] font-semibold text-accent-contrast transition-[background-color,transform] active:scale-[0.98] ${searching ? "opacity-60" : ""}`}>
-          搜索
-        </button>
-      </Form>
-    );
-  }
-
+  const bar = variant === "bar";
   return (
-    <Form method="get" action={action} role="search" className="group relative w-full shrink-0 lg:w-60">
+    <Form method="get" action={action} role="search" aria-busy={searching} className={bar ? "flex gap-2" : "w-full shrink-0 lg:w-60"}>
       {hidden}
-      <label htmlFor="site-search" className="sr-only">
-        搜索标题、摘要与正文
-      </label>
-      <IconSearch size={16} className={`pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 transition-colors ${searching ? "text-accent" : "text-ink-4 group-focus-within:text-ink-3"}`} />
-      <input
-        ref={inputRef}
-        id="site-search"
-        name="q"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="搜索标题、摘要…"
-        maxLength={200}
-        autoComplete="off"
-        className="h-[42px] w-full rounded-full bg-bg-sunk pl-10 pr-10 text-[14px] text-ink outline-none ring-1 ring-inset ring-line-soft transition-[background-color,box-shadow] placeholder:text-ink-4 hover:ring-line-strong focus:bg-surface focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:ring-accent dark:bg-bg-muted/60 dark:focus:bg-surface"
-      />
-      {value ? (
-        <button
-          type="button"
-          aria-label="清空"
-          onClick={() => {
-            setValue("");
-            inputRef.current?.focus();
-          }}
-          className="absolute right-3 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-full text-ink-4 transition-colors hover:bg-bg-sunk hover:text-ink"
-        >
-          <IconClose size={13} />
-        </button>
-      ) : (
-        <kbd className="mono pointer-events-none absolute right-4 top-1/2 hidden -translate-y-1/2 rounded-mark border border-line-strong bg-surface px-1.5 text-[10.5px] leading-4 text-ink-4 lg:block">/</kbd>
-      )}
+      <div className="relative min-w-0 flex-1">
+        <label htmlFor={inputId} className="sr-only">搜索标题、摘要与正文</label>
+        <IconSearch size={17} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          id={inputId}
+          ref={inputRef}
+          size="lg"
+          type="search"
+          name="q"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="搜索标题、摘要…"
+          maxLength={200}
+          autoComplete="off"
+          enterKeyHint="search"
+          className="[&_input]:h-10 [&_input]:pr-10 [&_input]:pl-9 sm:[&_input]:h-9"
+        />
+        {value ? (
+          <Button type="button" variant="ghost" size="icon-xs" aria-label="清空"
+            onClick={() => { setValue(""); inputRef.current?.focus(); }}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2">
+            <IconClose size={14} />
+          </Button>
+        ) : !bar && (
+          <kbd className="mono pointer-events-none absolute right-2.5 top-1/2 hidden -translate-y-1/2 rounded border border-input px-1.5 text-xs text-muted-foreground lg:block">/</kbd>
+        )}
+      </div>
+      {bar && <Button type="submit" size="xl">搜索</Button>}
     </Form>
   );
 }
@@ -134,8 +105,8 @@ export function SearchField({ action = "/all", defaultValue = "", keep = {}, var
 /** Mobile home: the search icon at the end of the category row opens search on 全部动态. */
 export function SearchIconLink() {
   return (
-    <Link to="/all?search=1" aria-label="搜索" className="flex size-9 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-bg-sunk hover:text-ink">
+    <Button variant="ghost" size="icon" aria-label="搜索" render={<Link to="/all?search=1" />}>
       <IconSearch size={19} />
-    </Link>
+    </Button>
   );
 }

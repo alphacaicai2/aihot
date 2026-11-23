@@ -11,12 +11,17 @@
   "dependencies": {
     "@aihot/contracts": "*",
     "@aihot/industry": "*",
+    "@base-ui/react": "1.9.0",
     "@react-router/node": "8.4.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
     "isbot": "5.2.2",
+    "lucide-react": "1.77.0",
     "motion": "13.4.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "react-router": "8.4.0"
+    "react-router": "8.4.0",
+    "tailwind-merge": "3.7.1"
   },
   "devDependencies": {
     "@react-router/dev": "8.4.0",

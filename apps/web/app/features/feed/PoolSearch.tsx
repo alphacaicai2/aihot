@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Form, Link } from "react-router";
 import type { PoolResponse } from "@aihot/contracts/site";
 import { IconArrowRight, IconChevronDown, IconSearch } from "../../components/icons";
+import { Input } from "../../components/coss/input";
 import { Button } from "../../components/ui/Controls";
 import { dateProblem } from "../../lib/date-range";
 import { useSlashFocus } from "./Filters";
-
-const input = "mt-1.5 h-11 w-full min-w-0 rounded-control border border-line-strong bg-surface px-2.5 text-base font-normal text-ink focus:border-accent lg:text-sm";
 
 export function PoolSearch({ filters, focus, initialError }: { filters: PoolResponse["filters"]; focus: boolean; initialError: string | null }) {
   const [error, setError] = useState(initialError);
@@ -34,10 +33,10 @@ export function PoolSearch({ filters, focus, initialError }: { filters: PoolResp
       <div className="flex gap-2">
         <label className="relative min-w-0 flex-1">
           <span className="sr-only">搜索关键词</span>
-          <IconSearch size={18} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-accent" />
-          <input ref={search} type="search" name="q" defaultValue={q ?? ""} maxLength={200} enterKeyHint="search"
+          <IconSearch size={18} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" />
+          <Input size="lg" ref={search} type="search" name="q" defaultValue={q ?? ""} maxLength={200} enterKeyHint="search"
             placeholder={tab === "relevance" ? "搜索标题、摘要与正文" : "搜索标题、摘要…"}
-            className="h-11 w-full rounded-control border border-line-strong bg-bg-sunk pl-10 pr-3 text-base text-ink placeholder:text-ink-4 focus:border-accent focus:bg-surface" />
+            className="[&_input]:h-10.5 [&_input]:pl-10 sm:[&_input]:h-9.5" />
         </label>
         <Button type="submit" variant="primary" size="lg">搜索</Button>
       </div>
@@ -50,7 +49,7 @@ export function PoolSearch({ filters, focus, initialError }: { filters: PoolResp
           <div className="grid grid-cols-2 gap-x-2.5 gap-y-3 lg:grid-cols-4">
             {([["company", "公司", company], ["investor", "投资机构", investor], ["from", "开始日期", from], ["to", "结束日期", to]] as const).map(([name, label, value]) => (
               <label key={name} className="min-w-0 text-[13px] font-semibold text-ink-2">{label}
-                <input className={input} name={name} type={name === "from" || name === "to" ? "date" : "text"} defaultValue={value ?? ""} maxLength={120} onChange={() => setError(null)} />
+                <Input size="lg" className="mt-1.5 font-normal" name={name} type={name === "from" || name === "to" ? "date" : "text"} defaultValue={value ?? ""} maxLength={120} onChange={() => setError(null)} />
               </label>
             ))}
           </div>

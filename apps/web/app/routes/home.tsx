@@ -4,7 +4,8 @@ import type { TimelineResponse } from "@aihot/contracts/site";
 import { isCategoryKey, isChannelKey } from "@aihot/contracts/taxonomy";
 import { loadOr404, queryString, releaseBoundCache } from "../lib/api.server";
 import { listPath, organizationLd, pageMeta } from "../lib/seo";
-import { IconArrowRight, IconChart, IconDoc, IconList } from "../components/icons";
+import { IconArrowRight, IconChart, IconClock, IconDoc, IconList } from "../components/icons";
+import { Card } from "../components/coss/card";
 import { Wordmark } from "../components/Logo";
 import { Timeline } from "../features/feed/Timeline";
 import { HotTopics } from "../features/feed/HotTopics";
@@ -44,7 +45,7 @@ const sections = [
 
 function SectionIndex() {
   return (
-    <nav aria-label="内容索引" className="home-index">
+    <Card render={<nav aria-label="内容索引" />} className="home-index border-line">
       <h2 className="hidden text-[17px] font-bold min-[1180px]:block">内容索引</h2>
       <ul className="grid grid-cols-3 min-[1180px]:mt-3 min-[1180px]:grid-cols-1">
         {sections.map(({ to, label, detail, icon: Icon }) => (
@@ -57,40 +58,40 @@ function SectionIndex() {
           </li>
         ))}
       </ul>
-    </nav>
+    </Card>
   );
 }
 
 export default function Home() {
   const { data, filters } = useLoaderData<typeof loader>();
   const day = beijingDate(data.generatedAt);
-  const [, month, date] = day.split("-");
+  const [year, month, date] = day.split("-");
   const count = data.dayCounts[day] ?? 0;
   const latest = data.cards[0]?.anchorAt;
   const scoped = !!(filters.category || filters.tag || filters.channel !== "all");
   return (
-    <div className="pb-6">
+    <div className="reader-home pb-6">
       <div className="flex h-12 items-center justify-between lg:hidden">
         <Wordmark size={19} className="text-ink" />
         <SearchIconLink />
       </div>
 
       <header className="home-masthead">
-        <time className="home-calendar" dateTime={day} aria-label={day}>
-          <span>{Number(month)} 月</span>
-          <strong>{date}</strong>
-        </time>
+        <div className="home-dateline">
+          <time dateTime={day} className="home-calendar" aria-label={day}>
+            <span className="home-calendar-label">{year} / {month}</span>
+            <strong>{date}</strong>
+            <span className="home-calendar-weekday">{beijingWeekday(day)}</span>
+          </time>
+        </div>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-            <h1 className="break-all text-[25px] font-bold leading-tight tracking-tight text-ink lg:text-[34px]">{filters.tag ? `#${filters.tag}` : "最新精选"}</h1>
-            <span className="text-xs font-medium text-accent">{beijingWeekday(day)}</span>
-          </div>
-          <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs leading-relaxed text-ink-3 lg:text-[13px]">
+          <h1 className="break-words text-[28px] font-bold leading-tight tracking-tight lg:text-[38px]">{filters.tag ? `#${filters.tag}` : "最新精选"}</h1>
+          <p className="home-update">
             <span>{scoped ? "当前筛选 · " : ""}{count ? `今日精选 ${count} 条` : "今日暂无新精选"}</span>
-            {latest && <span>最近更新 <time dateTime={latest}>{monthDayTime(latest)}</time></span>}
+            {latest && <span className="inline-flex items-center gap-1.5"><IconClock size={13} />最近更新 <time dateTime={latest}>{monthDayTime(latest)}</time></span>}
           </p>
         </div>
-        <div className="hidden lg:block"><SearchField variant="track" keep={{ category: filters.category }} /></div>
+        <div className="relative hidden lg:block"><SearchField variant="track" keep={{ category: filters.category }} /></div>
       </header>
 
       <div className="home-columns">

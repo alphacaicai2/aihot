@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./public-coss.css";
 
 /* ---------------------------------------------------------------------------
    AIHOT design tokens — the look of the original site: warm off-white paper,
@@ -7,6 +8,36 @@
    --------------------------------------------------------------------------- */
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* coss uses “accent” for a hover surface; this site's accent is its brand ink. */
+@theme inline {
+  --font-heading: var(--font-sans);
+  --color-background: var(--surface);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--raised);
+  --color-popover-foreground: var(--ink);
+  --color-border: var(--line);
+  --color-input: var(--line-strong);
+  --color-muted: var(--bg-muted);
+  --color-muted-foreground: var(--ink-3);
+  --color-coss-accent: var(--bg-muted);
+  --color-accent-foreground: var(--ink);
+  --color-primary: var(--ink);
+  --color-primary-foreground: var(--surface);
+  --color-secondary: var(--bg-sunk);
+  --color-secondary-foreground: var(--ink-2);
+  --color-ring: var(--accent);
+  --color-destructive: var(--hot);
+  --color-destructive-foreground: var(--hot);
+  --color-success: var(--ok);
+  --color-success-foreground: var(--ok-ink);
+  --color-warning: var(--amber);
+  --color-warning-foreground: var(--amber-ink);
+  --color-info: var(--accent);
+  --color-info-foreground: var(--accent-ink);
+}
 
 @theme {
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
@@ -90,6 +121,7 @@
   --page-max-wide: max(1200px, calc(270dvh - 236px));
   --page-max-reading: max(1100px, calc(200dvh - 236px));
   color-scheme: light;
+  --foreground: var(--ink);
   --bg: #faf9f6;
   --bg-sunk: #f3f3ef;
   --bg-muted: #e9ede9;
@@ -143,6 +175,7 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
+  --foreground: var(--ink);
   --bg: #13191c;
   --bg-sunk: #182024;
   --bg-muted: #202a2f;
@@ -189,6 +222,9 @@
 }
 
 @layer base {
+  [data-slot] {
+    border-color: var(--line);
+  }
   html {
     -webkit-text-size-adjust: 100%;
     text-rendering: optimizeLegibility;
@@ -531,77 +567,4 @@
 }
 @keyframes cr-pulse {
   50% { box-shadow: 0 0 0 7px color-mix(in srgb, currentColor 6%, transparent); }
-}
-
-/* The selected feed shares its dateline with the update count. */
-.home-masthead {
-  display: flex;
-  align-items: center;
-  gap: clamp(12px, 2vw, 24px);
-  border-block: 1px solid var(--line);
-  padding-block: clamp(12px, 2vw, 26px);
-}
-.home-calendar {
-  display: grid;
-  flex: none;
-  min-width: 54px;
-  justify-items: center;
-  align-content: center;
-  padding: 7px 10px;
-  border-radius: var(--radius-control);
-  color: var(--accent-contrast);
-  background: var(--accent);
-  font: 600 11px/1.3 var(--font-sans);
-}
-.home-calendar strong {
-  font: 600 clamp(27px, 3vw, 40px)/1 var(--font-mono);
-  letter-spacing: -0.07em;
-}
-.home-columns, .home-aside {
-  display: grid;
-  align-items: start;
-  gap: 12px;
-}
-.home-columns { padding-top: 14px; grid-template-columns: minmax(0, 1fr); }
-.home-index {
-  padding: 3px;
-  background: var(--accent-softer);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-}
-.home-index-icon { display: grid; flex: none; place-items: center; color: var(--accent); }
-@media (max-width: 359px) {
-  .home-index-icon { display: none; }
-}
-@media (min-width: 1180px) {
-  .home-columns {
-    grid-template-columns: minmax(0, 1fr) clamp(244px, 21vw, 320px);
-    column-gap: clamp(22px, 2.5vw, 42px);
-    padding-top: 24px;
-  }
-  .home-aside { grid-area: 1 / 2; gap: 18px; }
-  .home-index { padding: 18px 16px 10px; }
-  .home-index li + li { border-top: 1px solid var(--line); }
-  .home-index-icon {
-    width: 34px;
-    height: 34px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-control);
-    background: var(--surface);
-  }
-}
-
-.home-ranking {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: min(84%, 300px);
-  gap: 14px;
-  padding: 4px;
-  overflow-x: auto;
-  scroll-snap-type: x proximity;
-}
-.home-ranking li { min-width: 0; scroll-snap-align: start; }
-@media (min-width: 1180px) {
-  .home-ranking { display: block; padding: 0; overflow: visible; }
-  .home-ranking li + li { border-top: 1px solid var(--line-soft); }
 }
