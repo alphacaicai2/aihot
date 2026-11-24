@@ -34,21 +34,32 @@ const earlyStages = new Map([["种子轮", "seed"], ["seed", "seed"], ["seedroun
 const scales = new Map([["亿", 8], ["万", 4], ["billion", 9], ["bn", 9], ["million", 6], ["m", 6], ["b", 9], ["k", 3]]);
 
 // Scale explicit numeric amounts without rounding. Bounds and approximate amounts
-// retain their qualifiers, and an unfamiliar expression only matches its exact wording.
+// retain their qualifiers. A vague range is only supporting evidence.
 function amountKey(value: string) {
-  const text = normalize(value).replace(/\s+/g, "");
-  const m = /^(近|约|approximately|about|nearly|~)?(?:us\$|[$€£¥]|usd|cny|rmb|eur|gbp)?(\d+)(?:\.(\d+))?(亿|万|million|billion|bn|[mbk])?(?:美元|人民币|元|欧元|英镑|usd|cny|rmb|eur|gbp)?$/.exec(text);
+  // Ignore only a trailing currency conversion. A parenthetical debt/equity split,
+  // valuation, target or cumulative amount is part of the reported terms.
+  const text = normalize(value).replace(/\s+/g, "")
+    .replace(/\((?:约合|约折合|折合|相当于|约)(?:[a-z]{3}|[￥¥$€£])?[\d,.]+(?:亿|[千百十]?万|billion|million|bn|[mbk])?(?:美元|人民币|欧元|英镑|元|usd|cny|rmb|eur|gbp)\)$/, "")
+    .replace(/^(近|约|超|逾)(亿|万)(?=美元|人民币|欧元|英镑|元|$)/, (_, qualifier: string, scale: string) => qualifier + "1" + scale);
+  const vague = /^(数[十百千]?[亿万])(?:元)?(?:人民币|美元|欧元|英镑)?$/.exec(text);
+  if (vague) return "?" + vague[1];
+  const magnitude = /^([千百十]?[亿万])(?:元)?级(?:人民币|美元|欧元|英镑)?$/.exec(text);
+  if (magnitude) return "?" + magnitude[1] + "级";
+  const m = /^(近|约|超|逾|approximately|about|nearly|~)?(?:us\$|[$€£¥]|usd|cny|rmb|eur|gbp)?(\d+)(?:\.(\d+))?(亿|万|million|billion|bn|[mbk])?(?:美元|元?人民币|元|欧元|英镑|usd|cny|rmb|eur|gbp)?$/.exec(text);
   if (!m) return null;
   const digits = (m[2]! + (m[3] ?? "")).replace(/^0+/, "");
   const mantissa = digits.replace(/0+$/, "");
   const exponent = (scales.get(m[4] ?? "") ?? 0) - (m[3]?.length ?? 0) + digits.length - mantissa.length;
-  return mantissa ? (m[1] ? "~" : "") + mantissa + "e" + exponent : null;
+  const qualifier = m[1] === "超" || m[1] === "逾" ? ">" : m[1] ? "~" : "";
+  return mantissa ? qualifier + mantissa + "e" + exponent : null;
 }
 
 function stageKey(value: string | null) {
   const stage = normalize(value ?? "").replace(/\s+/g, "").replace(/–|—/g, "-");
   if (!stage || ["新一轮", "新一轮融资", "融资", "fundinground", "latestround"].includes(stage)) return null;
   const series = /^(?:series)?((?:pre-?)?[a-z]\d*\+*)(?:轮(?:融资)?)?$/.exec(stage);
+  const early = /^(天使|种子)(\++)轮$/.exec(stage);
+  if (early) return earlyStages.get(early[1] + "轮")! + early[2];
   return series?.[1]?.replace(/^pre-?/, "pre-") ?? earlyStages.get(stage) ?? stage;
 }
 
@@ -66,14 +77,18 @@ function terms(row: RoundSource) {
   if (!["round","unknown",...(fund ? ["target"] : [])].includes(row.basis)) return null;
   const amount = row.amount ? amountKey(row.amount) : null;
   if (row.amount && (!amount || row.basis === "unknown")) return null;
+  const primary = normalize(row.amount ?? "").split("(",1)[0]!;
+  const code = /美元|us\$|\busd\b/.test(primary) ? "USD" : /人民币|\b(?:cny|rmb)\b/.test(primary) ? "CNY" :
+    /欧元|€|\beur\b/.test(primary) ? "EUR" : /英镑|£|\bgbp\b/.test(primary) ? "GBP" : null;
+  if (code && row.currency && code !== row.currency) return null;
   const stage = stageKey(row.stage);
   // An unfamiliar or compound round name can veto a match, but cannot establish one.
-  const specific = !!stage && /^(?:(?:pre-)?[a-z]\d*\+*|seed|angel|pre-seed)$/.test(stage);
+  const specific = !!stage && /^(?:(?:pre-)?[a-z]\d*\+*|(?:seed|angel)\+*|pre-seed)$/.test(stage);
   const quote = normalize(row.evidence ?? "");
   const phase = !fund ? null : /first clos(?:e|ing)|initial clos(?:e|ing)|首关|首次关账|首次关闭/i.test(quote) ? "first" :
     /final clos(?:e|ing)|终关|最终关账|最终关闭/i.test(quote) ? "final" : row.basis === "target" ? "target" : null;
   if (fund && !phase) return null;
-  return { stage, specific, amount, currency:row.currency, fund, phase,
+  return { stage, specific, amount, currency:row.currency ?? code, fund, phase,
     investors:new Set((row.investors ?? []).map(normalize).filter(Boolean)) };
 }
 
@@ -82,11 +97,30 @@ function sameTerms(a: Terms, b: Terms) {
   if ((a.currency && b.currency && a.currency !== b.currency) || (a.amount && b.amount && a.amount !== b.amount) ||
       (a.stage && b.stage && a.stage !== b.stage)) return false;
   const sameAmount = !!a.amount && a.amount === b.amount && !!a.currency && a.currency === b.currency;
-  if (a.fund || b.fund) return a.fund && b.fund && a.phase === b.phase && a.stage === b.stage && sameAmount;
+  const definiteAmount = sameAmount && !/^[>?]/.test(a.amount!);
+  if (a.fund || b.fund) return a.fund && b.fund && a.phase === b.phase && a.stage === b.stage && definiteAmount;
   const investors = [...a.investors].filter(name => b.investors.has(name));
-  if (a.specific && a.stage === b.stage) return sameAmount || investors.length >= 2;
+  if (a.specific && a.stage === b.stage) return definiteAmount || investors.length >= 2 || (sameAmount && investors.length > 0);
   if ((a.stage && !a.specific) || (b.stage && !b.specific)) return false;
-  return sameAmount && investors.length > 0;
+  return definiteAmount && investors.length > 0;
+}
+
+// Read an alias only from a declaration attached to this exact recipient. Other
+// companies, investors and parent/subsidiary relationships can occur in the same quote.
+function declaredAliases(row: RoundSource) {
+  const name = normalize(row.company);
+  const text = normalize(row.evidence ?? "");
+  const aliases: string[] = [];
+  for (let from = 0; name && from < text.length;) {
+    const at = text.indexOf(name, from);
+    if (at < 0) break;
+    from = at + name.length;
+    if (at && /[a-z0-9]/.test(name[0]!) && /[a-z0-9]/.test(text[at-1]!)) continue;
+    const alias = /^\s*\((?:[^(),，;；。]{1,40}\s*[,，]\s*)?(?:以下简称|下称|简称)\s*[：:]?\s*[“「『"]([^”」』"]{2,60})[”」』"]\s*\)/u
+      .exec(text.slice(from))?.[1]?.trim();
+    if (alias && alias !== name && !/[，、;；。]/u.test(alias)) aliases.push(alias);
+  }
+  return aliases;
 }
 
 /** Each claim starts with its own identity. A shared news fact may describe several
@@ -94,6 +128,22 @@ function sameTerms(a: Terms, b: Terms) {
 export function financingRounds<T extends RoundSource>(rows: T[]): Map<string, T[]> {
   const groups = indexBy(rows, r => r.reviewed_id ? "round:" + r.reviewed_id :
     r.base_id.startsWith("fact:") ? "item:" + r.article_id : r.base_id);
+  // An abbreviation used by two distinct recipients cannot establish identity.
+  const ownerByAlias = new Map<string, string | null>();
+  for (const row of rows) {
+    if (row.kind !== "company_round") continue;
+    const name = normalize(row.company);
+    const declared = declaredAliases(row);
+    // A bilingual recipient printed in one field can corroborate both stand-alone
+    // names. Overlapping brands and legal suffixes do not establish identity.
+    const pair = /^([\p{Script=Han}·]{2,50})\s*\(\s*([a-z][a-z0-9 .&'-]{2,50})\s*\)$/u.exec(name);
+    const owner = pair?.[1] ?? name;
+    if (pair) declared.push(name,pair[2]!.trim());
+    for (const alias of declared) {
+      const previous = ownerByAlias.get(alias);
+      ownerByAlias.set(alias, previous === undefined || previous === owner ? owner : null);
+    }
+  }
   const candidates = [...groups].map(([id, sources]) => {
     const dates = sources.map(s => s.reported_at?.getTime() ?? NaN);
     return { id, sources, terms:sources.map(terms).filter(t => t !== null),
@@ -104,7 +154,10 @@ export function financingRounds<T extends RoundSource>(rows: T[]): Map<string, T
   for (const [i, a] of candidates.entries()) {
     if (!Number.isFinite(a.start) || a.end - a.start > fortnight) continue;
     if (!a.terms.length) continue;
-    const companies = new Set(a.sources.map(s => normalize(s.company)));
+    const companies = new Set(a.sources.map(s => {
+      const name = normalize(s.company);
+      return s.kind === "company_round" ? ownerByAlias.get(name) ?? name : name;
+    }));
     const possible = new Set([...companies].flatMap(name => byCompany.get(name) ?? []));
     for (const j of possible) {
       const b = candidates[j]!;

@@ -38,8 +38,14 @@ export async function financingSources(db: Db, now: Date, filter = sql``) {
     ORDER BY p.timeline_at DESC,p.article_id DESC,deal.seq`;
 }
 
+// A rules change or a rebuild by an older worker invalidates the cached grouping.
+const rulesKey = "financing.index-rules";
+const rulesVersion = 2;
+
 export async function financingIndexReady(db: Db, at: Date) {
-  const [row] = await db`SELECT 1 FROM financing_index_state WHERE singleton AND built_at<=${at}
+  const [row] = await db`SELECT 1 FROM financing_index_state
+    JOIN settings rules ON rules.key=${rulesKey} AND rules.value=to_jsonb(${rulesVersion}::int) AND rules.updated_at=built_at
+    WHERE singleton AND built_at<=${at}
     AND (valid_until IS NULL OR valid_until>${at}) AND NOT EXISTS (
       SELECT 1 FROM financing_index_changes d
       LEFT JOIN publications p ON p.article_id=d.article_id LEFT JOIN analyses an ON an.id=p.analysis_id
@@ -72,6 +78,8 @@ export async function refreshFinancingIndex() {
       SELECT min(p.visible_after) FROM publications p JOIN analyses an ON an.id=p.analysis_id
       WHERE ${financingCandidate} AND p.visibility='public' AND p.selected AND p.visible_after>${at}
     ) WHERE singleton`;
+    await tx`INSERT INTO settings (key,value,updated_at) VALUES (${rulesKey},to_jsonb(${rulesVersion}::int),${at})
+      ON CONFLICT (key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`;
     return { rounds: groups.size, mentions: members.length };
   });
 }

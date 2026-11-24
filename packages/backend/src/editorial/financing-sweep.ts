@@ -6,6 +6,9 @@ import { BudgetExceededError, completeReceipt } from "../providers/receipts.ts";
 import { modelFor } from "./models.ts";
 import { FinancingBatchAnswer, financingBatchProtocol, financingText, financingBatchEntry, type FinancingMaterial } from "./financing-extraction.ts";
 
+import { additionalDigestEntries } from "./financing-supplemental-sections.ts";
+import { noManualFinancingReview, queueMissingSections, finishFollowup, stillNeedsFollowup, type BatchMaterial } from "./financing-followup.ts";
+
 const batchSize = 5;
 
 // The source revision and its original headings are authoritative for an old analysis.
@@ -28,10 +31,18 @@ interface PendingArticle {
 export async function pendingFinancing(db: Db, dailyStartId: number, approvedIds?: number[]) {
   const titles = sql`concat_ws(' ',p.title,p.original_title,src.title)`;
   const weekly = sql`${titles} ~* '(投融资|融资|创投|投资|风投|募资).{0,5}(周报|周刊|周览|周记|周汇总)|(每周|一周|本周).{0,6}(投融资汇总|融资盘点|融资汇总|融资速递)|(funding|venture|financing).{0,15}(weekly|week in review|roundup)|(weekly|week in).{0,15}(funding|venture|financing)'`;
+  const financingNewsletter = '(融资|创投|投资|募资).{0,3}(日报|早报|晨报|晚报)|每日.{0,3}(融资|创投)|(?:funding|financing|venture) daily|daily (?:funding|financing|venture)';
+  const confirmed = '(完成|获得|募集|筹集|达成|取得|新近获得).{0,52}(融资|股权投资|增资|贷款)|(?:raised|closed|secured).{0,45}(funding|financing|series [a-z]|million|billion)';
+  const several = '多轮|两轮|两.{0,3}轮融资|先后完成|连续完成|系列融资|轮.{0,3}(及|和|与|、).{0,10}轮';
   const daily = sql`CASE WHEN (an.id>${dailyStartId} OR an.output#>>'{financingReview,reason}'='no_single_transaction')
     AND ${titles} ~* ${digestTitlePattern} THEN
     EXISTS (SELECT 1 FROM unnest(ARRAY[src.excerpt,src.body]) t
       WHERE regexp_count(t,${cardPattern}) >= 2 OR (SELECT count(DISTINCT match[1])>=2 FROM regexp_matches(t,${sectionPattern},'g') match))
+    OR (an.id>${dailyStartId} AND EXISTS (SELECT 1 FROM unnest(ARRAY[src.excerpt,src.body]) t
+      WHERE (${titles} ~* ${financingNewsletter} AND (t ~ ${cardPattern} OR t ~ ${sectionPattern} OR t ~* ${confirmed}))
+        OR EXISTS (SELECT 1 FROM regexp_matches(t,${sectionPattern},'g') m WHERE m[1] ~* ${several})))
+    OR (an.id>${dailyStartId} AND src.title ~ ${dealHeadline}
+      AND (${titles} ~* ${financingNewsletter} OR src.title ~* ${several}))
     OR (SELECT count(DISTINCT part)>=2 FROM regexp_split_to_table(src.title,'[；;]') part WHERE part ~ ${dealHeadline})
     ELSE false END`;
   // Reopen only an empty v1 decision backed by the finished receipt, never a pending/unknown
@@ -88,7 +99,10 @@ async function enqueueRows(tx: Tx, rows: PendingArticle[], approvedHistory: bool
   const batches: FinancingMaterial[][] = [];
   let regular: FinancingMaterial[] = [];
   for (const row of rows) {
-    const sections = row.daily ? digestEntries(row.title, row.excerpt, row.body) : [];
+    const sections = row.daily ? digestEntries(row.title, row.excerpt, row.body, !approvedHistory) : [];
+    if (row.daily && !sections.length && !approvedHistory) {
+      sections.push(...additionalDigestEntries(row,[]).map(({heading})=>({heading})));
+    }
     if (approvedHistory && !sections.length) continue;
     const entry: FinancingMaterial = { id: row.id, format: "rounds",
       ...(approvedHistory && { historicalDigest: true }),
@@ -131,7 +145,7 @@ export async function historicalFinancingDigests(ids: number[], apply = false) {
 export async function runFinancingBatch() {
   if (!config.modelCallsEnabled) return "disabled";
   await enqueueFinancing();
-  const [batch] = await sql<{id:number; material:FinancingMaterial[]; attempts:number}[]>`
+  const [batch] = await sql<{id:number; material:BatchMaterial[]; attempts:number}[]>`
     UPDATE financing_extraction_batches SET next_run=now()+interval '6 minutes',attempts=attempts+1
     WHERE id=(SELECT id FROM financing_extraction_batches WHERE finished_at IS NULL AND next_run <= now()
       ORDER BY (material->0 ? 'historicalDigest'),next_run,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,material,attempts`;
@@ -140,8 +154,17 @@ export async function runFinancingBatch() {
     // The batch's input is immutable. Re-parse an already received answer after a
     // validation upgrade instead of paying to produce the same text again.
     const subject = "financing-batch:" + batch.id;
+    const repair = batch.material[0]?.repair;
+    if (repair && !await stillNeedsFollowup(sql,repair,batch.id)) {
+      await sql`UPDATE financing_extraction_batches SET finished_at=now(),last_error=NULL
+        WHERE id=${batch.id} AND attempts=${batch.attempts} AND finished_at IS NULL`;
+      return "completed";
+    }
     // Existing in-flight batches must keep their original prompt and receipt identity.
-    const { multi, version, system } = financingBatchProtocol(batch.material[0]);
+    const protocol = financingBatchProtocol(batch.material[0]);
+    const { multi } = protocol;
+    const version = repair ? "financing-digest-missing-v1" : protocol.version;
+    const system = repair ? protocol.system + "\nEach ID is one omitted section of a digest. Return only the identified transactions in that section. If missingRounds is provided, return only the missing named rounds, retaining their verbatim source labels. Omit background transactions and the neighboring card boundary." : protocol.system;
     const [stored] = await sql<{id:number; content:string}[]>`
       SELECT id, response->'choices'->0->'message'->>'content' AS content FROM receipts
       WHERE purpose='financing_extract' AND subject=${subject} AND request->>'promptVersion'=${version}
@@ -152,10 +175,24 @@ export async function runFinancingBatch() {
     if (stored?.content) {
       try { recovered = FinancingBatchAnswer.parse(JSON.parse(stored.content)); } catch { /* provider parser can retry malformed JSON */ }
     }
+    if (repair && !recovered) {
+      // A rejected/unusable answer has already used this section request. A new
+      // worker tick (or an admin release of an unknown receipt) must not repay it.
+      const [failed] = await sql`SELECT id FROM receipts WHERE purpose='financing_extract' AND subject=${subject}
+        AND status='failed' ORDER BY id DESC LIMIT 1`;
+      if (failed) {
+        await sql.begin(async tx => {
+          const done = await tx`UPDATE financing_extraction_batches SET finished_at=now(),last_error=NULL
+            WHERE id=${batch.id} AND attempts=${batch.attempts} AND finished_at IS NULL RETURNING id`;
+          if (done.length) await finishFollowup(tx,batch.material,batch.id,Number(failed.id),new Map(),"unusable");
+        });
+        return "completed";
+      }
+    }
     const res = recovered && stored ? {data:recovered, receiptId:stored.id} : await chatJson({
       model: await modelFor("financing"), fallback: false, purpose:"financing_extract", subject,
-      promptVersion: version, system, user: JSON.stringify(batch.material),
-      schema: FinancingBatchAnswer, reuseAcrossModels: true, maxTokens: multi ? 12000 : 5000, temperature: 0, timeoutMs: 120000,
+      promptVersion: version, system, user: JSON.stringify(repair ? batch.material.map(({repair: _, ...input}) => input) : batch.material),
+      schema: FinancingBatchAnswer, ...(repair && {attemptTag:subject}), reuseAcrossModels: true, maxTokens: multi ? 12000 : 5000, temperature: 0, timeoutMs: 120000,
     });
     const byId = new Map<number, unknown>();
     for (const row of res.data.results) {
@@ -164,7 +201,8 @@ export async function runFinancingBatch() {
     await sql.begin(async tx => {
       const [owner] = await tx`SELECT id FROM financing_extraction_batches WHERE id=${batch.id} AND attempts=${batch.attempts} AND finished_at IS NULL FOR UPDATE`;
       if (!owner) return;
-      for (const m of batch.material) {
+      if (repair) await finishFollowup(tx,batch.material,batch.id,res.receiptId,byId,"completed");
+      else for (const m of batch.material) {
         const { claim, claims, review } = financingBatchEntry(m, byId.get(m.id));
         // A second pass with more source material may enrich a claim. Preserve the original
         // review when it finds no investor or switches to another company in the same report.
@@ -185,9 +223,14 @@ export async function runFinancingBatch() {
         // A confirmed but unusable individual answer remains distinguishable from a source
         // with no transaction. Replaying the same receipt would never repair its contents.
         const fields = review.reason === "invalid_result" ? {} : { financing: claim, ...(claims && { financingClaims: claims }) };
-        const patch = { ...fields, financingReview: { ...review, version, receiptId: res.receiptId } };
+        const followup = m.digestEntries?.length
+          ? await queueMissingSections(tx,m,batch.id,claims ?? []) : undefined;
+        const reason = followup ? (followup.coverage.missing.length ? "incomplete_roundup" : "verified_transactions") : review.reason;
+        const patch = { ...fields, financingReview: { ...review, ...followup, ...(reason!==review.reason && {initialReason:review.reason}),
+          reason, version, receiptId:res.receiptId } };
         await tx`UPDATE analyses an SET output=output || ${tx.json(patch as never)}::jsonb
           WHERE id=${m.id} AND output->>'financingBatch'=${String(batch.id)}
+          ${m.digestEntries?.length ? sql`AND ${noManualFinancingReview}` : sql``}
           ${(m.replacesEmptyBatch || m.historicalDigest) ? sql`AND ${unreviewedFields}` : sql``}`;
       }
       await completeReceipt(tx, res.receiptId);

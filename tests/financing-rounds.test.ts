@@ -65,3 +65,47 @@ test("fundraising matches only the same identified vehicle, phase and amount", (
   }
   assert.equal(financingRounds([{...a,stage:null},{...b,stage:null}]).size,2);
 });
+
+test("an identified primary amount matches across currency conversions without equating a valuation or tranche", () => {
+  const digest = source("digest",{company:"TypeSafe AI", stage:"A轮",amount:"8.7 亿美元（约61.16亿人民币）"});
+  const report = source("report",{company:"TypeSafe AI",stage:"A 轮",amount:"8.7亿美元"});
+  assert.equal(financingRounds([digest,report]).size,1);
+  for (const amount of ["8.7亿美元（投后估值75亿美元）","8.7亿美元（含此前3亿美元）","8.7亿美元（其中3亿美元贷款）"]) {
+    assert.equal(financingRounds([{...digest,amount},report]).size,2);
+  }
+});
+
+test("an explicitly declared alias and corroborated vague amount merge the same stage only", () => {
+  const common={stage:"B轮",currency:"CNY",investors:["杭州高新金投","鸿瑞达投资"]};
+  const full=source("standalone",{...common,company:"杭州原子矩阵计算有限公司",amount:"数亿元人民币",
+    evidence:"杭州原子矩阵计算有限公司（MatriQ，下称“原子矩阵”）近日宣布完成数亿元人民币B轮融资。"});
+  const card=source("digest",{...common,company:"原子矩阵",amount:"数亿 人民币",investors:["鸿瑞达投资"]});
+  assert.equal(financingRounds([full,card]).size,1);
+  for (const patch of [{amount:"数千万元"}, {investors:[]}, {stage:"B+轮"}, {currency:"USD"}, {status:"planned"}]) {
+    assert.equal(financingRounds([full,{...card,...patch}]).size,2);
+  }
+  const unrelated={...full,evidence:"杭州原子矩阵计算有限公司等参投另外一家公司（简称“原子矩阵”）。"};
+  assert.equal(financingRounds([unrelated,card]).size,2);
+  const other=source("other",{...common,company:"另一家有限公司",amount:full.amount,evidence:"另一家有限公司（简称“原子矩阵”）完成B轮。"});
+  assert.equal(financingRounds([full,other,card]).size,3);
+});
+
+test("near one hundred million normalizes without equating a lower bound, cumulative or different round", () => {
+  const a=source("digest1",{company:"格物通智",stage:"天使轮",currency:"CNY",amount:"近亿元",investors:["匹克投资","鸿富资产"]});
+  const b={...a,article_id:"digest2",base_id:"item:digest2",amount:"近1亿元人民币"};
+  assert.equal(financingRounds([a,b]).size,1);
+  for (const patch of [{amount:"超亿元"},{basis:"cumulative"},{record_type:"aggregate_disclosure"},{stage:"天使+轮"}]) {
+    assert.equal(financingRounds([a,{...b,...patch}]).size,2);
+  }
+  assert.equal(financingRounds([{...a,amount:"超亿元",investors:[]},{...b,amount:"超1亿元"}]).size,2);
+});
+
+test("an explicit bilingual recipient connects three spellings and leaves competing brands separate", () => {
+  const a=source("a",{company:"量子示例（Quantum Example）",amount:"亿元级",currency:"CNY",investors:["甲基金"]});
+  const b={...a,base_id:"item:b",article_id:"b",company:"量子示例"};
+  const c={...a,base_id:"item:c",article_id:"c",company:"Quantum Example"};
+  assert.equal(financingRounds([a,b,c]).size,1);
+  assert.equal(financingRounds([a,b,{...c,company:"Quantum Example Energy"}]).size,2);
+  const d={...a,base_id:"item:d",article_id:"d",company:"另一品牌（Quantum Example）"};
+  assert.equal(financingRounds([a,b,c,d]).size,3);
+});

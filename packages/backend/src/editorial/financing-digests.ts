@@ -13,7 +13,8 @@ export function printedCard(heading: string, marker: RegExpExecArray): DigestEnt
   return { heading, stage: marker[2]!.trim(), amount: printedAmount.exec(marker[1]!)?.[1] };
 }
 
-export function digestEntries(title: string, excerpt: string | null, body: string | null): DigestEntry[] {
+export function digestEntries(title: string, excerpt: string | null, body: string | null, allowSingle = false): DigestEntry[] {
+  const required = allowSingle ? 1 : 2;
   // A feed can repeat the full article in the excerpt. Count a source layout only once.
   const layouts: DigestEntry[][] = [];
   for (const text of [excerpt, body]) {
@@ -22,9 +23,9 @@ export function digestEntries(title: string, excerpt: string | null, body: strin
       // The flat feed joins the preceding investor list to the next company. The printed
       // recipient always ends immediately before the region marker; keep that exact context.
       printedCard(text.slice(Math.max(0, match.index - 100), match.index).trim(), match));
-    if (cards.length >= 2) layouts.push(cards);
+    if (cards.length >= required) layouts.push(cards);
     const headlines = new Set(Array.from(text.matchAll(new RegExp(sectionPattern, "gu")), m => m[1]!));
-    if (headlines.size >= 2) layouts.push([...headlines].map(heading => ({ heading })));
+    if (headlines.size >= required) layouts.push([...headlines].map(heading => ({ heading })));
   }
   if (layouts.length) return layouts.sort((a, b) => b.length - a.length)[0]!;
   const headlines = title.split(/[；;]/).map(s => s.split(/[|｜丨]/)[0]!.trim()).filter(s => new RegExp(dealHeadline, "u").test(s));
@@ -37,18 +38,19 @@ export function financingSections(text: string, entries?: DigestEntry[]) {
   if (!entries?.length || entries.some(e => e.stage)) return [];
   const headings = new Set(entries.map(e => compact(e.heading)));
   const seen = new Set<string>();
-  const sections: Array<{company:string; text:string}> = [];
+  const sections: Array<{company:string; heading:string; text:string}> = [];
   for (const line of text.split("\n")) {
     const markers = [...line.matchAll(/【([^【】]+)】/gu)];
     for (const [i,m] of markers.entries()) {
       const title = m[1]!;
       if (!headings.has(compact(title))) continue;
-      const company = title.split(/完成|获得|获|筹集|募集/u)[0]?.trim();
+      const company = title.split(/完成|获得|获|筹集|募集/u)[0]?.trim().replace(/(?:近日|宣布|连续|接连|已)+$/u, "").trim();
       if (!company) continue;
       const body = line.slice(m.index + m[0].length,markers[i + 1]?.index).trim();
-      if (!body || seen.has(body)) continue;
-      seen.add(body);
-      sections.push({company:compact(company),text:body});
+      const key = title + "\n" + body;
+      if (!body || seen.has(key)) continue;
+      seen.add(key);
+      sections.push({company:compact(company),heading:title,text:body});
     }
   }
   return sections;

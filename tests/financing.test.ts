@@ -222,6 +222,11 @@ test("indexed financing pages retain live filter, cursor, and timed visibility s
   const live = await Promise.all(urls.map(async url => (await authedGet(url)).json()));
   await refreshFinancingIndex();
   assert.deepEqual(await Promise.all(urls.map(async url => (await authedGet(url)).json())), live);
+  await sql`DELETE FROM settings WHERE key='financing.index-rules'`;
+  assert.equal(await financingIndexReady(sql,new Date()),false);
+  assert.deepEqual(await Promise.all(urls.map(async url => (await authedGet(url)).json())), live);
+  await refreshFinancingIndex();
+  assert.equal(await financingIndexReady(sql,new Date()),true);
   const [previous] = await sql`SELECT selected, visible_after FROM publications WHERE article_id=${article}`;
   try {
     await sql`UPDATE publications SET selected=true,visible_after=${release} WHERE article_id=${article}`;

@@ -206,8 +206,8 @@ function printedCardClaim(source: FinancingMaterial, item: Record<string, unknow
 
 const roundDetails = candidate.pick({ round: true, amountText: true, currency: true, valuationText: true, investors: true })
   .extend({ terms: quote.nullish() });
-const multipleRounds = /(?:两|二|三|四|五|多|[2-9])\s*(?:个|笔)?\s*轮(?:次|融资|募资)?|(?:two|three|four|five|multiple|several|[2-9])\s+(?:financing |funding |separate )?rounds?\b/iu;
-const namedRounds = /(?:pre[- ]?)?(?:种子|天使|[a-h][0-9]?)(?:\+{1,3}|加)?\s*轮|(?:pre[- ])?seed\b|series\s+[a-h](?:[0-9]|\+{1,3})?(?![a-z])/giu;
+const multipleRounds = /(?<![第a-z0-9])(?:两|二|三|四|五|多|[2-9])\s*(?:个|笔)?\s*轮(?:次|融资|募资)?|(?:two|three|four|five|multiple|several|[2-9])\s+(?:financing |funding |separate )?rounds?\b/iu;
+const namedRounds = /第(?:一|二|三|四|五|[1-9])\s*轮|(?<![a-z0-9])(?:pre[- ]?)?(?:种子|天使|[a-h][0-9]?)\s*(?:\+{1,3}|加)?\s*轮|(?:pre[- ])?seed\b|series\s+[a-h](?:[0-9]|\+{1,3})?(?![a-z])/giu;
 
 // Find the named party in the grammatical list receiving the investment role. A name
 // elsewhere in a long quote (e.g. a commercial partner) is insufficient.
@@ -221,13 +221,14 @@ function namedInvestorRole(quote: string, name: string, names: string[]) {
     if (n === name) wanted = label;
   }
   const list = "〔[0-9]+〕(?:[、,，和与及\\s]+〔[0-9]+〕)*";
-  const roles = new RegExp("(?:^|[、，,:：;；\\s]|由|获|包括)" + list + "(?:及其(?:下属|旗下)基金)?(?:等(?:机构|投资方)?)?(?:共同|主要|联合)?(?:领投|跟投|参投|追加投资|联合投资|共同投资|投资|参与(?:增资|投资|融资))|(?:投资者|投资人|投资方)(?:包括|为|有)" + list, "gu");
+  const roles = new RegExp("(?:^|[、，,:：;；\\s]|由|获|包括)" + list + "(?:及其(?:下属|旗下)基金)?(?:等(?:机构|投资方)?)?(?:共同|主要|联合)?(?:领投|跟投|参投|追加投资|联合投资|共同投资|投资|参与(?:增资|投资|融资))|(?:投资者|投资人|投资方)(?:包括|为|有)" + list +
+    "|(?:本轮(?:融资)?|本次融资|该轮融资)由" + list + "(?:等(?:机构|投资方)?)?(?:共同|联合)参与(?=$|[，,。；;])", "gu");
   return Boolean(wanted) && [...text.matchAll(roles)].some(m=>m[0].includes(wanted));
 }
 
 // Require the returned investor and role together in the same sentence of the named
 // section. Inspect the unabridged sentence so shortening a quote cannot remove a qualifier.
-function sectionInvestors(text: string, claim: FinancingClaim, investors: unknown) {
+function sectionInvestors(text: string, claim: FinancingClaim, investors: unknown, evidence: string) {
   const excluded = /此前|曾经|曾(?:参与|领投|跟投|投资)|早前|去年|过往|历史|上一轮|上轮|前一轮|拟|意向|洽谈|潜在|可能|预计|计划|有望|考虑|或将|将(?:参与|投资|领投|跟投)|尚未|未(?:参与|出资|投资)|未具名|顾问|承销商/u;
   const normStage = (s: string) => s.normalize("NFKC").toLowerCase().replace(/\s/g,"");
   const tranche = /首笔|第一笔|首批|首期|首关|首次交割/u.exec(claim.evidence + " " + text)?.[0];
@@ -242,7 +243,8 @@ function sectionInvestors(text: string, claim: FinancingClaim, investors: unknow
       const opening = sentence.trimStart();
       const current = normStage(claim.company);
       const stage = normStage(claim.round ?? "");
-      if (!/^(?:本轮|本次|此次|新一轮|该轮|首关|首笔|首期|首批|首次交割)/u.test(opening) &&
+      const inTransaction = sourceQuotes(sentence)(evidence.replace(/[。；;]$/u,"")) && sourceQuotes(evidence)(v.quote);
+      if (!inTransaction && !/^(?:本轮|本次|此次|新一轮|该轮|首关|首笔|首期|首批|首次交割)/u.test(opening) &&
           !normStage(opening).startsWith(current) && !(stage && normStage(opening).startsWith(stage))) continue;
       if (!namedInvestorRole(sentence,v.name,names)) continue;
       const cited = sourceQuotes(v.quote)(v.name);
@@ -251,7 +253,7 @@ function sectionInvestors(text: string, claim: FinancingClaim, investors: unknow
       if (!spelled || /^(?:的)?(?:旗下|下属|管理的|通过其)/u.test(sentence.slice(sentence.indexOf(spelled) + spelled.length).trim())) continue;
       const stages = [...sentence.matchAll(namedRounds)].map(m=>normStage(m[0]));
       if (stages.some(stage=>stage !== normStage(claim.round ?? ""))) continue;
-      if (!stages.length && !/本轮|本次|此次|新一轮|该轮|首关|首笔|首期|首批|首次交割/u.test(sentence)) continue;
+      if (!inTransaction && !stages.length && !/本轮|本次|此次|新一轮|该轮|首关|首笔|首期|首批|首次交割/u.test(sentence)) continue;
       // A whole-round list does not identify who funded an individual closing/tranche.
       if (tranche && !sentence.includes(tranche)) continue;
       proofs.push({name:v.name,quote:sentence.trim()});
@@ -261,26 +263,78 @@ function sectionInvestors(text: string, claim: FinancingClaim, investors: unknow
   return proofs;
 }
 
+// A digest may spell out the recipient in its heading and first sentence, then
+// use its short brand in the financing sentence. Keep a contiguous source quote
+// containing both names, only when the heading independently confirms the terms.
+function namedSectionEvidence(section: ReturnType<typeof financingSections>[number], item: Record<string, unknown>, evidence: string) {
+  if (typeof item.company !== "string" || typeof item.round !== "string" || typeof item.amountText !== "string") return evidence;
+  const short = /^([a-z][a-z0-9-]{2,})\s+(?:AI|Labs|Robotics|Technologies)$/iu.exec(item.company)?.[1];
+  const heading = sourceQuotes(section.heading);
+  if (!short || !heading(item.company) || !heading(item.round) || !heading(item.amountText)) return evidence;
+  const subject = /^([a-z0-9-]+)\s*(?:宣布|近日|已)?(?:完成|获得|获投|筹集)/iu.exec(evidence.trim())?.[1];
+  if (subject?.toLowerCase() !== short.toLowerCase()) return evidence;
+  const at = section.text.indexOf(evidence);
+  const name = sourceQuotes(section.text.slice(0,at))(item.company);
+  const start = name ? section.text.lastIndexOf(name,at) : -1;
+  if (start < 0 || at + evidence.length - start > 240) return evidence;
+  return section.text.slice(start, at + evidence.length);
+}
+
+const priorOrProspective = /此前|曾(?:经|于|在|完成|获)|去年|上轮|上一轮|前一轮|历史|拟(?:于|完成|筹集|募资|融资|领投)|计划|正在洽谈|尚未|previous(?:ly)?|last year|prior (?:round|funding)/iu;
+
+// Use only explicit stage-led clauses in this recipient's own source section.
+// The displayed excerpt from a model can end before these separately cited terms.
+function followingTerms(section: string, evidence: string) {
+  const at = section.indexOf(evidence);
+  if (at < 0) return [];
+  const tail = section.slice(at + evidence.length, at + evidence.length + 1200);
+  const clauses: Array<{round:string; text:string}> = [];
+  for (const segment of tail.split(/[。；;！!？?\n]/u)) {
+    if (priorOrProspective.test(segment)) break;
+    if (!segment.trim()) continue;
+    const markers = [...segment.matchAll(namedRounds)];
+    if (!markers.length || !/^\s*(?:其中[，,]?\s*)?(?:本次|本轮)?\s*$/u.test(segment.slice(0,markers[0]!.index))) break;
+    for (const [i, marker] of markers.entries()) {
+      const prefix = segment.slice(0,marker.index);
+      if (!/(?:^|[，,])\s*(?:其中[，,]?\s*)?(?:本次|本轮)?\s*$/u.test(prefix)) continue;
+      if (/^(?:融资)?\s*(?:由|投资方|参与方|获投|募集|筹集|融资额)/u.test(segment.slice(marker.index + marker[0].length))) {
+        const start = i === 0 ? 0 : marker.index;
+        const clause = segment.slice(start, markers[i + 1]?.index).trim().replace(/[，,]$/u,"");
+        clauses.push({round:marker[0],text:clause});
+      }
+    }
+  }
+  return clauses;
+}
+
 // A single passage can announce several rounds while allocating only some terms.
 // Keep the common announcement as evidence and require round-specific quotes for terms.
-function disclosedRounds(passage: string, item: Record<string, unknown>, rounds: unknown[]) {
+function disclosedRounds(passage: string, item: Record<string, unknown>, rounds: unknown[], later: ReturnType<typeof followingTerms>) {
   const present = sourceQuotes(passage);
+  const stageKey = (s: string) => quoteIndex(s).folded.replace(/\s+/gu,"");
+  const current = passage.split(/[。；;！？\n]/u).filter(sentence=>!priorOrProspective.test(sentence)).map(sourceQuotes);
   const named = rounds.flatMap(raw => {
     const parsed = roundDetails.safeParse(raw);
     if (!parsed.success) return [];
-    const round = present(parsed.data.round);
-    return round ? [{ value: parsed.data, round }] : [];
+    const label = parsed.data.round;
+    if (!label) return [];
+    const attributed = later.filter(clause=>stageKey(clause.round) === stageKey(label));
+    const round = current.map(find=>find(label)).find(Boolean) || attributed[0]?.round;
+    return round ? [{ value: parsed.data, round, attributed }] : [];
   });
   if (!named.length) {
     if (!multipleRounds.test(String(item.evidence))) return [];
     return [{ ...item, round: null, valuationText: null, amountBasis: "cumulative", aggregate: true }];
   }
-  return named.map(({value, round}) => {
-    const terms = typeof value.terms === "string" && present(value.terms);
+  return named.map(({value, round, attributed}) => {
+    const terms = value.terms && (present(value.terms) ||
+      attributed.map(clause=>sourceQuotes(clause.text)(value.terms)).find(Boolean));
     const within = sourceQuotes(terms || "");
-    const exclusive = terms && within(round) && !named.some(other =>
-      other.round !== round && !sourceQuotes(round)(other.round) && within(other.round));
-    const amount = exclusive && typeof value.amountText === "string" && within(value.amountText);
+    const exclusive = terms && !priorOrProspective.test(terms) && within(round) &&
+      !named.some(other => other.round !== round && !sourceQuotes(round)(other.round) && within(other.round)) &&
+      ![...terms.matchAll(namedRounds)].some(m=>!sourceQuotes(m[0])(round) && !sourceQuotes(round)(m[0]));
+    const amount = exclusive && !/合计|累计|总计|combined|in total/iu.test(terms) &&
+      typeof value.amountText === "string" && within(value.amountText);
     const combined = typeof item.amountText === "string" && present(item.amountText);
     const amountText = amount && !(combined && sourceQuotes(combined)(amount)) ? amount : null;
     return { ...item, round, amountText, aggregate: false, amountBasis: amountText ? "round" : "unknown",
@@ -305,39 +359,67 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
   for (const item of candidates) {
     const recipient = typeof item?.company === "string" ? item.company.normalize("NFKC").toLowerCase().replace(/\s/g,"") : "";
     const matches = sections.filter(s => s.company === recipient);
-    const section = matches.length === 1 ? matches[0] : undefined;
+    // The excerpt can contain a truncated copy of the full source section.
+    const section = matches.find(s => matches.every(other => s.text.startsWith(other.text)));
     const scoped = section ? sourceQuotes(section.text) : present;
     const quoted = typeof item?.passage === "string" && item.passage.length <= 1600 && scoped(item.passage);
-    const evidence = typeof item?.evidence === "string" && item.evidence.length <= 1600 && scoped(item.evidence);
+    const literal = typeof item?.evidence === "string" && item.evidence.length <= 1600 && scoped(item.evidence);
+    const evidence = literal && section && !sourceQuotes(literal)(item.company)
+      ? namedSectionEvidence(section,item,literal) : literal;
     const card = cards.length ? printedCardClaim(source,item,cards) : undefined;
-    const passage = quoted || (evidence && evidencePassage(section?.text ?? source.text, evidence, item.investors));
+    const usableQuote = quoted && (evidence === literal || (evidence && sourceQuotes(quoted)(evidence))) ? quoted : null;
+    const passage = usableQuote || (evidence && evidencePassage(section?.text ?? source.text, evidence, item.investors));
     if (!passage || (cards.length && !card?.claim)) { rejected++; continue; }
     let rounds: unknown[] | undefined;
+    let roundPassage = passage;
+    let later: ReturnType<typeof followingTerms> = [];
     if (source.format === "rounds" && evidence) {
-      const stageMentions = [...evidence.matchAll(namedRounds)];
-      const stages = [...new Set(stageMentions.map(match => match[0]))];
-      const joinedStages = stageMentions.some((match, index) => {
-        const next = stageMentions[index + 1];
-        return next && /^(?:\s|[、,&，和与及]|and|以及)+$/iu.test(evidence.slice(match.index + match[0].length, next.index));
-      });
+      const clauses = evidence.split(/[。；;！？\n]/u).filter(clause=>!priorOrProspective.test(clause));
+      const stages = new Set<string>();
+      for (const clause of clauses) {
+        const labels = [...clause.matchAll(namedRounds)];
+        for (const [i, match] of labels.entries()) {
+          const next = labels[i + 1];
+          if (next && /^(?:\s|[、,&，和与及]|and|以及)+$/iu.test(clause.slice(match.index + match[0].length, next.index))) {
+            stages.add(match[0]);
+            stages.add(next[0]);
+          }
+        }
+      }
+      const joint = clauses.some(clause=>multipleRounds.test(clause)) || stages.size > 1;
       if (Array.isArray(item.rounds) && item.rounds.length) {
         rounds = item.rounds;
-      } else if (multipleRounds.test(evidence) || (joinedStages && /合计|累计|总计|combined|in total/i.test(evidence))) {
+      } else if (joint) {
         // A partially named series of rounds cannot be allocated to a single stage.
-        rounds = stages.length > 1 ? stages.map(round => ({ round })) : [];
+        rounds = [...stages].map(round => ({round}));
+      }
+      if (rounds && joint && section) {
+        later = followingTerms(section.text,evidence);
+        // Preserve exact source text rather than joining unrelated sentences. Only
+        // extend as far as the last corroborated round attribution.
+        const end = later.reduce((end, clause) =>
+          Math.max(end,section.text.indexOf(clause.text,section.text.indexOf(evidence)) + clause.text.length),0);
+        if (end) {
+          const extended = section.text.slice(section.text.indexOf(evidence),end);
+          if (extended.length > roundPassage.length) roundPassage = extended;
+          if (!rounds.length && /两轮|2\s*轮|two rounds/iu.test(evidence) && new Set(later.map(c=>c.round)).size === 2) {
+            rounds = later.map(c=>({round:c.round}));
+          }
+        }
       }
     }
-    const entries = rounds ? disclosedRounds(passage, item, rounds) : [item];
+    const grounded = evidence && evidence !== literal ? { ...item, evidence } : item;
+    const entries = rounds ? disclosedRounds(passage, grounded, rounds, later) : [grounded];
     if (!entries.length) rejected++;
     for (const entry of entries) {
-      const result = !rounds && card ? card : validateFinancing({ id: source.id, text: passage }, entry);
+      const result = !rounds && card ? card : validateFinancing({ id: source.id, text: rounds ? roundPassage : passage }, entry);
       if (!result || !result.claim || !sourceQuotes(result.claim.evidence)(result.claim.company) ||
           /[；;丨|]|(?:周报|月报)$/.test(result.claim.company)) {
         rejected++;
         continue;
       }
       const { claim } = result;
-      const investorEvidence = section && !rounds ? sectionInvestors(section.text,claim,item.investors) : result.investorEvidence;
+      const investorEvidence = section && !rounds ? sectionInvestors(section.text,claim,item.investors,literal || "") : result.investorEvidence;
       if (section && !rounds) claim.investors = investorEvidence.map(p=>p.name);
       if (rounds && entry.aggregate) {
         claim.amountBasis = "cumulative";
