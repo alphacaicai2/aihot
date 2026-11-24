@@ -58,10 +58,14 @@ function belongs(entry: DigestEntry, text: string, claim: FinancingClaim) {
   const body = text.slice(text.indexOf("】")+1).trim();
   const first = body.split(/[。！？；;\n]/u).find(s=>s.trim()) ?? "";
   const intro = compact(first);
-  const at = intro.indexOf(name);
-  const after = intro.slice(at + name.length);
-  return at >= 0 && /^(?:[(（][^()（）]{1,80}[)）])?(?:近日|近期|日前|已|宣布|成功|最近|已于近日|新近)*(?:完成(?!对)|达成|获得|取得|筹集|募集|获投|已融资|hasraised|secured)/iu.test(after) &&
-    compact(claim.evidence).includes(name);
+  if (!name || !compact(claim.evidence).includes(name)) return false;
+  // The first mention may attribute the news; a later mention in the same sentence
+  // can identify the issuer ("据甲公司消息，甲公司已完成…").
+  const issuerVerb = /^(?:\([^()]{1,80}\))?[，,]?(?:(?:正式|已|宣布|官宣|近日|近期|日前|成功|最近|新近|连续|先后|于近期|于近日)[，,]?)*(?:完成(?!了?对)|达成|获得|取得|筹集|募集|获投|已融资|签署(?:首轮|本轮|新一轮)?股权融资协议|hasraised|secured)/iu;
+  for (let at = intro.indexOf(name); at >= 0; at = intro.indexOf(name,at + name.length)) {
+    if (issuerVerb.test(intro.slice(at + name.length))) return true;
+  }
+  return false;
 }
 
 const stageStem = "(?:pre[-‐‑–— ]?)?[A-H]\\d*[+＋]*|(?:天使|种子)[+＋]*";

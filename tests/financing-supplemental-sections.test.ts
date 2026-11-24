@@ -13,3 +13,15 @@ test("mixed-digest supplemental candidates retain the exact paragraph, not anoth
   ]);
   assert.deepEqual(additionalDigestEntries({title:"投融资日报", excerpt:null, body:section},[]), [{heading:"北桥跻身独角兽",sourceText:section}]);
 });
+
+test("an issuer already verified in the opening isn't charged again for headline shorthand; an investor cannot cover it", async () => {
+  const {missingDigestSections}=await import("@aihot/backend/editorial/financing-followup");
+  const entry={heading:"创始人旗下团队获得新一轮融资"};
+  const claim={company:"北桥科技有限公司",kind:"company_round" as const,round:"A轮",amountText:null,currency:null,valuationText:null,investors:[],status:"closed" as const,amountBasis:"unknown" as const,evidence:""};
+  for(const sentence of ["据北桥科技有限公司消息，北桥科技有限公司宣布于近期完成A轮融资。","北桥科技有限公司，已连续完成A轮融资。","北桥科技有限公司官宣完成A轮融资。"]){
+    const res=missingDigestSections({title:"日报",excerpt:null,body:"【"+entry.heading+"】"+sentence},[entry],[{...claim,evidence:sentence}]);
+    assert.equal(res.coverage.verified,1);assert.equal(res.material.length,0);
+  }
+  const other="北桥科技有限公司完成了对另一家企业的投资。";
+  assert.equal(missingDigestSections({title:"日报",excerpt:null,body:"【"+entry.heading+"】"+other},[entry],[{...claim,evidence:other}]).coverage.verified,0);
+});
