@@ -55,8 +55,10 @@ export function MediaThumbs({ media, className = "" }: { media: MediaView[]; cla
 export function StarButton({ item, size = 26, className = "" }: { item: Pick<FeedItemSummary, "id" | "title" | "summary" | "source" | "publishedAt" | "score" | "selected">; size?: number; className?: string }) {
   const starred = useIsStarred(item.id);
   const [pulse, setPulse] = useState(0);
+  const [error, setError] = useState("");
   const on = starred;
   return (
+    <>
     <button
       type="button"
       aria-pressed={on}
@@ -65,11 +67,16 @@ export function StarButton({ item, size = 26, className = "" }: { item: Pick<Fee
       onClick={async (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const added = await updateBookmarks(() => setStarred({
-          id: item.id, title: item.title, summary: item.summary, sourceName: item.source.name,
-          publishedAt: item.publishedAt, score: item.score, aiSelected: item.selected,
-        }, !on));
-        if (added) setPulse((p) => p + 1);
+        setError("");
+        try {
+          const added = await updateBookmarks(() => setStarred({
+            id:item.id, title:item.title, summary:item.summary, sourceName:item.source.name,
+            publishedAt:item.publishedAt, score:item.score, aiSelected:item.selected,
+          }, !on));
+          if (added) setPulse(p => p + 1);
+        } catch (failure) {
+          setError(failure instanceof Error ? failure.message : "收藏未能保存。");
+        }
       }}
       style={{ width: size, height: size }}
       className={`relative z-10 inline-flex shrink-0 items-center justify-center rounded-control transition-colors duration-150 ${on ? "text-accent" : "text-ink-4 hover:bg-bg-sunk hover:text-ink-2"} ${className}`}
@@ -78,5 +85,7 @@ export function StarButton({ item, size = 26, className = "" }: { item: Pick<Fee
         <IconBookmark size={Math.round(size * 0.6)} filled={on} />
       </span>
     </button>
+    {error && <span role="status" className="relative z-10 max-w-44 whitespace-normal text-xs text-hot">{error}</span>}
+    </>
   );
 }

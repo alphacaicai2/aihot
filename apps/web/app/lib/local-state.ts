@@ -159,10 +159,12 @@ export function setStarred(item: Omit<LocalStarredItem, "savedAt">, wanted: bool
   const list = getStarred();
   const exists = list.some((s) => s.id === item.id);
   if (exists === wanted) return exists;
-  const next = exists ? list.filter((s) => s.id !== item.id) : [{ ...item, savedAt: new Date().toISOString() }, ...list].slice(0, STARRED_LIMIT);
+  if (wanted && list.length >= STARRED_LIMIT) throw new Error(`已达到 ${STARRED_LIMIT} 条收藏上限，可先到「收藏」移除旧内容。`);
+  const next = exists ? list.filter((s) => s.id !== item.id) : [{ ...item, savedAt: new Date().toISOString() }, ...list];
   const saved = writeRaw(KEYS.starred, JSON.stringify(next));
   invalidate(KEYS.starred);
-  return saved ? wanted : exists;
+  if (!saved) throw new Error("浏览器未能保存此次更改，请检查本机存储。");
+  return wanted;
 }
 
 export function removeStar(id: string) {

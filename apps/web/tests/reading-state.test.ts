@@ -59,3 +59,31 @@ test("marking an item unread preserves other read records and updates the read s
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+test("a full bookmark list rejects a new entry and keeps all saved content after removal and undo", async () => {
+  const state = await freshState("bookmark-capacity");
+  const saved = Array.from({length:state.STARRED_LIMIT}, (_, i) => ({
+    id:"bookmark-" + i, title:"标题 " + i, summary:null, sourceName:"来源", publishedAt:null,
+    score:null, aiSelected:false, savedAt:new Date(Date.UTC(2026,1,1) - i * 1000).toISOString(),
+  }));
+  const before = JSON.stringify(saved);
+  const values = new Map([[state.KEYS.starred as string, before]]);
+  const original = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable:true, value:{localStorage:{
+    getItem:(key:string) => values.get(key) ?? null,
+    setItem:(key:string,value:string) => values.set(key,value),
+  }} });
+  try {
+    const extra = {...saved[0]!, id:"new-bookmark"};
+    assert.throws(() => state.setStarred(extra, true), /500/);
+    assert.equal(values.get(state.KEYS.starred), before);
+    assert.equal(state.setStarred(saved[10]!, true), true);
+    assert.equal(state.removeStar(saved[10]!.id), true);
+    assert.equal(state.getStarred().length, state.STARRED_LIMIT - 1);
+    assert.equal(state.restoreStar(saved[10]!), true);
+    assert.deepEqual(state.getStarred(), saved);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "window", original);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
