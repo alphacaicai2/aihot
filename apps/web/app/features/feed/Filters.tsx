@@ -103,9 +103,11 @@ export function SearchField({ action = "/all", defaultValue = "", keep = {}, var
 }
 
 /** Mobile home: the search icon at the end of the category row opens search on 全部动态. */
-export function SearchIconLink() {
+export function SearchIconLink({filters}: {filters:Record<string,string | null>}) {
+  const query = new URLSearchParams({search:"1"});
+  for (const [key, value] of Object.entries(filters)) if (value) query.set(key,value);
   return (
-    <Button variant="ghost" size="icon" aria-label="搜索" render={<Link to="/all?search=1" />}>
+    <Button variant="ghost" size="icon" aria-label="搜索" render={<Link to={`/all?${query}`} />}>
       <IconSearch size={19} />
     </Button>
   );

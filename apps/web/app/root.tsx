@@ -103,30 +103,31 @@ export default function App() {
 export function ErrorBoundary() {
   const error = useRouteError();
   const site = useRouteLoaderData<typeof loader>("root");
-  const { pathname } = useLocation();
+  const { pathname, search, hash } = useLocation();
   const status = isRouteErrorResponse(error) ? error.status : 500;
   const notFound = status === 404;
+  const admin = pathname === "/admin" || pathname.startsWith("/admin/");
+  const financing = pathname === "/financing" || pathname.startsWith("/financing/");
+  const retryable = status >= 500 || status === 429;
+  const home = admin ? "/admin" : financing ? "/financing" : "/";
+  const homeLabel = admin ? "返回管理后台" : financing ? "返回融资数据库" : "回到精选";
   const body = (
     <div className="flex min-h-[70vh] items-center justify-center px-2 py-16">
       <div className="max-w-sm text-center">
         <RingMark className="mx-auto mb-5 size-10 text-accent" />
         <div className="mono text-[12px] text-ink-4">{status}</div>
-        <h1 className="mt-1.5 text-[20px] font-bold text-ink">{notFound ? "这里没有内容" : "暂时无法加载"}</h1>
+        <h1 className="mt-1.5 text-[20px] font-bold text-ink">{notFound ? "这里没有内容" : retryable ? "暂时无法加载" : "无法打开此页面"}</h1>
         <p className="mt-2 text-[13.5px] leading-relaxed text-ink-3">
-          {notFound ? "你访问的页面不存在，或内容已不再公开。" : "服务暂时繁忙，请稍后再试。已经加载过的内容不受影响。"}
+          {notFound ? "你访问的页面不存在，或内容已不再公开。" : retryable ? "请稍后重试。" : "请检查链接或返回重新选择。"}
         </p>
         <div className="mt-6 flex justify-center gap-2.5">
-          <Link to="/" className={buttonClass("primary")}>
-            回到精选
-          </Link>
-          <Link to="/all" className={buttonClass("secondary")}>
-            浏览全部动态
-          </Link>
+          {retryable && <a href={pathname + search + hash} className={buttonClass("primary")}>重新加载</a>}
+          <Link to={home} className={buttonClass(retryable ? "secondary" : "primary")}>{homeLabel}</Link>
         </div>
       </div>
     </div>
   );
   // Admin errors stay inside the admin's own chrome.
-  if (pathname === "/admin" || pathname.startsWith("/admin/")) return body;
+  if (admin) return body;
   return <SiteShell changelogVersion={site?.changelogVersion ?? null}>{body}</SiteShell>;
 }

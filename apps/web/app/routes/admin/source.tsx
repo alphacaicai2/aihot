@@ -1,6 +1,6 @@
 import { SITE } from "@aihot/industry/site";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useRevalidator } from "react-router";
 import type { Route } from "./+types/source";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
@@ -64,6 +64,11 @@ export const meta: Route.MetaFunction = ({ loaderData }) => [{ title: `${loaderD
 
 type Draft = Pick<Source, "name" | "interval_minutes" | "tier" | "participation_mode" | "signal_group_id" | "first_party" | "owner_entity_id" | "site_fulltext" | "syndicate_fulltext"> & { tags: string; config: string };
 
+const fieldNames: Record<keyof Draft,string> = {
+  name:"名称", interval_minutes:"采集间隔", tier:"等级", participation_mode:"参与方式", signal_group_id:"信号组",
+  first_party:"一手信源", owner_entity_id:"所属主体", site_fulltext:"站内全文", syndicate_fulltext:"接口全文", tags:"标签", config:"采集配置"
+};
+
 function draftOf(s: Source): Draft {
   return {
     name: s.name,
@@ -81,17 +86,44 @@ function draftOf(s: Source): Draft {
 }
 
 export default function SourceDetail({ loaderData }: Route.ComponentProps) {
+  return <SourceEditor key={loaderData.source.id} loaderData={loaderData} />;
+}
+
+function SourceEditor({loaderData}: {loaderData: Detail}) {
   const { source: s, runs, items, stats, history } = loaderData;
   const { run, pending } = useAdminAction();
+  const refresh = useRevalidator();
   const [draft, setDraft] = useState<Draft>(() => draftOf(s));
-  const [draftFor, setDraftFor] = useState(s.updated_at);
+  const [saved, setSaved] = useState(s);
+  const [conflicts,setConflicts] = useState<string[]>([]);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [dialog, setDialog] = useState<null | "save" | "toggle">(null);
+  const [reasons,setReasons] = useState({save:"",pause:"",resume:""});
+  const [interrupted,setInterrupted] = useState(false);
+  const toggleKey = s.enabled ? "pause" : "resume";
+  function closeDialog() {
+    if (dialog) setReasons(prev=>({...prev,[dialog === "save" ? "save" : toggleKey]:""}));
+    setDialog(null);
+  }
+  function openDialog(next: "save" | "toggle") {
+    setInterrupted(false);
+    setDialog(next);
+  }
   const [configError, setConfigError] = useState<string | null>(null);
-  if (draftFor !== s.updated_at) {
-    // The source changed (our own save or someone else's): start from the saved state.
-    setDraft(draftOf(s));
-    setDraftFor(s.updated_at);
+  if (saved.updated_at !== s.updated_at) {
+    if (dialog && !pending) {
+      setInterrupted(true);
+      setDialog(null);
+    }
+    const before = draftOf(saved), latest = draftOf(s);
+    const merged = {...latest};
+    const edited = Object.keys(patchPreview(draft,saved)) as Array<keyof Draft>;
+    const collisions = edited.filter(key => latest[key] !== before[key] && latest[key] !== draft[key]);
+    for (const key of edited) Object.assign(merged, { [key]: draft[key] });
+    setConflicts(previous => [...new Set([...previous,...collisions])].filter(key =>
+      draft[key as keyof Draft] !== latest[key as keyof Draft]));
+    setDraft(merged);
+    setSaved(s);
   }
   const base = `/api/admin/sources/${encodeURIComponent(s.id)}`;
 
@@ -152,12 +184,13 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
           <Button busy={pending === "fetch"} onClick={() => run("POST", `${base}/fetch`, {}, { label: "fetch", success: "已加入采集队列" })}>
             立即采集
           </Button>
-          <Button tone={s.enabled ? "danger" : "primary"} onClick={() => setDialog("toggle")}>
+          <Button tone={s.enabled ? "danger" : "primary"} onClick={() => openDialog("toggle")}>
             {s.enabled ? "暂停" : "恢复"}
           </Button>
         </>
       }
     >
+      {interrupted && <p role="status" className="mb-3 text-sm text-amber">信源已更新，已保留草稿和本次操作原因。请核对最新设置后重新确认。</p>}
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat
           label="健康"
@@ -245,9 +278,13 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
               {configError && <div className="mt-1 text-[12.5px] text-hot">{configError}</div>}
             </div>
             <div className="mt-4 flex items-center justify-end gap-2">
+              {conflicts.length > 0 && <div role="alert" className="mr-auto text-[13px] text-amber">
+                已保存的{conflicts.map(k=>fieldNames[k as keyof Draft]).join("、")}也发生了变化。
+                <Button size="sm" onClick={()=>setConflicts([])}>继续使用我的修改</Button>
+              </div>}
               {changes > 0 && <span className="text-[12.5px] text-ink-3">{changes} 项改动未保存</span>}
-              <Button tone="ghost" disabled={!changes} onClick={() => setDraft(draftOf(s))}>还原</Button>
-              <Button tone="primary" disabled={!changes} onClick={() => patch() && setDialog("save")}>保存</Button>
+              <Button tone="ghost" disabled={!changes} onClick={() => { setDraft(draftOf(s)); setConflicts([]); setConfigError(null); }}>还原</Button>
+              <Button tone="primary" disabled={!changes || !!conflicts.length} onClick={() => patch() && openDialog("save")}>保存</Button>
             </div>
           </Card>
 
@@ -327,24 +364,27 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={dialog === "save"}
         title="保存信源设置"
-        description={`将修改：${Object.keys(patchPreview(draft, s)).join("、") || "无"}`}
+        reasonDraft={{value:reasons.save,onChange:value=>setReasons(prev=>({...prev,save:value}))}}
+        description={`将修改：${Object.keys(patchPreview(draft, s)).map(k=>fieldNames[k as keyof Draft]).join("、") || "无"}`}
         busy={pending === "save"}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         onSubmit={async (reason) => {
           const p = patch();
-          if (!p) return false;
+          if (!p || conflicts.length) return false;
           const r = await run("PATCH", base, { patch: p, version: new Date(s.updated_at).toISOString(), reason }, { label: "save", success: "已保存" });
+          if (!r) void refresh.revalidate();
           return r !== null;
         }}
       />
       <ReasonDialog
         open={dialog === "toggle"}
+        reasonDraft={{value:reasons[toggleKey],onChange:value=>setReasons(prev=>({...prev,[toggleKey]:value}))}}
         title={s.enabled ? "暂停这个信源" : "恢复这个信源"}
         description={s.enabled ? "暂停后不再采集，已有内容和历史保留。" : "恢复后会立即排队采集一次。"}
         danger={s.enabled}
         confirmLabel={s.enabled ? "暂停" : "恢复"}
         busy={pending === "toggle"}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         onSubmit={async (reason) => {
           const r = await run("PATCH", base, { patch: { enabled: !s.enabled }, version: new Date(s.updated_at).toISOString(), reason }, { label: "toggle", success: s.enabled ? "已暂停" : "已恢复" });
           return r !== null;

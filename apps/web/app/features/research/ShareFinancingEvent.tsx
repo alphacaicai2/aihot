@@ -1,3 +1,4 @@
+import { shareLink } from "../../lib/share-link";
 import { useEffect, useRef, useState } from "react";
 import type { FinancingResponse } from "@aihot/contracts/financing";
 import { Dialog, DialogDescription, DialogHeader, DialogPanel, DialogPopup, DialogTitle, DialogTrigger } from "../../components/coss/dialog";
@@ -34,23 +35,14 @@ export function ShareFinancingEvent({ event }: { event: FinancingResponse["event
     }
   }
 
-  async function shareLink() {
+  async function shareEventLink() {
     const url = new URL(path, window.location.origin).href;
-    if (navigator.share) {
-      try {
-        await navigator.share({title, url});
-        return;
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") return;
-      }
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      setNotice("链接已复制");
-    } catch {
-      setNotice("请复制事件链接");
-    }
+    const result = await shareLink(title, url);
+    if (result === "manual") setNotice("请选中并复制链接：" + url);
+    if (result === "copied") setNotice("链接已复制");
+    if (result === "shared") setNotice("已打开系统分享");
   }
+
   async function sharePicture() {
     if (!image || sharing) return;
     setSharing(true);
@@ -72,11 +64,11 @@ export function ShareFinancingEvent({ event }: { event: FinancingResponse["event
         <DialogHeader><DialogTitle>分享融资事件</DialogTitle><DialogDescription>{title}</DialogDescription></DialogHeader>
         <DialogPanel>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button onClick={shareLink}>分享链接</Button>
+            <Button onClick={shareEventLink}>分享链接</Button>
             {image?.shareable && <Button variant="primary" disabled={sharing} onClick={sharePicture}>{sharing ? "正在分享…" : "分享图片"}</Button>}
             {image && <a download={image.file.name} href={image.url} className={buttonClass(image.shareable ? "secondary" : "primary")}>保存图片</a>}
           </div>
-          {notice && <p role="status" className="mt-3 text-sm text-ink-2">{notice}</p>}
+          {notice && <p role="status" className="mt-3 select-text break-all text-sm text-ink-2">{notice}</p>}
           <div aria-live="polite" className="mt-4">
             {error ? <div role="alert">图片生成失败。<Button size="sm" onClick={generate}>重新生成</Button></div> :
               image ? <img src={image.url} alt={`${title} · 融资事件分享图`} className="w-full rounded-panel" /> :

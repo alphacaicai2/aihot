@@ -83,7 +83,7 @@ function FeedbackCard({ f }: { f: Feedback }) {
           <Button size="md" disabled={note === (f.note ?? "")} busy={pending === "note"} onClick={() => run("PATCH", base, { note: note || null, version }, { label: "note", success: "备注已保存" })}>
             保存备注
           </Button>
-          <Button tone="ghost" onClick={() => setDialog(f.banned ? null : "ban")} disabled={f.banned} title="拒绝这个来源的后续反馈">封禁来源</Button>
+          {!f.banned && <Button tone="ghost" onClick={() => setDialog("ban")} title="拒绝这个来源的后续反馈">封禁来源</Button>}
           <Button tone="ghost" onClick={() => setDialog("erase")} title="按隐私说明删除提交者的资料">删除资料</Button>
         </div>
       </div>

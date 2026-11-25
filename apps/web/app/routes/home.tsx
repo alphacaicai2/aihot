@@ -81,22 +81,15 @@ export default function Home() {
   const scoped = !!(filters.category || filters.tag || filters.channel !== "all");
   return (
     <div className="reader-home pb-6">
-      <div className="flex min-h-12 items-center justify-between gap-2 lg:hidden">
-        <Wordmark size={19} className="shrink-0 text-ink" />
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Link to="/membership" prefetch="intent" className="inline-flex min-h-9 shrink-0 items-center rounded-control px-2 text-[12.5px] font-medium text-accent hover:bg-accent-soft">
+      <div className="flex min-h-12 items-center justify-between gap-2 lg:mb-2.5 lg:min-h-8 lg:justify-end">
+        <span className="lg:hidden"><Wordmark size={19} className="shrink-0 text-ink" /></span>
+        <div className="flex min-w-0 items-center gap-1.5 lg:gap-3">
+          <Link to="/membership" prefetch="intent" className="inline-flex min-h-9 shrink-0 items-center rounded-control px-2 text-[13px] font-medium text-accent hover:bg-accent-soft">
             读者会员
           </Link>
           <ReaderAccount />
-          <SearchIconLink />
+          <span className="lg:hidden"><SearchIconLink filters={{category:filters.category,channel:filters.channel === "all" ? null : filters.channel,tag:filters.tag}} /></span>
         </div>
-      </div>
-
-      <div className="mb-2.5 hidden items-center justify-end gap-3 lg:flex">
-        <Link to="/membership" prefetch="intent" className="inline-flex min-h-8 items-center rounded-control px-2 text-[13px] font-medium text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent">
-          读者会员
-        </Link>
-        <ReaderAccount />
       </div>
 
       <header className="home-masthead">
@@ -114,7 +107,7 @@ export default function Home() {
             {latest && <span className="inline-flex items-center gap-1.5"><IconClock size={13} />最近更新 <time dateTime={latest}>{monthDayTime(latest)}</time></span>}
           </p>
         </div>
-        <div className="relative hidden lg:block"><SearchField variant="track" keep={{ category: filters.category }} /></div>
+        <div className="relative hidden lg:block"><SearchField variant="track" keep={{ category: filters.category, channel: filters.channel === "all" ? null : filters.channel, tag: filters.tag }} /></div>
       </header>
 
       <MembershipCallout />

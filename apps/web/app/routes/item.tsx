@@ -1,10 +1,11 @@
+import { shareLink } from "../lib/share-link";
 import { SITE, withSubject } from "@aihot/industry/site";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLoaderData, useNavigate } from "react-router";
 import type { Route } from "./+types/item";
 import type { SiteItemDetail } from "@aihot/contracts/site";
 import { loadOr404 } from "../lib/api.server";
-import { breadcrumbLd, pageMeta, siteUrl, titled } from "../lib/seo";
+import { breadcrumbLd, pageMeta, titled } from "../lib/seo";
 import { fullDateTime, relativeTime } from "../lib/format";
 import { markRead } from "../lib/local-state";
 import { SelectedBadge } from "../components/ui/Badge";
@@ -81,20 +82,6 @@ function hostOf(url: string): string {
   }
 }
 
-async function shareOrCopy(item: Pick<SiteItemDetail, "id" | "title">): Promise<"shared" | "copied" | null> {
-  const url = `${siteUrl()}/items/${item.id}`;
-  try {
-    if (navigator.share && matchMedia("(pointer: coarse)").matches) {
-      await navigator.share({ title: item.title, url });
-      return "shared";
-    }
-    await navigator.clipboard.writeText(`${item.title}\n${url}`);
-    return "copied";
-  } catch {
-    return null;
-  }
-}
-
 export default function ItemPage() {
   const { item } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
@@ -102,6 +89,8 @@ export default function ItemPage() {
   const lang = item.bodyLanguage;
   const [posterRequested, setPosterRequested] = useState(false);
   const [posterOpen, setPosterOpen] = useState(false);
+  const [nativeShare, setNativeShare] = useState(false);
+  useEffect(() => setNativeShare(typeof navigator.share === "function"), []);
   const [toast, setToast] = useState<string | null>(null);
   useEffect(() => markRead(item.id), [item.id]);
   useEffect(() => {
@@ -115,7 +104,8 @@ export default function ItemPage() {
     setPosterOpen(true);
   };
   const share = async () => {
-    const r = await shareOrCopy(item);
+    const r = await shareLink(item.title, new URL("/items/" + item.id, window.location.origin).href);
+    if (r === "manual") setToast("请从浏览器地址栏复制当前文章链接");
     if (r === "copied") setToast("链接已复制");
   };
 
@@ -144,20 +134,13 @@ export default function ItemPage() {
         <>
           <MenuItem icon={<IconShare size={15} />} onSelect={() => { close(); void share(); }}>分享链接</MenuItem>
           <MenuItem icon={<IconImage size={15} />} onSelect={() => { close(); openPoster(); }}>生成分享海报</MenuItem>
-          <MenuItem
-            icon={<IconCopy size={15} />}
-            onSelect={async () => {
-              close();
-              try {
-                await navigator.clipboard.writeText(`${siteUrl()}/items/${item.id}`);
-                setToast("链接已复制");
-              } catch {
-                // clipboard unavailable
-              }
-            }}
-          >
-            复制链接
-          </MenuItem>
+          {nativeShare && <MenuItem icon={<IconCopy size={15} />} onSelect={async () => {
+            close();
+            try {
+              await navigator.clipboard.writeText(new URL("/items/" + item.id, window.location.origin).href);
+              setToast("链接已复制");
+            } catch { setToast("请从浏览器地址栏复制当前文章链接"); }
+          }}>复制链接</MenuItem>}
           {item.markdownAvailable && (
             <MenuItem icon={<IconDownload size={15} />} href={`/items/${item.id}/markdown`} download onSelect={close}>
               导出 Markdown
@@ -257,7 +240,7 @@ export default function ItemPage() {
         <a href={item.links.original} target="_blank" rel="noopener noreferrer" className="inline-flex h-8 items-center gap-1 px-1.5 text-[14px] text-ink-2">
           <IconExternal size={15} /> 原文
         </a>
-        <button type="button" aria-label="分享" onClick={share} className="inline-flex size-8 items-center justify-center rounded-full text-ink-3 hover:text-ink">
+        <button type="button" aria-label="分享" onClick={openPoster} className="inline-flex size-8 items-center justify-center rounded-full text-ink-3 hover:text-ink">
           <IconShare size={17} />
         </button>
         {moreMenu}

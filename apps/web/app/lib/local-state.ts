@@ -145,18 +145,41 @@ export function isStarred(id: string): boolean {
   return starredSetCache.ids.has(id);
 }
 
-export function toggleStar(item: Omit<LocalStarredItem, "savedAt">): boolean {
+// Refresh under a shared browser lock: a different tab may have written before its
+// storage event reaches this tab. Older browsers still read the latest value.
+export function updateBookmarks<T>(edit: () => T): Promise<T> {
+  const run = () => {
+    cache.delete(KEYS.starred);
+    return edit();
+  };
+  return navigator.locks ? navigator.locks.request(KEYS.starred, run) : Promise.resolve(run());
+}
+
+export function setStarred(item: Omit<LocalStarredItem, "savedAt">, wanted: boolean): boolean {
   const list = getStarred();
   const exists = list.some((s) => s.id === item.id);
+  if (exists === wanted) return exists;
   const next = exists ? list.filter((s) => s.id !== item.id) : [{ ...item, savedAt: new Date().toISOString() }, ...list].slice(0, STARRED_LIMIT);
-  writeRaw(KEYS.starred, JSON.stringify(next));
+  const saved = writeRaw(KEYS.starred, JSON.stringify(next));
   invalidate(KEYS.starred);
-  return !exists;
+  return saved ? wanted : exists;
 }
 
 export function removeStar(id: string) {
-  writeRaw(KEYS.starred, JSON.stringify(getStarred().filter((s) => s.id !== id)));
+  const saved = writeRaw(KEYS.starred, JSON.stringify(getStarred().filter((s) => s.id !== id)));
   invalidate(KEYS.starred);
+  return saved;
+}
+
+/** Undo a removal without overwriting a later edit or evicting another bookmark. */
+export function restoreStar(item: LocalStarredItem): boolean {
+  const current = getStarred();
+  if (current.some(s => s.id === item.id)) return true;
+  if (current.length >= STARRED_LIMIT) return false;
+  const next = [...current, item].sort((a, b) => Date.parse(b.savedAt) - Date.parse(a.savedAt));
+  const saved = writeRaw(KEYS.starred, JSON.stringify(next));
+  invalidate(KEYS.starred);
+  return saved;
 }
 
 // --- read items (LRU, newest first) ---

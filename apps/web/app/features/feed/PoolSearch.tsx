@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Form, Link } from "react-router";
+import { Form, Link, useNavigation } from "react-router";
 import type { PoolResponse } from "@aihot/contracts/site";
 import { IconArrowRight, IconChevronDown, IconSearch } from "../../components/icons";
 import { Input } from "../../components/coss/input";
@@ -8,6 +8,8 @@ import { dateProblem } from "../../lib/date-range";
 import { useSlashFocus } from "./Filters";
 
 export function PoolSearch({ filters, focus, initialError }: { filters: PoolResponse["filters"]; focus: boolean; initialError: string | null }) {
+  const navigation = useNavigation();
+  const searching = navigation.state !== "idle" && navigation.location?.pathname === "/all";
   const [error, setError] = useState(initialError);
   const search = useRef<HTMLInputElement>(null);
   const advanced = useRef<HTMLDetailsElement>(null);
@@ -15,7 +17,7 @@ export function PoolSearch({ filters, focus, initialError }: { filters: PoolResp
   useEffect(() => { if (focus) search.current?.focus(); }, [focus]);
   const { q, channel, category, tag, tab, company, investor, from, to } = filters;
   return (
-    <Form method="get" role="search" aria-label="搜索动态" className="card px-3 pt-3 sm:px-5 sm:pt-4"
+    <Form method="get" role="search" aria-busy={searching} aria-label="搜索动态" className="card px-3 pt-3 sm:px-5 sm:pt-4"
       onSubmit={event => {
         const form = event.currentTarget;
         const values = new FormData(form);
@@ -38,7 +40,7 @@ export function PoolSearch({ filters, focus, initialError }: { filters: PoolResp
             placeholder={tab === "relevance" ? "搜索标题、摘要与正文" : "搜索标题、摘要…"}
             className="[&_input]:h-10.5 [&_input]:pl-10 sm:[&_input]:h-9.5" />
         </label>
-        <Button type="submit" variant="primary" size="lg">搜索</Button>
+        <Button type="submit" variant="primary" size="lg" disabled={searching}>{searching ? "正在搜索…" : "搜索"}</Button>
       </div>
       <details ref={advanced} open={Boolean(initialError)} className="group">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-control text-[13px] font-semibold text-ink-2">
@@ -56,7 +58,6 @@ export function PoolSearch({ filters, focus, initialError }: { filters: PoolResp
           <p className="mt-2 text-xs leading-relaxed text-ink-3">日期按北京时间，起止日需同时填写。机构筛选仅覆盖已提取投资方的报道。</p>
           {error && <p className="mt-2 text-[13px] font-semibold text-hot" role="alert">{error}</p>}
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            <Button variant="secondary" type="submit">应用筛选</Button>
             <Link to="/financing" className="inline-flex min-h-10 items-center gap-1 rounded-control text-[13px] text-accent">融资数据库 <IconArrowRight size={14} /></Link>
           </div>
         </div>

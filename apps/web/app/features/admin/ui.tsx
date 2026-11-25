@@ -237,6 +237,7 @@ export function ReasonDialog({
   confirmLabel = "确认",
   danger,
   requireReason = true,
+  reasonDraft,
   children,
   onClose,
   onSubmit,
@@ -248,41 +249,53 @@ export function ReasonDialog({
   confirmLabel?: string;
   danger?: boolean;
   requireReason?: boolean;
+  reasonDraft?: { value:string; onChange:(value:string)=>void };
   children?: ReactNode;
   onClose: () => void;
   onSubmit: (reason: string) => Promise<boolean | void> | boolean | void;
   busy?: boolean;
 }) {
-  const [reason, setReason] = useState("");
+  const [localReason, setLocalReason] = useState("");
+  const reason = reasonDraft?.value ?? localReason;
+  const setReason = reasonDraft?.onChange ?? setLocalReason;
   const ref = useRef<HTMLTextAreaElement>(null);
+  const submitting = useRef(false);
+  const [sending,setSending] = useState(false);
+  const locked = !!busy || sending;
   useEffect(() => {
-    if (open) setReason("");
+    if (open) setLocalReason("");
   }, [open]);
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
-      <DialogPopup initialFocus={ref} showCloseButton={false}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next && !busy && !submitting.current) onClose(); }}>
+      <DialogPopup initialFocus={requireReason ? ref : undefined} showCloseButton={false}>
         <form
           className="flex min-h-0 flex-col"
           onSubmit={async (e) => {
             e.preventDefault();
-            if (busy || (requireReason && !reason.trim())) return;
-            const closed = await onSubmit(reason.trim());
-            if (closed !== false) onClose();
+            if (busy || submitting.current || (requireReason && !reason.trim())) return;
+            submitting.current = true;
+            setSending(true);
+            try {
+              if ((await onSubmit(reason.trim())) !== false) onClose();
+            } finally {
+              submitting.current = false;
+              setSending(false);
+            }
           }}
         >
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             {description && <DialogDescription render={<div />}>{description}</DialogDescription>}
           </DialogHeader>
-          <DialogPanel>
-            {children && <div className="mb-4 space-y-3">{children}</div>}
-            <Field label={requireReason ? "原因（写进审计记录）" : "备注（可选）"}>
-              <Textarea ref={ref} value={reason} onChange={(e) => setReason(e.target.value)} placeholder={requireReason ? "为什么做这个改动" : ""} rows={2} />
-            </Field>
-          </DialogPanel>
+          {(children || requireReason) && <DialogPanel>
+            {children && <fieldset disabled={locked} className="mb-4 min-w-0 space-y-3">{children}</fieldset>}
+            {requireReason && <Field label="原因（写进审计记录）">
+              <Textarea ref={ref} readOnly={locked} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="为什么做这个改动" rows={2} />
+            </Field>}
+          </DialogPanel>}
           <DialogFooter>
-            <Button tone="ghost" onClick={onClose}>取消</Button>
-            <Button type="submit" tone={danger ? "danger" : "primary"} busy={busy} disabled={requireReason && !reason.trim()}>
+            <Button tone="ghost" disabled={locked} onClick={onClose}>取消</Button>
+            <Button type="submit" tone={danger ? "danger" : "primary"} busy={locked} disabled={locked || requireReason && !reason.trim()}>
               {confirmLabel}
             </Button>
           </DialogFooter>

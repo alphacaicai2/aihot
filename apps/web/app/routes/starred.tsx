@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { Presence } from "../components/ui/Presence";
 import { pageMeta } from "../lib/seo";
-import { exportBundle, importBundle, removeStar, useStarred, type ImportReport } from "../lib/local-state";
+import { exportBundle, importBundle, removeStar, restoreStar, updateBookmarks, useStarred, type LocalStarredItem, type ImportReport } from "../lib/local-state";
 import { fullDateTime, shortSourceName } from "../lib/format";
 import { IconBookmark, IconDownload, IconClose } from "../components/icons";
 
@@ -27,6 +27,7 @@ function reportText(r: ImportReport): string {
 
 export default function StarredPage() {
   const starred = useStarred();
+  const [removed, setRemoved] = useState<LocalStarredItem[]>([]);
   const [mounted, setMounted] = useState(false);
   const [availability, setAvailability] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
@@ -56,13 +57,16 @@ export default function StarredPage() {
   const doImport = async (file: File | undefined) => {
     if (!file) return;
     try {
-      const report = importBundle(await file.text());
+      const text = await file.text();
+      const report = await updateBookmarks(() => importBundle(text));
       setNotice({ kind: report.readFailed ? "error" : "ok", text: `导入完成：${reportText(report)}` });
     } catch (e) {
       setNotice({ kind: "error", text: e instanceof Error ? e.message : "导入失败" });
     }
   };
 
+  const visible = removed.length ? [...starred, ...removed.filter(item => !starred.some(s => s.id === item.id))]
+    .sort((a, b) => Date.parse(b.savedAt) - Date.parse(a.savedAt)) : starred;
   const action = "text-[12.5px] text-ink-3 transition-colors hover:text-accent";
   return (
     <div className="pb-12">
@@ -95,7 +99,7 @@ export default function StarredPage() {
           </button>
         </div>
       </Presence>
-      {!mounted ? null : starred.length === 0 ? (
+      {!mounted ? null : visible.length === 0 ? (
         <div className="mt-3 flex flex-col items-center rounded-card border border-dashed border-line-strong px-6 py-12 text-center">
           <IconBookmark size={20} className="text-ink-4" />
           <p className="mt-3 text-[13px] text-ink-3">还没有收藏内容。点开任意一条内容，在详情页点击收藏即可添加。</p>
@@ -105,7 +109,16 @@ export default function StarredPage() {
         </div>
       ) : (
         <ul className="mt-3 lg:space-y-3">
-          {starred.map((s) => {
+          {visible.map((s) => {
+            if (removed.some(item => item.id === s.id) && !starred.some(item => item.id === s.id)) {
+              return <li key={s.id} className="flex items-center justify-between gap-3 border-b border-line-soft px-3 py-3">
+                <span role="status" className="text-sm text-ink-3">已取消收藏：{s.title}</span>
+                <button type="button" className="min-h-11 shrink-0 px-2 text-sm font-semibold text-accent" onClick={async () => {
+                  if (await updateBookmarks(() => restoreStar(s))) setRemoved(items => items.filter(item => item.id !== s.id));
+                  else setNotice({ kind:"error", text:"收藏未能恢复，请检查浏览器存储和收藏数量。" });
+                }}>撤销</button>
+              </li>;
+            }
             const status = availability[s.id];
             const unavailable = status === "unavailable";
             return (
@@ -116,7 +129,10 @@ export default function StarredPage() {
                   <span className="ml-auto hidden shrink-0 sm:inline">
                     收藏于 <span className="num">{fullDateTime(s.savedAt)}</span>
                   </span>
-                  <button type="button" aria-label="取消收藏" title="取消收藏" onClick={() => removeStar(s.id)} className="relative z-10 -my-1 ml-auto grid size-7 shrink-0 place-items-center rounded-full text-ink-4 transition-colors hover:bg-bg-sunk hover:text-ink sm:ml-0">
+                  <button type="button" aria-label="取消收藏" title="取消收藏" onClick={async () => {
+                    if (await updateBookmarks(() => removeStar(s.id))) setRemoved(items => [...items.filter(item => item.id !== s.id), s]);
+                    else setNotice({ kind:"error", text:"未能取消收藏，请检查浏览器存储。" });
+                  }} className="relative z-10 -my-1 ml-auto grid size-7 shrink-0 place-items-center rounded-full text-ink-4 transition-colors hover:bg-bg-sunk hover:text-ink sm:ml-0">
                     <IconClose size={14} />
                   </button>
                 </div>

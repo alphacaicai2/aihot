@@ -4,7 +4,7 @@ import type { FeedItemSummary, MediaView } from "@aihot/contracts/site";
 import { IconBookmark } from "../../components/icons";
 import { SourceAvatar } from "../../components/ui/SourceAvatar";
 import { Lightbox } from "../../components/ui/Lightbox";
-import { toggleStar, useIsStarred } from "../../lib/local-state";
+import { setStarred, updateBookmarks, useIsStarred } from "../../lib/local-state";
 
 /** "IT之家（RSS）" or, for X, avatar + display name + @handle. */
 export function SourceLine({ item, avatarSize = 16, className = "" }: { item: Pick<FeedItemSummary, "source" | "x" | "channel">; avatarSize?: number; className?: string }) {
@@ -62,13 +62,13 @@ export function StarButton({ item, size = 26, className = "" }: { item: Pick<Fee
       aria-pressed={on}
       aria-label={on ? "取消收藏" : "收藏"}
       title={on ? "取消收藏" : "收藏"}
-      onClick={(e) => {
+      onClick={async (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const added = toggleStar({
+        const added = await updateBookmarks(() => setStarred({
           id: item.id, title: item.title, summary: item.summary, sourceName: item.source.name,
           publishedAt: item.publishedAt, score: item.score, aiSelected: item.selected,
-        });
+        }, !on));
         if (added) setPulse((p) => p + 1);
       }}
       style={{ width: size, height: size }}

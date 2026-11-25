@@ -12,7 +12,7 @@ import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
 import { beijingDate, beijingTime, beijingWeekday } from "../../lib/format";
 import { markRead, useReadSet, useReadingPreferences, setReadingPreferences } from "../../lib/local-state";
-import { ReadingControls } from "./ReadingControls";
+import { ReadingControls, useUnreadUndo } from "./ReadingControls";
 import { isHydrated, isReload, markHydrated, readSnapshot, restoreAnchor, saveSnapshot } from "./restore";
 
 const AUTO_BATCHES = 3;
@@ -120,6 +120,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   const location = useLocation();
   const navigation = useNavigation();
   const readSet = useReadSet();
+  const undo = useUnreadUndo();
   const { unreadOnly, compact } = useReadingPreferences();
   const historyKey = location.key;
 
@@ -281,6 +282,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   return (
     <div className="relative">
       <ReadingControls />
+      {unreadOnly && undo.notice}
       {days.length === 0 && (
         <div className="lg:card">
           {unreadOnly && state.cards.length > 0 ? (
@@ -304,7 +306,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
                     const delay = fresh ? Math.min(order++, 10) * 40 : 0;
                     return (
                       <TimelineSlot key={c.key} dataKey={c.key} at={c.anchorAt} fresh={fresh} delay={delay}>
-                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} compact={compact} />
+                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} compact={compact} />
                       </TimelineSlot>
                     );
                   })}

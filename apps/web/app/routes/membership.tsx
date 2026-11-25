@@ -206,6 +206,12 @@ function ActionControls({
   size?: "md" | "lg";
 }) {
   const { access, email, admin, customer, billingReady } = membership;
+  const [openingBilling, setOpeningBilling] = useState(false);
+  useEffect(() => {
+    const restore = () => setOpeningBilling(false);
+    window.addEventListener("pageshow", restore);
+    return () => window.removeEventListener("pageshow", restore);
+  }, []);
   const returnQuery = returnTo ? "?" + new URLSearchParams({ return: returnTo }) : "";
   if (access) {
     return (
@@ -217,9 +223,9 @@ function ActionControls({
           配置 Agent 接入
         </Link>
         {customer && billingReady && (
-          <form method="post" action={"/api/reader/billing/portal" + returnQuery}>
-            <button type="submit" className={buttonClass("ghost", "md")}>
-              管理 Stripe 订阅
+          <form method="post" action={"/api/reader/billing/portal" + returnQuery} onSubmit={() => setOpeningBilling(true)}>
+            <button type="submit" disabled={openingBilling} className={buttonClass("ghost", "md")}>
+              {openingBilling ? "正在打开订阅管理…" : "管理订阅"}
             </button>
           </form>
         )}
@@ -230,9 +236,9 @@ function ActionControls({
     return (
       <div className="space-y-2">
         <a href={"/api/reader/google?" + new URLSearchParams({ return: returnTo ?? "/membership" })} className={`${buttonClass("primary", size)} w-full justify-center sm:w-auto`}>
-          使用 Google 登录并开通
+          使用 Google 登录
         </a>
-        <p className="text-[12px] leading-relaxed text-ink-4">登录后进入 Stripe 安全结账 · 支持随时在 Stripe 后台取消续订</p>
+        <p className="text-[12px] leading-relaxed text-ink-4">{billingReady ? "登录后可选择订阅，付款前可查看价格。" : "订阅支付暂未开放，已有会员可以登录。"}</p>
       </div>
     );
   }
@@ -248,11 +254,12 @@ function ActionControls({
     <div className="space-y-2">
       <form method="post" action={"/api/reader/billing/checkout" + returnQuery}
         onSubmit={() => {
+          setOpeningBilling(true);
           // Open Checkout sessions are shared by a reader; billing can start from two different tabs.
           try { sessionStorage.setItem(checkoutDestinationKey, returnTo ?? ""); } catch { /* server cookie fallback */ }
         }}>
-        <button type="submit" className={`${buttonClass("primary", size)} w-full justify-center sm:w-auto`}>
-          订阅会员 · US$5 / 月
+        <button type="submit" disabled={openingBilling} className={`${buttonClass("primary", size)} w-full justify-center sm:w-auto`}>
+          {openingBilling ? "正在打开安全结账…" : "订阅会员 · US$5 / 月"}
         </button>
       </form>
       <p className="text-[12px] leading-relaxed text-ink-4">跳转至 Stripe 安全结账 · 付款确认后立即生效</p>

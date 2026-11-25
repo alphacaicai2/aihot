@@ -285,7 +285,11 @@ test("membership gates private HTML and single-fetch data and forwards financing
       assert.equal(member.status, 200);
       assert.equal(member.headers.get("cache-control"), "private, no-store");
       assert.equal(member.headers.get("x-accel-expires"), "0");
-      if (!suffix) assert.match(await member.text(), path === "/agent" ? /生成访问令牌/ : /导出本页 CSV/);
+      if (!suffix) {
+        const html = await member.text();
+        assert.match(html, path === "/agent" ? /生成访问令牌/ : /暂时没有融资记录/);
+        if (path === "/financing") assert.doesNotMatch(html, /导出本页 CSV/);
+      }
     }
   }
   const filters = new URLSearchParams({ company: "OpenAI", investor: "A+B", investorMode: "exact", cursor: "list+/=" });

@@ -19,13 +19,14 @@ export interface FeedItemProps {
   group?: GroupInfo | null;
   filters?: TimelineFilters;
   read?: boolean;
+  onMarkRead?: (item: FeedItemSummary) => void;
   onOpen?: (id: string) => void;
   /** Show category and tags under the text (全部动态, topics, search). */
   showTags?: boolean;
   compact?: boolean;
 }
 
-export const FeedItem = memo(function FeedItem({ item, group, filters, read = false, onOpen, showTags = false, compact = false }: FeedItemProps) {
+export const FeedItem = memo(function FeedItem({ item, group, filters, read = false, onOpen, onMarkRead, showTags = false, compact = false }: FeedItemProps) {
   const isX = item.channel === "x" && !!item.x;
   const open = () => onOpen?.(item.id);
   const showSources = !!group && (group.additionalSourceCount > 0 || (group.developmentCount <= 1 && group.reportCount > 1));
@@ -106,7 +107,7 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
             <p className="pb-2 text-[13px] leading-[1.75]">{item.reason}</p>
           </details>
         )}
-        <Button variant="ghost" size="xs" onClick={() => read ? markUnread(item.id) : markRead(item.id)} className="relative z-10 my-auto ml-auto h-9 text-xs text-ink-3 hover:bg-bg-sunk hover:text-accent sm:h-8">
+        <Button variant="ghost" size="xs" onClick={() => read ? markUnread(item.id) : onMarkRead ? onMarkRead(item) : markRead(item.id)} className="relative z-10 my-auto ml-auto h-9 text-xs text-ink-3 hover:bg-bg-sunk hover:text-accent sm:h-8">
           {read && <IconCheck size={13} />}
           {read ? "已读 · 标为未读" : "标为已读"}
         </Button>

@@ -6,13 +6,14 @@ import type { FeedItemSummary } from "@aihot/contracts/site";
 import { IconChevronRight } from "../../components/icons";
 import { beijingDate } from "../../lib/format";
 import { markRead, useReadSet, useReadingPreferences, setReadingPreferences } from "../../lib/local-state";
-import { ReadingControls } from "./ReadingControls";
+import { ReadingControls, useUnreadUndo } from "./ReadingControls";
 import { EmptyState } from "../../components/ui/Page";
 import { DayHeader, TimelineSlot } from "./Timeline";
 import { FeedItem } from "./FeedItem";
 
 export function DayList({ items, todayCount = null, showTags = true, animate = false }: { items: FeedItemSummary[]; todayCount?: number | null; showTags?: boolean; animate?: boolean }) {
   const readSet = useReadSet();
+  const undo = useUnreadUndo();
   const { unreadOnly, compact } = useReadingPreferences();
   const today = beijingDate(Date.now());
   const days = useMemo(() => {
@@ -30,6 +31,7 @@ export function DayList({ items, todayCount = null, showTags = true, animate = f
   return (
     <div>
       <ReadingControls />
+      {unreadOnly && undo.notice}
       {unreadOnly && items.length > 0 && days.length === 0 && (
         <EmptyState title="本页内容都读过了" action={<button type="button" onClick={() => setReadingPreferences({ unreadOnly: false })} className="min-h-10 text-accent">显示全部内容</button>}>可以取消未读筛选，或查看其他页。</EmptyState>
       )}
@@ -39,7 +41,7 @@ export function DayList({ items, todayCount = null, showTags = true, animate = f
           <ol className="lg:pt-1">
             {list.map((it) => (
               <TimelineSlot key={it.id} at={it.timelineAt} fresh={animate} delay={animate ? Math.min(order++, 12) * 25 : 0}>
-                <FeedItem item={it} read={readSet.has(it.id)} onOpen={markRead} showTags={showTags} compact={compact} />
+                <FeedItem item={it} read={readSet.has(it.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} showTags={showTags} compact={compact} />
               </TimelineSlot>
             ))}
           </ol>

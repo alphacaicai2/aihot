@@ -3,7 +3,7 @@ import type { Route } from "./+types/financing";
 import type { FinancingResponse } from "@aihot/contracts/financing";
 import { financingData, privateHeaders, requireMembership } from "../lib/membership.server";
 import { pageMeta } from "../lib/seo";
-import { IconArrowRight, IconChart, IconDownload } from "../components/icons";
+import { IconArrowRight, IconChart, IconClose, IconDownload } from "../components/icons";
 import { buttonClass } from "../components/ui/Controls";
 import { EmptyState } from "../components/ui/Page";
 import { ResearchHeader } from "../features/research/ResearchHeader";
@@ -29,10 +29,14 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
   const { key } = useLocation();
   const query = financingQuery(params);
   const constraints = [
-    query.get("company") && `公司或基金 · ${query.get("company")}`,
-    query.get("investor") && `投资机构 · ${query.get("investor")}`,
-    query.get("from") && query.get("to") && `${query.get("from")} 至 ${query.get("to")}`,
-  ].filter(Boolean);
+    { text: query.get("company") && `公司或基金 · ${query.get("company")}`, keys: ["company"] },
+    { text: query.get("investor") && `投资机构 · ${query.get("investor")}`, keys: ["investor","investorMode"] },
+    { text: query.get("from") && query.get("to") && `${query.get("from")} 至 ${query.get("to")}`, keys: ["from","to"] },
+  ].filter(c => c.text).map(c => {
+    const rest = new URLSearchParams(query);
+    for (const key of [...c.keys, "cursor"]) rest.delete(key);
+    return {text:c.text, to:{pathname:"/financing", search:rest.toString()}};
+  });
   const csv = new URLSearchParams(query);
   csv.set("format", "csv");
   const aggregates = results?.events.filter(e => e.reports[0]?.claim.recordType === "aggregate_disclosure").length ?? 0;
@@ -50,9 +54,12 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
               <h2 id="financing-results" className="text-[18px] font-bold">融资事件</h2>
               {results && <span className="num text-xs text-ink-3">本页 {results.events.length - aggregates - unresolved} 笔交易{aggregates > 0 && ` · ${aggregates} 条合计披露`}{unresolved > 0 && ` · ${unresolved} 条待核实`}</span>}
             </div>
-            {results && <a className={buttonClass("secondary", "md")} href={`/api/v1/financing?${csv}`}><IconDownload size={15} />导出本页 CSV</a>}
+            {Boolean(results?.events.length) && <a className={buttonClass("secondary", "md")} href={`/api/v1/financing?${csv}`}><IconDownload size={15} />导出本页 CSV</a>}
           </div>
-          {constraints.length > 0 && <ul aria-label="已应用筛选" className="mb-3 flex flex-wrap gap-1.5">{constraints.map(c => <li key={c} className="max-w-full break-all rounded-control bg-accent-soft px-2 py-1 text-xs text-accent">{c}</li>)}</ul>}
+          {constraints.length > 0 && <nav aria-label="已应用筛选" className="mb-3 flex flex-wrap gap-1.5">{constraints.map(c =>
+            <Link key={c.text} to={c.to} aria-label={`移除 ${c.text}`} className="inline-flex min-h-9 max-w-full items-center gap-1 rounded-control bg-accent-soft px-2.5 text-xs font-medium text-accent">
+              <span className="break-all">{c.text}</span><IconClose size={13} className="shrink-0" />
+            </Link>)}</nav>}
           {results?.events.length ? (
             <div className="grid gap-2.5">{results.events.map(event => <FinancingEvent key={event.id} event={event} />)}</div>
           ) : (

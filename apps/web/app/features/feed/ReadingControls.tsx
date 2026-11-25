@@ -1,7 +1,7 @@
-import { useId } from "react";
+import { useId, useCallback, useState } from "react";
 import { SegmentedControl, SegmentedControlItem } from "../../components/coss/segmented-control";
 import { Switch } from "../../components/coss/switch";
-import { setReadingPreferences, useReadingPreferences } from "../../lib/local-state";
+import { markRead, markUnread, setReadingPreferences, useReadingPreferences } from "../../lib/local-state";
 
 export function ReadingControls() {
   const { unreadOnly, compact } = useReadingPreferences();
@@ -21,4 +21,21 @@ export function ReadingControls() {
       </SegmentedControl>
     </div>
   );
+}
+
+export function useUnreadUndo() {
+  const [removed, setRemoved] = useState<{id:string; title:string} | null>(null);
+  const mark = useCallback((item: {id:string; title:string}) => {
+    markRead(item.id);
+    setRemoved({id:item.id, title:item.title});
+  }, []);
+  const notice = removed && <div className="fixed inset-x-3 bottom-[calc(72px+env(safe-area-inset-bottom))] z-40 mx-auto flex w-fit max-w-[90vw] items-center gap-3 rounded-tile bg-ink px-3 py-1 text-sm text-bg shadow-lg lg:bottom-6">
+    <span role="status" className="line-clamp-2">已标为已读：{removed.title}</span>
+    <button type="button" className="min-h-10 shrink-0 px-1 font-semibold underline" onClick={() => {
+      markUnread(removed.id);
+      setRemoved(null);
+    }}>撤销</button>
+    <button type="button" className="min-h-10 shrink-0 px-1" aria-label="关闭提示" onClick={() => setRemoved(null)}>×</button>
+  </div>;
+  return {mark,notice};
 }

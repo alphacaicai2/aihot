@@ -3,7 +3,7 @@ import { CopyButton } from "../../components/CodeBlock";
 import { SITE } from "@aihot/industry/site";
 import type { Route } from "./+types/memberships";
 import { useAdminAction } from "../../features/admin/action";
-import { AdminPage, Button, Card, Input, Time } from "../../features/admin/ui";
+import { AdminPage, Button, Card, Input, ReasonDialog, Time } from "../../features/admin/ui";
 import { adminGet } from "../../lib/admin.server";
 
 const path = "/api/admin/memberships";
@@ -22,6 +22,7 @@ export const headers = () => ({ "Cache-Control": "private, no-store" });
 
 export default function MemberGrants({ loaderData }: Route.ComponentProps) {
   const { run, busy } = useAdminAction();
+  const [revoking,setRevoking] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [codeEmail, setCodeEmail] = useState("");
   const [issued, setIssued] = useState<{ email: string; code: string; expiresAt: string } | null>(null);
@@ -43,7 +44,6 @@ export default function MemberGrants({ loaderData }: Route.ComponentProps) {
         <form className="flex flex-wrap items-end gap-3" onSubmit={async event => {
           event.preventDefault();
           const address = codeEmail.trim();
-          setIssued(null);
           const result = await run<{ code: string; expiresAt: string }>("POST", path + "/code", { email: address },
             { label: `code-${address}`, revalidate: false });
           if (result) setIssued({ email: address, code: result.code, expiresAt: result.expiresAt });
@@ -62,14 +62,18 @@ export default function MemberGrants({ loaderData }: Route.ComponentProps) {
           <ul className="divide-y divide-line-soft">
             {loaderData.members.map(member => <li key={member.email} className="flex items-center justify-between gap-3 py-3">
               <div className="min-w-0"><p className="break-all text-sm font-medium">{member.email}</p><div className="mt-1 text-xs text-ink-3"><Time at={member.createdAt} /></div></div>
-              <Button disabled={busy} onClick={() => {
-                if (!window.confirm(`撤销 ${member.email} 的手工授权？如有有效订阅，仍可使用会员功能。`)) return;
-                if (issued?.email.toLowerCase() === member.email.toLowerCase()) setIssued(null);
-                void run("DELETE", path, { email: member.email }, { label: `revoke-${member.email}`, success: "手工授权已撤销" });
-              }}>撤销授权</Button>
+              <Button disabled={busy} onClick={() => setRevoking(member.email)}>撤销授权</Button>
             </li>)}
           </ul>}
       </Card>
+      <ReasonDialog open={revoking !== null} title="撤销手工授权" description={`撤销 ${revoking ?? ""} 的手工授权？有效订阅仍可使用会员功能。`}
+        requireReason={false} danger confirmLabel="确认撤销" busy={busy} onClose={() => setRevoking(null)}
+        onSubmit={async () => {
+          if (!revoking) return false;
+          const result = await run("DELETE", path, {email:revoking}, {label:`revoke-${revoking}`,success:"手工授权已撤销"});
+          if (result && issued?.email.toLowerCase() === revoking.toLowerCase()) setIssued(null);
+          return result !== null;
+        }} />
     </AdminPage>
   );
 }

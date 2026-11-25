@@ -1,6 +1,6 @@
 import { SITE, withSubject } from "@aihot/industry/site";
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Presence } from "../components/ui/Presence";
 import { pageMeta } from "../lib/seo";
 import { KEYS } from "../lib/local-state";
@@ -72,21 +72,23 @@ const MAX_TEXT = 2000;
 
 export default function FeedbackPage() {
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>({ content: "", email: "", pageUrl: params.get("from") ?? "" });
   const [shot, setShot] = useState<{ file: File; url: string } | null>(null);
   const [state, setState] = useState<{ kind: "idle" | "sending" | "done" | "error"; message?: string; id?: number }>({ kind: "idle" });
   const [dragging, setDragging] = useState(false);
+  const sending = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const saved = readDraft();
     if (saved) setDraft((d) => ({ ...saved, pageUrl: d.pageUrl || saved.pageUrl }));
-    else if (!params.get("from") && document.referrer.startsWith(location.origin)) setDraft((d) => ({ ...d, pageUrl: document.referrer }));
+    else if (!params.get("from") && document.referrer.startsWith(location.origin + "/")) setDraft((d) => ({ ...d, pageUrl: document.referrer }));
   }, []);
-  useEffect(() => {
-    const t = setTimeout(() => writeDraft(draft.content || draft.email ? draft : null), 400);
-    return () => clearTimeout(t);
-  }, [draft]);
+  const edit = (next: Draft) => {
+    setDraft(next);
+    writeDraft(next.content || next.email ? next : null);
+  };
 
   useEffect(() => {
     if (!shot) return;
@@ -94,7 +96,7 @@ export default function FeedbackPage() {
   }, [shot]);
 
   const pick = (file: File | null | undefined) => {
-    if (!file) return;
+    if (!file || sending.current) return;
     if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return setState({ kind: "error", message: "截图需要是 PNG、JPEG 或 WebP。" });
     if (file.size > MAX_IMAGE) return setState({ kind: "error", message: "截图原图不超过 5 MB。" });
     setShot({ file, url: URL.createObjectURL(file) });
@@ -112,7 +114,9 @@ export default function FeedbackPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (sending.current) return;
     if (draft.content.trim().length < 2) return setState({ kind: "error", message: "请写下反馈内容。" });
+    sending.current = true;
     setState({ kind: "sending" });
     try {
       const form = new FormData();
@@ -128,8 +132,8 @@ export default function FeedbackPage() {
       setDraft({ content: "", email: "", pageUrl: "" });
       setShot(null);
     } catch {
-      setState({ kind: "error", message: "网络不太顺，草稿已保存在本机，稍后再提交。" });
-    }
+      setState({ kind: "error", message: "网络不太顺，请稍后再提交。" });
+    } finally { sending.current = false; }
   };
 
   if (state.kind === "done") {
@@ -143,9 +147,9 @@ export default function FeedbackPage() {
           <p className="mt-2 text-[14px] text-ink-3">
             反馈编号 <span className="mono font-semibold text-ink">#{state.id}</span>，需要回复时我们会引用这个编号。
           </p>
-          <Link to="/" className="mt-8 inline-flex h-10 items-center rounded-full bg-ink px-6 text-[14px] font-medium text-bg transition-opacity hover:opacity-90">
-            回到精选
-          </Link>
+          <button type="button" onClick={() => window.history.state?.idx > 0 ? navigate(-1) : navigate("/")} className="mt-8 inline-flex h-10 items-center rounded-full bg-ink px-6 text-[14px] font-medium text-bg transition-opacity hover:opacity-90">
+            {window.history.state?.idx > 0 ? "返回上一页" : "回到精选"}
+          </button>
         </div>
       </ReadingLayout>
     );
@@ -161,6 +165,7 @@ export default function FeedbackPage() {
       </header>
 
       <form
+        aria-busy={state.kind === "sending"}
         onSubmit={submit}
         onDragOver={(e) => {
           e.preventDefault();
@@ -176,7 +181,7 @@ export default function FeedbackPage() {
         }}
         className={`card mt-6 overflow-hidden transition-shadow ${dragging ? "shadow-[0_0_0_3px_var(--accent-soft)] ring-1 ring-accent" : ""}`}
       >
-        <div className="space-y-5 p-5 sm:p-6">
+        <fieldset disabled={state.kind === "sending"} className="space-y-5 p-5 sm:p-6">
           <div>
             <label htmlFor="fb-content" className={label}>
               想说点什么？
@@ -188,7 +193,7 @@ export default function FeedbackPage() {
                 rows={9}
                 maxLength={MAX_TEXT}
                 value={draft.content}
-                onChange={(e) => setDraft({ ...draft, content: e.target.value })}
+                onChange={(e) => edit({ ...draft, content: e.target.value })}
                 placeholder="例如：我在搜索“OpenAI”时遇到……我原本想……"
                 className="[&_textarea]:min-h-44 [&_textarea]:resize-y [&_textarea]:pb-8 [&_textarea]:leading-relaxed"
               />
@@ -202,7 +207,7 @@ export default function FeedbackPage() {
             <label htmlFor="fb-email" className={label}>
               邮箱 <span className="font-normal text-ink-4">（选填）</span>
             </label>
-            <Input nativeInput size="lg" id="fb-email" type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} placeholder="留下邮箱，我可以回信联系你" />
+            <Input nativeInput size="lg" id="fb-email" type="email" value={draft.email} onChange={(e) => edit({ ...draft, email: e.target.value })} placeholder="留下邮箱，我可以回信联系你" />
           </div>
 
           <div>
@@ -235,7 +240,7 @@ export default function FeedbackPage() {
                 </span>
               </button>
             )}
-            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
           </div>
 
           <Presence show={state.kind === "error"} enter="anim-notice-in" exit="anim-fade-out" duration={160}>
@@ -243,7 +248,7 @@ export default function FeedbackPage() {
               {state.kind === "error" ? state.message : ""}
             </p>
           </Presence>
-        </div>
+        </fieldset>
 
         <div className="flex flex-col-reverse gap-4 border-t border-line-soft bg-bg-sunk/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 dark:bg-bg-muted/30">
           <p className="text-[12px] leading-relaxed text-ink-4 sm:max-w-[400px]">

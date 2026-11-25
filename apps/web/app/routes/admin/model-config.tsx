@@ -13,7 +13,9 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 function TaskSetting({ task, choices }: { task: Task; choices: Choice[] }) {
-  const [selected, setSelected] = useState(task.current.model);
+  const saved = task.current.source === "admin" ? task.current.model : "__default";
+  const [selected, setSelected] = useState(saved);
+  const active = choices.find(choice=>choice.key===task.current.model);
   const [confirm, setConfirm] = useState(false);
   const { run, busy } = useAdminAction();
   return <Card title={task.label}>
@@ -23,11 +25,12 @@ function TaskSetting({ task, choices }: { task: Task; choices: Choice[] }) {
     <div className="flex flex-wrap items-center gap-2">
       <Select aria-label={task.label} value={selected} onChange={e => setSelected(e.target.value)}>
         {choices.filter(c => c.vision === task.vision).map(c =>
-          <option key={c.key} value={c.key}>{c.channel} · {c.model || "未配置模型"}（{c.key}）</option>)}
+          <option key={c.key} value={c.key}>{c.channel} · {c.model || "未配置模型"}</option>)}
         <option value="__default">{task.key === "financing" ? "沿用分类与事实抽取" : "恢复默认设置"}</option>
       </Select>
-      <Button disabled={busy || (selected === task.current.model && task.current.source === "admin")} onClick={() => setConfirm(true)}>保存任务模型</Button>
+      <Button disabled={busy || selected === saved} onClick={() => setConfirm(true)}>保存任务模型</Button>
     </div>
+    {active && <p className="mt-2 text-[13px] text-ink-3">当前使用 {active.channel} · {active.model}</p>}
     <ReasonDialog open={confirm} title={`修改${task.label}的模型`} confirmLabel="保存" busy={busy}
       onClose={() => setConfirm(false)} onSubmit={async reason =>
         (await run("POST", `/api/admin/models/${task.key}`, { model: selected === "__default" ? null : selected, reason }, { success: "任务模型已保存" })) !== null} />

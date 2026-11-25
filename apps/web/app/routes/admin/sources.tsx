@@ -4,7 +4,7 @@ import type { Route } from "./+types/sources";
 import { adminGet } from "../../lib/admin.server";
 import { num } from "../../features/admin/format";
 import { HEALTH_LABEL, KIND_LABEL, MODE_LABEL } from "../../features/admin/labels";
-import { AdminPage, Badge, ButtonLink, Card, DataTable, Dot, FilterChips, healthTone, Input, Pager, Select, Stat, Time } from "../../features/admin/ui";
+import { AdminPage, Badge, Button, ButtonLink, Card, DataTable, Dot, FilterChips, healthTone, Input, Pager, Select, Stat, Time } from "../../features/admin/ui";
 
 interface SourceRow {
   id: string;
@@ -43,6 +43,9 @@ export default function Sources({ loaderData }: Route.ComponentProps) {
   const { rows, totals, page } = loaderData;
   const [sp] = useSearchParams();
   const navigate = useNavigate();
+  const withoutQuery = new URLSearchParams(sp);
+  withoutQuery.delete("q");
+  withoutQuery.delete("page");
   return (
     <AdminPage
       title="信源"
@@ -59,7 +62,9 @@ export default function Sources({ loaderData }: Route.ComponentProps) {
         <div className="flex flex-col gap-3 border-b border-line p-3 lg:flex-row lg:items-center lg:justify-between">
           <Form method="get" className="flex w-full max-w-md gap-2" preventScrollReset>
             {["kind", "health", "mode"].map((k) => sp.get(k) && <input key={k} type="hidden" name={k} value={sp.get(k)!} />)}
-            <Input name="q" defaultValue={sp.get("q") ?? ""} placeholder="名称、ID 或地址" aria-label="搜索信源" />
+            <Input key={sp.get("q") ?? ""} name="q" defaultValue={sp.get("q") ?? ""} placeholder="名称、ID 或地址" aria-label="搜索信源" />
+            <Button type="submit">搜索</Button>
+            {sp.get("q") && <ButtonLink size="sm" to={`?${withoutQuery}`}>清除搜索</ButtonLink>}
           </Form>
           <div className="flex flex-wrap items-center gap-3">
             <FilterChips param="health" options={[{ value: "", label: "全部" }, { value: "failing", label: "失败" }, { value: "long_failed", label: "长期失效", count: totals.long_failed }, { value: "degraded", label: "不稳定" }, { value: "paused", label: "暂停" }]} />

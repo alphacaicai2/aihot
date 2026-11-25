@@ -3,7 +3,7 @@ import { Form, Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/audit";
 import { adminGet } from "../../lib/admin.server";
 import { bj } from "../../features/admin/format";
-import { AdminPage, Card, DataTable, Input, Json, Pager } from "../../features/admin/ui";
+import { AdminPage, Button, ButtonLink, Card, DataTable, Input, Json, Pager } from "../../features/admin/ui";
 
 interface Row {
   id: number;
@@ -32,17 +32,20 @@ function subjectLink(subject: string | null) {
 
 export default function Audit({ loaderData }: Route.ComponentProps) {
   const [sp] = useSearchParams();
+  const filtered = !!(sp.get("action") || sp.get("subject"));
   return (
     <AdminPage title="审计记录" subtitle="所有人工操作：谁、何时、改了什么、为什么。">
-      <Form method="get" className="mb-4 flex max-w-xl gap-2">
-        <Input name="action" defaultValue={sp.get("action") ?? ""} placeholder="操作前缀，例如 content. 或 source." aria-label="按操作筛选" />
-        <Input name="subject" defaultValue={sp.get("subject") ?? ""} placeholder="对象，例如 source:openai-blog" aria-label="按对象筛选" />
+      <Form method="get" className="mb-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]" preventScrollReset>
+        <Input name="action" key={sp.get("action") ?? ""} defaultValue={sp.get("action") ?? ""} placeholder="操作前缀，例如 content. 或 source." aria-label="按操作筛选" />
+        <Input name="subject" key={`subject-${sp.get("subject") ?? ""}`} defaultValue={sp.get("subject") ?? ""} placeholder="对象，例如 source:openai-blog" aria-label="按对象筛选" />
+        <Button type="submit">筛选</Button>
+        {filtered && <ButtonLink to="/admin/audit">清除筛选</ButtonLink>}
       </Form>
       <Card pad={false}>
         <DataTable
           rows={loaderData.rows}
           rowKey={(r) => r.id}
-          empty="没有记录"
+          empty={filtered ? "没有符合当前筛选的操作记录。" : "还没有操作记录。"}
           columns={[
             { key: "t", label: "时间", render: (r) => <span className="num whitespace-nowrap">{bj(r.created_at, true)}</span> },
             { key: "a", label: "操作", render: (r) => <span className="font-mono text-[12.5px] text-ink">{r.action}</span> },
