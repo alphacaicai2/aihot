@@ -1,7 +1,8 @@
+import { onMediaChange } from "../../lib/media-query";
 // The date in the masthead's 报眼 as a signal board: text drawn on a canvas as a halftone of dots, the
 // accent part in the brand teal and the rest in ink, over a faint grid of unlit dots and the text's own
 // faint silhouette. The dot texture comes from `seed` (the issue), so every
-// issue's board differs. Dots print in from the left on load and light up under the pointer; reduced
+// issue's board differs. Dots light up under the pointer; reduced
 // motion gets the still board.
 // The real text stays in the page (for search, screen readers and before the script runs); the canvas
 // covers it once drawn. Mark the accent part of `children` with data-accent.
@@ -56,8 +57,6 @@ function valueNoise(seed: number) {
 }
 
 const TAU = Math.PI * 2;
-const INTRO_MS = 950;
-const easeOutBack = (p: number) => 1 + 2.2 * (p - 1) ** 3 + 1.2 * (p - 1) ** 2;
 
 export function Halftone({ seed, className = "", children }: { seed: string; className?: string; children: ReactNode }) {
   const hostRef = useRef<HTMLSpanElement>(null);
@@ -71,7 +70,7 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!host || !label || !canvas || !ctx) return;
-    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)");
     const hover = matchMedia("(hover: hover) and (pointer: fine)").matches;
     const noise = valueNoise(hashSeed(seed));
     const phase = mulberry32(hashSeed(seed) ^ 0x9e3779b9);
@@ -88,7 +87,6 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
     let pad = 0;
     let reach = 60;
     let colors = { ink: "#000", accent: "#000", idle: "#ccc" };
-    let started = 0;
     let frame = 0;
     let pointer: { x: number; y: number } | null = null;
     let disposed = false;
@@ -221,13 +219,12 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
       return true;
     };
 
-    const draw = (now: number) => {
+    const draw = () => {
       frame = 0;
       if (disposed) return;
-      const t = still ? 1 : Math.min(1, (now - started) / INTRO_MS);
       ctx.clearRect(-pad, -pad, width + 2 * pad, height + 2 * pad);
       if (tint) {
-        ctx.globalAlpha = 0.12 * t;
+        ctx.globalAlpha = 0.12;
         ctx.drawImage(tint, -pad, -pad, width + 2 * pad, height + 2 * pad);
         ctx.globalAlpha = 1;
       }
@@ -255,22 +252,19 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
         ctx.globalAlpha = 1;
       }
 
-      // Lit dots print in from the left, then swell under the pointer.
+      // Ink dots nearest the pointer light up.
       for (const c of [0, 1] as const) {
         ctx.fillStyle = c ? colors.accent : colors.ink;
         ctx.beginPath();
         for (const d of lit) {
           if (d.c !== c) continue;
-          const p = Math.min(1, Math.max(0, (t * 1.5 - (d.x / width) * 0.5) / 0.9));
-          if (p <= 0) continue;
           const k = near(d.x, d.y);
-          const r = d.r * easeOutBack(p) * (1 + 0.55 * k * k);
+          const r = d.r * (1 + 0.55 * k * k);
           ctx.moveTo(d.x + r, d.y);
           ctx.arc(d.x, d.y, r, 0, TAU);
         }
         ctx.fill();
       }
-      if (t < 1) frame = requestAnimationFrame(draw);
     };
 
     const redraw = () => {
@@ -285,6 +279,7 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
     };
 
     const onMove = (e: PointerEvent) => {
+      if (reduce.matches) return;
       const box = host.getBoundingClientRect();
       pointer = { x: e.clientX - box.left, y: e.clientY - box.top };
       redraw();
@@ -302,19 +297,20 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
     };
     const theme = new MutationObserver(recolour);
     const scheme = matchMedia("(prefers-color-scheme: dark)");
-    const onScheme = recolour;
+    let stopScheme: (() => void) | undefined;
+    let stopMotion: (() => void) | undefined;
 
     document.fonts.ready.then(() => {
       if (disposed || !layout()) return;
       readColors();
       paintTint();
-      started = performance.now();
+      draw();
       setDrawn(true);
-      redraw();
       resize.observe(host);
       theme.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
-      scheme.addEventListener("change", onScheme);
-      if (hover && !still) {
+      stopScheme = onMediaChange(scheme, recolour);
+      stopMotion = onMediaChange(reduce, onLeave);
+      if (hover) {
         canvas.addEventListener("pointermove", onMove);
         canvas.addEventListener("pointerleave", onLeave);
       }
@@ -325,7 +321,8 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
       if (frame) cancelAnimationFrame(frame);
       resize.disconnect();
       theme.disconnect();
-      scheme.removeEventListener("change", onScheme);
+      stopScheme?.();
+      stopMotion?.();
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerleave", onLeave);
     };
@@ -333,10 +330,10 @@ export function Halftone({ seed, className = "", children }: { seed: string; cla
 
   return (
     <span ref={hostRef} className={`relative inline-block ${className}`}>
-      <span ref={textRef} className={`transition-opacity duration-300 ${drawn ? "opacity-0" : ""}`}>
+      <span ref={textRef} className={`transition-opacity ${drawn ? "opacity-0" : ""}`}>
         {children}
       </span>
-      <canvas ref={canvasRef} aria-hidden="true" className={`absolute left-0 top-0 size-0 transition-opacity duration-300 ${drawn ? "opacity-100" : "opacity-0"}`} />
+      <canvas ref={canvasRef} aria-hidden="true" className={`absolute left-0 top-0 size-0 transition-opacity ${drawn ? "opacity-100" : "opacity-0"}`} />
     </span>
   );
 }

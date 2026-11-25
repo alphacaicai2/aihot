@@ -1,3 +1,4 @@
+import { onMediaChange } from "../../lib/media-query";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { LbBoardEntry } from "@aihot/contracts/leaderboard";
@@ -13,9 +14,9 @@ function sortValue(e: LbBoardEntry, key: SortKey): number | null {
     case "rank":
       return e.rank;
     case "released":
-      return e.model.releasedAt ? -Date.parse(e.model.releasedAt) : null;
+      return e.model.releasedAt ? Date.parse(e.model.releasedAt) : null;
     case "coverage":
-      return -(e.coverage * 1000 + e.sourceCount);
+      return e.coverage * 1000 + e.sourceCount;
     case "cached":
       return e.price?.cachedCny ?? null;
     case "input":
@@ -65,29 +66,57 @@ export function BoardTable({ entries, board }: { entries: LbBoardEntry[]; board:
   const [sort, setSort] = useState<SortKey>("rank");
   const [dir, setDir] = useState<1 | -1>(1);
   const rows = useMemo(() => sorted(entries, sort, dir), [entries, sort, dir]);
-  // Re-sorting moves each row from where it was to its new place (FLIP), as rows keep their key.
+  // Measure the current painted positions on each press, including any interrupted movement.
   const body = useRef<HTMLTableSectionElement>(null);
-  const tops = useRef(new Map<string, number>());
-  const order = rows.map((e) => e.model.slug).join(",");
+  const before = useRef(new Map<HTMLTableRowElement, number>());
+  const moving = useRef<Animation[]>([]);
   useLayoutEffect(() => {
-    if (!body.current) return;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const next = new Map<string, number>();
-    for (const row of Array.from(body.current.rows)) {
-      const key = row.dataset.slug ?? "";
-      const prev = tops.current.get(key);
-      next.set(key, row.offsetTop);
-      if (prev !== undefined && prev !== row.offsetTop && !reduce && row.animate) {
-        row.animate([{ transform: `translateY(${prev - row.offsetTop}px)` }, { transform: "none" }], { duration: 420, easing: "cubic-bezier(0.25, 1, 0.5, 1)" });
-      }
+    const tableBody = body.current;
+    if (!tableBody || !before.current.size) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      before.current.clear();
+      return;
     }
-    tops.current = next;
-  }, [order]);
+    const style = getComputedStyle(tableBody);
+    const time = style.getPropertyValue("--motion-panel").trim();
+    const duration = parseFloat(time) * (time.endsWith("ms") ? 1 : 1000);
+    const easing = style.getPropertyValue("--ease-out-quart").trim();
+    const moves: Array<{ row: HTMLTableRowElement; dy: number }> = [];
+    for (const row of tableBody.rows) {
+      const oldTop = before.current.get(row);
+      if (oldTop === undefined) continue;
+      const rect = row.getBoundingClientRect();
+      const dy = oldTop - rect.top;
+      // Offscreen rows and jumps longer than the viewport can settle immediately.
+      if (dy && rect.bottom > 0 && rect.top < window.innerHeight && Math.abs(dy) < window.innerHeight) moves.push({ row, dy });
+    }
+    before.current.clear();
+    moving.current = moves.map(({ row, dy }) =>
+      row.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration, easing })
+    );
+  }, [rows]);
+  useLayoutEffect(() => {
+    const preference = matchMedia("(prefers-reduced-motion: reduce)");
+    const cancel = () => {
+      for (const animation of moving.current) animation.cancel();
+      moving.current = [];
+    };
+    const stopPreference = onMediaChange(preference, cancel);
+    return () => {
+      stopPreference();
+      cancel();
+    };
+  }, []);
   const onSort = (k: SortKey) => {
+    if (body.current && typeof Element.prototype.animate === "function" && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      for (const row of body.current.rows) before.current.set(row, row.getBoundingClientRect().top);
+    }
+    for (const animation of moving.current) animation.cancel();
+    moving.current = [];
     if (k === sort) setDir((d) => (d === 1 ? -1 : 1));
     else {
       setSort(k);
-      setDir(1);
+      setDir(k === "released" || k === "coverage" ? -1 : 1);
     }
   };
   // No official price yet reads "待核验"; a price without that tier (no cache pricing) reads "—".
@@ -99,7 +128,7 @@ export function BoardTable({ entries, board }: { entries: LbBoardEntry[]; board:
       <caption className="sr-only">可按列重排的前 {entries.length} 名模型</caption>
       <thead className="bg-[rgba(28,39,51,0.04)] text-[12px] text-ink-4 dark:bg-white/[0.03]">
         <tr className="border-y border-line">
-          <th scope="col" className="w-[44px] py-2.5 pl-4 pr-1 text-left font-medium lg:w-[68px] lg:pl-[22px] lg:pr-3">
+          <th scope="col" aria-sort={sort === "rank" ? (dir === 1 ? "ascending" : "descending") : "none"} className="w-[44px] py-2.5 pl-4 pr-1 text-left font-medium lg:w-[68px] lg:pl-[22px] lg:pr-3">
             <button type="button" onClick={() => onSort("rank")} className={`transition-colors hover:text-ink ${sort === "rank" ? "text-accent" : ""}`}>
               排名
             </button>

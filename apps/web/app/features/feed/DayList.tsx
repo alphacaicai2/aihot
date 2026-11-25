@@ -11,7 +11,7 @@ import { EmptyState } from "../../components/ui/Page";
 import { DayHeader, TimelineSlot } from "./Timeline";
 import { FeedItem } from "./FeedItem";
 
-export function DayList({ items, todayCount = null, showTags = true, animate = false }: { items: FeedItemSummary[]; todayCount?: number | null; showTags?: boolean; animate?: boolean }) {
+export function DayList({ items, todayCount = null, showTags = true }: { items: FeedItemSummary[]; todayCount?: number | null; showTags?: boolean }) {
   const readSet = useReadSet();
   const undo = useUnreadUndo();
   const { unreadOnly, compact } = useReadingPreferences();
@@ -27,7 +27,6 @@ export function DayList({ items, todayCount = null, showTags = true, animate = f
     }
     return out;
   }, [items, unreadOnly, readSet]);
-  let order = 0;
   return (
     <div>
       <ReadingControls />
@@ -40,7 +39,7 @@ export function DayList({ items, todayCount = null, showTags = true, animate = f
           <DayHeader day={day} today={today} count={unreadOnly ? list.length : day === today ? todayCount : null} />
           <ol className="lg:pt-1">
             {list.map((it) => (
-              <TimelineSlot key={it.id} at={it.timelineAt} fresh={animate} delay={animate ? Math.min(order++, 12) * 25 : 0}>
+              <TimelineSlot key={it.id} at={it.timelineAt}>
                 <FeedItem item={it} read={readSet.has(it.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} showTags={showTags} compact={compact} />
               </TimelineSlot>
             ))}

@@ -108,7 +108,7 @@ function Disclosure({ summary, children, defaultOpen = false }: { summary: React
     <details className="disclosure group border-b border-line" open={defaultOpen}>
       <summary className="flex items-center justify-between gap-3 py-4 text-[14px] font-semibold text-ink transition-colors hover:text-accent">
         {summary}
-        <span className="shrink-0 text-[18px] font-normal leading-none text-ink-4 transition-transform duration-200 group-open:rotate-45" aria-hidden="true">
+        <span className="shrink-0 text-[18px] font-normal leading-none text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart group-open:rotate-45" aria-hidden="true">
           +
         </span>
       </summary>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { CodexCalendarMark, CodexResetEvent, CodexResetDay } from "@aihot/contracts/monitor";
 import { addDays } from "@aihot/contracts/time";
 import { IconChevronRight } from "../../components/icons";
@@ -59,8 +59,9 @@ export function ResetCalendar({ marks, events, today, historyFrom, now, avatar, 
   const [selected, setSelected] = useState(initial);
   const [month, setMonth] = useState(monthOf(initial));
   // The grid slides in whenever the reader changes month, not on the first render.
-  const firstMonth = useRef<string | null>(month);
-  if (month !== firstMonth.current) firstMonth.current = null;
+  const previousMonth = useRef(month);
+  const direction = month.localeCompare(previousMonth.current);
+  useLayoutEffect(() => { previousMonth.current = month; }, [month]);
   const gridRef = useRef<HTMLDivElement>(null);
   const minMonth = historyFrom ? monthOf(historyFrom.slice(0, 10)) : "2026-06";
   const maxMonth = monthOf(today > latest ? today : latest);
@@ -164,7 +165,7 @@ export function ResetCalendar({ marks, events, today, historyFrom, now, avatar, 
                 </span>
               ))}
             </div>
-            <div key={month} className={`mt-1 grid grid-cols-7 gap-[3px] sm:gap-1 ${firstMonth.current === null ? "anim-slide-in-x" : ""}`} role="rowgroup">
+            <div key={month} className={`mt-1 grid grid-cols-7 gap-[3px] sm:gap-1 ${direction ? "anim-slide-in-x" : ""}`} style={{ "--month-offset": direction < 0 ? "-4px" : "4px" } as React.CSSProperties} role="rowgroup">
               {days.map((d) => {
                 const ms = byDay.get(d) ?? [];
                 const top = [...ms].sort((a, b) => STRENGTH[b.state] - STRENGTH[a.state])[0];

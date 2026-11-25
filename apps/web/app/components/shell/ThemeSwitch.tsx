@@ -18,14 +18,10 @@ export function ThemeSwitch({ className = "" }: { className?: string }) {
   useEffect(() => setMounted(true), []);
   const current: Choice = !mounted ? "system" : (pref ?? "system");
   const groupName = useId();
-
   const choose = (key: Choice) => {
     const nextPref: ThemePreference = key === "system" ? null : key;
     setThemePreference(nextPref);
-    const apply = () => document.documentElement.setAttribute("data-theme", resolvedTheme(nextPref));
-    const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
-    if (doc.startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) doc.startViewTransition(apply);
-    else apply();
+    document.documentElement.setAttribute("data-theme", resolvedTheme(nextPref));
   };
 
   return (

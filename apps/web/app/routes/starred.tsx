@@ -31,6 +31,7 @@ export default function StarredPage() {
   const [mounted, setMounted] = useState(false);
   const [availability, setAvailability] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => setMounted(true), []);
 
@@ -55,13 +56,16 @@ export default function StarredPage() {
   };
 
   const doImport = async (file: File | undefined) => {
-    if (!file) return;
+    if (!file || importing) return;
+    setImporting(true);
     try {
       const text = await file.text();
       const report = await updateBookmarks(() => importBundle(text));
       setNotice({ kind: report.readFailed ? "error" : "ok", text: `导入完成：${reportText(report)}` });
     } catch (e) {
-      setNotice({ kind: "error", text: e instanceof Error ? e.message : "导入失败" });
+      setNotice({ kind: "error", text: e instanceof Error ? e.message : "导入失败，请重新选择文件" });
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -76,21 +80,21 @@ export default function StarredPage() {
           <p className="mt-1.5 text-[13px] text-ink-3">本机收藏的 {SITE.name} 内容，适合稍后阅读和回看。</p>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:pt-1.5">
-          <button type="button" onClick={() => fileRef.current?.click()} className={action}>
-            导入文件
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={importing} aria-busy={importing} className={action}>
+            {importing ? "导入中…" : "导入文件"}
           </button>
           {mounted && starred.length > 0 && (
             <button type="button" onClick={doExport} className={`${action} inline-flex items-center gap-1`}>
               <IconDownload size={13} /> 导出
             </button>
           )}
-          <input ref={fileRef} type="file" accept="application/json,.json" className="sr-only" onChange={(e) => doImport(e.target.files?.[0])} />
+          <input ref={fileRef} type="file" accept="application/json,.json" className="sr-only" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; void doImport(file); }} />
         </div>
       </header>
       <p className="rounded-tile border border-line bg-surface px-4 py-2.5 text-[12.5px] text-ink-3">收藏只保存在当前浏览器；清除浏览器数据或换设备后不会同步。</p>
-      <Presence show={!!notice} enter="anim-notice-in" exit="anim-fade-out" duration={160}>
+      <Presence show={!!notice} kind="notice">
         <div
-          role="status"
+          role={notice?.kind === "error" ? "alert" : "status"}
           className={`mt-3 flex items-start justify-between gap-3 rounded-tile px-4 py-2.5 text-[13px] ${notice?.kind === "ok" ? "bg-accent-soft text-accent-ink dark:text-accent" : "bg-hot-soft text-hot"}`}
         >
           {notice?.text}

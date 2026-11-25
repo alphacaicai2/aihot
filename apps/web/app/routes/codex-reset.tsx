@@ -195,7 +195,7 @@ export default function CodexResetPage() {
       <details className="disclosure group mt-8 border-t border-line">
         <summary className="flex items-center justify-between gap-3 py-[18px] text-[13px] text-ink-3 transition-colors hover:text-ink">
           <span className="inline-flex items-center gap-1.5">
-            <IconChevronRight size={13} className="text-ink-4 transition-transform duration-200 group-open:rotate-90" />
+            <IconChevronRight size={13} className="text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart group-open:rotate-90" />
             时间是怎么推算的？
           </span>
           <span className="text-[12px] text-ink-4">来源与规则</span>

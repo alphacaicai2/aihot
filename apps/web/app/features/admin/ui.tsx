@@ -61,12 +61,7 @@ export function Badge({ tone = "muted", children, title }: { tone?: Tone; childr
 
 export function Dot({ tone }: { tone: Tone }) {
   const c = tone === "ok" ? "bg-ok" : tone === "warn" ? "bg-amber" : tone === "bad" ? "bg-hot" : tone === "accent" ? "bg-accent" : "bg-ink-4";
-  return (
-    <span className="relative inline-flex size-2">
-      {tone === "bad" && <span className={`absolute inline-flex size-full animate-ping rounded-full opacity-50 ${c}`} />}
-      <span className={`relative inline-flex size-2 rounded-full ${c}`} />
-    </span>
-  );
+  return <span aria-hidden="true" className={`inline-block size-2 shrink-0 rounded-full ${c}`} />;
 }
 
 export function healthTone(h: string | null | undefined): Tone {

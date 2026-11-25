@@ -125,7 +125,7 @@ function Toggle({ open, onToggle, children }: { open: boolean; onToggle: () => v
       className="relative z-10 inline-flex items-center gap-0.5 text-[12.5px] text-ink-4 transition-colors hover:text-accent"
     >
       {children}
-      <IconChevronDown size={13} className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      <IconChevronDown size={13} className={`transition-transform duration-(--motion-standard) ease-out-quart ${open ? "rotate-180" : ""}`} />
     </button>
   );
 }
@@ -139,9 +139,9 @@ function Panel({ open, children }: { open: boolean; children: ReactNode }) {
 }
 
 function LoadState({ loading, error, next, onMore, onRetry, empty }: { loading: boolean; error: boolean; next: string | null; onMore: () => void; onRetry: () => void; empty: boolean }) {
-  if (loading && empty) return <div className="space-y-2 py-1">{[0, 1].map((i) => <div key={i} className="skeleton h-4" />)}</div>;
+  if (loading && empty) return <div role="status" aria-label="正在加载报道" className="space-y-2 py-1">{[0, 1].map((i) => <div key={i} className="skeleton h-4" />)}</div>;
   if (error) return <button type="button" onClick={onRetry} className="py-1 text-[12.5px] text-hot">暂时无法加载，点此重试</button>;
-  if (next && !loading) return <button type="button" onClick={onMore} className="py-1 text-[12.5px] text-accent hover:underline">加载更多</button>;
+  if (next) return <button type="button" onClick={onMore} aria-disabled={loading} aria-busy={loading} className="py-1 text-[12.5px] text-accent hover:underline">{loading ? "正在加载…" : "加载更多"}</button>;
   return null;
 }
 
@@ -179,7 +179,7 @@ export function GroupSources({ group, filters, parentId }: { group: GroupInfo; f
             </li>
           ))}
         </ul>
-        <LoadState loading={state.loading} error={state.error} next={state.next} empty={others.length === 0} onMore={() => load(state.next)} onRetry={() => load(null)} />
+        <LoadState loading={state.loading} error={state.error} next={state.next} empty={others.length === 0} onMore={() => load(state.next)} onRetry={() => load(state.next)} />
       </Panel>
     </div>
   );
@@ -201,7 +201,7 @@ export function GroupDevelopments({ group, filters, parentId }: { group: GroupIn
           if (!open && !state.loaded && !state.loading) void load(null);
         }}
       >
-        展开 {group.developmentCount} 条进展
+        {open ? "收起" : "展开"} {group.developmentCount} 条进展
       </Toggle>
       <Panel open={open}>
         <ol className="relative space-y-2 py-1 pl-3.5 before:absolute before:bottom-2 before:left-[3px] before:top-2 before:w-px before:bg-line">
@@ -218,7 +218,7 @@ export function GroupDevelopments({ group, filters, parentId }: { group: GroupIn
             </li>
           ))}
         </ol>
-        <LoadState loading={state.loading} error={state.error} next={state.next} empty={state.items.length === 0} onMore={() => load(state.next)} onRetry={() => load(null)} />
+        <LoadState loading={state.loading} error={state.error} next={state.next} empty={state.items.length === 0} onMore={() => load(state.next)} onRetry={() => load(state.next)} />
         <Link to={`/story/${group.story.publicId}`} className="mt-1 inline-flex items-center gap-0.5 py-1 text-[12.5px] font-medium text-accent hover:text-accent-ink">
           查看完整事件 <IconArrowUpRight size={12} />
         </Link>

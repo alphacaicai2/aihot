@@ -1,3 +1,4 @@
+import { onMediaChange } from "../../lib/media-query";
 // The dot grid in the masthead's 报眼, beside the date: one dot per day of the month (dailies), week
 // of the year (weeklies) or month (monthlies). Issues that exist are ink dots, this issue is a larger
 // teal dot in a ring, the rest are faint. Hover names the day and its issue; a click opens it. Drawn
@@ -10,8 +11,6 @@ import { KIND_PATH, periodGrid } from "./format";
 
 const ROW = 20;
 const TAU = Math.PI * 2;
-const INTRO_MS = 700;
-const easeOutBack = (p: number) => 1 + 2.2 * (p - 1) ** 3 + 1.2 * (p - 1) ** 2;
 
 export function IssueDots({ kind, reportKey, index, className = "" }: { kind: ReportKind; reportKey: string; index: ReportNavigationEntry[]; className?: string }) {
   const grid = useMemo(() => periodGrid(kind, reportKey, index), [kind, reportKey, index]);
@@ -24,11 +23,9 @@ export function IssueDots({ kind, reportKey, index, className = "" }: { kind: Re
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     const { cells, columns } = grid;
-    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
     let width = 0;
     let cw = 0;
     let hovered = -1;
-    let started = 0;
     let frame = 0;
     let disposed = false;
     let colors = { ink: "#000", accent: "#000", idle: "#ccc" };
@@ -54,17 +51,14 @@ export function IssueDots({ kind, reportKey, index, className = "" }: { kind: Re
       canvas.height = Math.round(rows * ROW * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
-    const draw = (now: number) => {
+    const draw = () => {
       frame = 0;
       if (disposed || !width) return;
-      const t = still ? 1 : Math.min(1, (now - started) / INTRO_MS);
       ctx.clearRect(0, 0, width, rows * ROW);
       const unit = Math.min(cw, ROW);
       cells.forEach((c, i) => {
         if (c.state === "pad") return;
-        const p = Math.min(1, Math.max(0, t * 1.6 - (i / cells.length) * 0.6));
-        if (p <= 0) return;
-        const grow = easeOutBack(p) * (i === hovered ? 1.4 : 1);
+        const grow = i === hovered ? 1.4 : 1;
         const x = ((i % columns) + 0.5) * cw;
         const y = (Math.floor(i / columns) + 0.5) * ROW;
         const r = (c.state === "current" ? 0.26 : c.state === "issue" ? 0.17 : 0.08) * unit * grow;
@@ -77,12 +71,11 @@ export function IssueDots({ kind, reportKey, index, className = "" }: { kind: Re
           ctx.strokeStyle = colors.accent;
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.arc(x, y, unit * 0.42 * easeOutBack(p), 0, TAU);
+          ctx.arc(x, y, unit * 0.42, 0, TAU);
           ctx.stroke();
           ctx.globalAlpha = 1;
         }
       });
-      if (t < 1) frame = requestAnimationFrame(draw);
     };
     const redraw = () => {
       if (width && !frame) frame = requestAnimationFrame(draw);
@@ -130,11 +123,10 @@ export function IssueDots({ kind, reportKey, index, className = "" }: { kind: Re
 
     readColors();
     size();
-    started = performance.now();
     redraw();
     resize.observe(canvas);
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
-    scheme.addEventListener("change", recolour);
+    const stopScheme = onMediaChange(scheme, recolour);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerleave", onLeave);
     canvas.addEventListener("click", onClick);
@@ -143,7 +135,7 @@ export function IssueDots({ kind, reportKey, index, className = "" }: { kind: Re
       if (frame) cancelAnimationFrame(frame);
       resize.disconnect();
       theme.disconnect();
-      scheme.removeEventListener("change", recolour);
+      stopScheme();
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("click", onClick);

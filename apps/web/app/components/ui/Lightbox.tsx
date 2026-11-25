@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Presence } from "./Presence";
 import { IconArrowLeft, IconArrowRight, IconClose } from "../icons";
@@ -6,6 +6,31 @@ import { IconArrowLeft, IconArrowRight, IconClose } from "../icons";
 export interface LightboxImage {
   src: string;
   alt?: string | null;
+}
+
+/** Keep the last decoded picture in view while a slow adjacent image is loading. */
+function LightboxPicture({ image }: { image: LightboxImage }) {
+  const [ready, setReady] = useState<LightboxImage | null>(null);
+  const [failed, setFailed] = useState("");
+  useEffect(() => {
+    let current = true;
+    const next = new Image();
+    const picture = { src: image.src, alt: image.alt };
+    next.onload = () => {
+      const show = () => { if (current) { setReady(picture); setFailed(""); } };
+      if (next.decode) void next.decode().then(show, show);
+      else show();
+    };
+    next.onerror = () => { if (current) setFailed(picture.src); };
+    next.src = picture.src;
+    return () => { current = false; next.onload = next.onerror = null; };
+  }, [image.src, image.alt]);
+  const loading = ready?.src !== image.src;
+  const unavailable = failed === image.src;
+  return <>
+    {ready && !unavailable && <img key={ready.src} src={ready.src} alt={ready.alt ?? ""} className="lightbox-img min-h-0 min-w-0 max-h-[calc(100dvh-5rem)] max-w-full rounded-control object-contain shadow-2xl" />}
+    {(loading || unavailable) && <span role="status" className="absolute bottom-12 rounded-full bg-black/60 px-3 py-1 text-sm text-white">{unavailable ? "图片暂时无法加载" : "正在加载图片…"}</span>}
+  </>;
 }
 
 /**
@@ -57,7 +82,7 @@ export function Lightbox({ images, index, onIndex, onClose }: { images: Lightbox
   const nav = "absolute top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20";
   if (typeof document === "undefined") return null;
   return createPortal(
-    <Presence show={open} enter="anim-fade-in" exit="anim-fade-out" duration={160}>
+    <Presence show={open} kind="fade">
       <div
         ref={dialog}
         role="dialog"
@@ -66,9 +91,7 @@ export function Lightbox({ images, index, onIndex, onClose }: { images: Lightbox
         onClick={onClose}
         className="fixed inset-0 z-[80] grid cursor-zoom-out place-items-center bg-black/85 p-4 sm:p-10"
       >
-        {current && (
-          <img key={current.src} src={current.src} decoding="async" alt={current.alt ?? ""} className="lightbox-img anim-zoom-in min-h-0 min-w-0 max-h-[calc(100dvh-5rem)] max-w-full rounded-control object-contain shadow-2xl" />
-        )}
+        {current && <LightboxPicture image={current} />}
         <button ref={closeButton} type="button" aria-label="关闭" onClick={onClose} className="absolute right-4 top-4 grid size-9 place-items-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20">
           <IconClose size={18} />
         </button>

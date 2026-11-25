@@ -168,6 +168,7 @@ function measureItem(item: HTMLElement, root: HTMLElement): ActiveItemRect {
 
 function SegmentedControlIndicator(): React.ReactElement {
   const ref = React.useRef<HTMLSpanElement>(null);
+  const [moving, setMoving] = React.useState(false);
   const [rect, setRect] = React.useState<ActiveItemRect | null>(null);
 
   React.useLayoutEffect(() => {
@@ -176,10 +177,17 @@ function SegmentedControlIndicator(): React.ReactElement {
       return;
     }
 
+    let previousItem: HTMLElement | null = null;
+    let previousRect: ActiveItemRect | null = null;
     const update = (): void => {
       const item = root.querySelector<HTMLElement>(activeItemSelector);
       const next = item ? measureItem(item, root) : null;
-      setRect((previous) => (isSameRect(previous, next) ? previous : next));
+      if (!isSameRect(previousRect, next)) {
+        setMoving(previousItem !== null && previousItem !== item);
+        setRect(next);
+      }
+      previousItem = item;
+      previousRect = next;
     };
 
     update();
@@ -195,6 +203,7 @@ function SegmentedControlIndicator(): React.ReactElement {
       resizeObserver.disconnect();
       resizeObserver.observe(root);
       for (const child of root.children) {
+        if (child === ref.current) continue;
         resizeObserver.observe(child);
         mutationObserver.observe(child, {
           attributeFilter: observedAttributes,
@@ -215,7 +224,9 @@ function SegmentedControlIndicator(): React.ReactElement {
     <span
       aria-hidden="true"
       className={cn(
-        "pointer-events-none absolute top-0 left-0 -z-1 h-(--active-item-height) w-(--active-item-width) translate-x-(--active-item-left) translate-y-(--active-item-top) transition-[width,height,translate] duration-200 ease-in-out motion-reduce:transition-none",
+        "pointer-events-none absolute top-0 left-0 -z-1 h-(--active-item-height) w-(--active-item-width) translate-x-(--active-item-left) translate-y-(--active-item-top) duration-(--motion-standard) ease-out-quart motion-reduce:transition-none",
+        moving && "transition-[width,height,translate]",
+        !moving && "transition-none",
         segmentedControlIndicatorSurfaceClassName,
       )}
       data-slot="segmented-control-indicator"

@@ -151,11 +151,11 @@ function Comparisons({ d }: { d: LbModelDetail }) {
     <div className="border-b border-line">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center justify-between py-4 text-left">
         <span className="text-[13.5px] font-semibold text-ink">查看与附近模型的共同证据</span>
-        <span className={`text-[18px] leading-none text-ink-4 transition-transform duration-300 ${open ? "rotate-45" : ""}`}>
+        <span className={`text-[18px] leading-none text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart ${open ? "rotate-45" : ""}`}>
           +
         </span>
       </button>
-      <Collapse open={open} duration={300}>
+      <Collapse open={open}>
         <p className="text-[13px] text-ink-3">净支持只看双方共同参加的评测。全局排序还需处理其他模型间的冲突，因此非相邻名次可能与单独比较不同。</p>
         <ul className="-mx-3 divide-y divide-line-soft pb-3 pt-2">
           {d.comparisons.map((c) => <ComparisonRow key={c.model.slug} c={c} name={d.model.name} />)}
@@ -177,9 +177,9 @@ function ComparisonRow({ c, name }: { c: LbComparison; name: string }) {
           <span className="text-[12px] text-ink-3">{c.sharedCount} 项共同评测 · {favours}</span>
         </span>
         <NetValue net={c.net} />
-        <span className={`text-ink-4 transition-transform duration-300 ${open ? "rotate-180" : ""}`}><IconChevronDown size={15} /></span>
+        <span className={`text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart ${open ? "rotate-180" : ""}`}><IconChevronDown size={15} /></span>
       </button>
-      <Collapse open={open} duration={300}>
+      <Collapse open={open}>
         <div className="px-3 pb-4">
           <p className="text-[12.5px] leading-relaxed text-ink-3">
             双方共同拥有当前榜单 {pctFixed(c.sharedWeight)} 的名义票权。下表展示各项评测采用的成绩，已知误差的软化处理会影响净支持，不只数赢了几项。
@@ -231,11 +231,11 @@ function EvidenceCard({ it }: { it: LbEvidenceItem }) {
           <span className="mono block text-[19px] font-medium leading-tight text-ink">{it.display}</span>
           {it.displayNote && <span className="block text-[11px] text-ink-4">{it.displayNote}</span>}
         </span>
-        <span className={`grid size-6 shrink-0 place-items-center text-[17px] leading-none text-ink-4 transition-transform duration-300 ${open ? "rotate-45" : ""}`}>
+        <span className={`grid size-6 shrink-0 place-items-center text-[17px] leading-none text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart ${open ? "rotate-45" : ""}`}>
           +
         </span>
       </button>
-      <Collapse open={open} duration={300}>
+      <Collapse open={open}>
         <dl className="grid gap-3 border-t border-line-soft px-4 py-4 text-[12.5px] sm:grid-cols-2 lg:px-5">
           <div>
             <dt className="text-ink-4">原榜型号</dt>

@@ -21,7 +21,7 @@ export default function Discoveries({ loaderData: { items } }: Route.ComponentPr
       <ResearchHeader icon={<IconDoc size={25} />} title="一手发现">过去七天，本站跟踪的公开信源中，仅有一个来源报道的精选事件。</ResearchHeader>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-line pb-2">
         <h2 className="text-[18px] font-bold">近七天的发现 <span className="num ml-1 text-xs font-normal text-ink-3">本页 {items.length} 条</span></h2>
-        <details className="group w-fit max-w-full text-[13px] text-ink-3 open:basis-full">
+        <details className="disclosure group w-fit max-w-full text-[13px] text-ink-3 open:basis-full">
           <summary className="flex min-h-10 w-fit cursor-pointer items-center gap-1 rounded-control font-medium text-accent">收录口径 <IconChevronDown size={13} className="transition-transform group-open:rotate-180" /></summary>
           <p className="max-w-[62ch] pb-2 leading-relaxed">同一来源重复报道时保留最新一条，出现第二个公开来源后移出本页。单一来源仅指本站的观察范围，热点榜沿用原有热度规则。</p>
         </details>

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
+import { Presence } from "../../components/ui/Presence";
 import type { LbConfidence, LbStability } from "@aihot/contracts/leaderboard";
 import { LB_CONFIDENCE_LABELS } from "@aihot/contracts/leaderboard";
 
@@ -50,21 +51,23 @@ export function EvidenceBadge({ confidence, stability, rank }: { confidence: LbC
   return (
     <span ref={anchor} className="inline-flex" tabIndex={moved ? 0 : -1} aria-describedby={moved && at ? id : undefined} onMouseEnter={moved ? show : undefined} onMouseLeave={() => setAt(null)} onFocus={moved ? show : undefined} onBlur={() => setAt(null)} onKeyDown={(e) => { if (e.key === "Escape") setAt(null); }}>
       {chip}
-      {moved && at && createPortal(
-        <span
-          id={id}
-          role="tooltip"
-          style={at}
-          className="pointer-events-none fixed z-[60] w-56 rounded-tile border border-line bg-raised p-3 text-left text-[12px] leading-relaxed text-ink-2 shadow-[var(--shadow-pop)]"
-        >
-          <span className="block text-[11px] text-ink-4">名次浮动范围</span>
-          <span className="num block text-[15px] font-semibold text-ink">{rangeText(stability)}</span>
-          <span className="mt-1.5 block text-ink-3">
-            在 {stability.scenarios} 个对照情景中重新检查资格后的名次。
-            {stability.unavailable > 0 && ` ${stability.unavailable} 个情景下参评证据不足。`}
-            不是置信区间。
+      {moved && typeof document !== "undefined" && createPortal(
+        <Presence show={open} kind="fade">
+          <span
+            id={id}
+            role="tooltip"
+            style={at ?? undefined}
+            className="pointer-events-none fixed z-[60] w-56 rounded-tile border border-line bg-raised p-3 text-left text-[12px] leading-relaxed text-ink-2 shadow-[var(--shadow-pop)]"
+          >
+            <span className="block text-[11px] text-ink-4">名次浮动范围</span>
+            <span className="num block text-[15px] font-semibold text-ink">{rangeText(stability)}</span>
+            <span className="mt-1.5 block text-ink-3">
+              在 {stability.scenarios} 个对照情景中重新检查资格后的名次。
+              {stability.unavailable > 0 && ` ${stability.unavailable} 个情景下参评证据不足。`}
+              不是置信区间。
+            </span>
           </span>
-        </span>, document.body
+        </Presence>, document.body
       )}
     </span>
   );

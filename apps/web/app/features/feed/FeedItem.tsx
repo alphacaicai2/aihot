@@ -56,14 +56,14 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
       </header>
 
       {isX ? (
-        <p className={`mt-2 whitespace-pre-line text-[15px] leading-[1.75] ${compact ? "line-clamp-2" : "line-clamp-5 lg:line-clamp-4"} ${read ? "text-ink-4" : "text-ink"}`}>
+        <p className={`mt-2 whitespace-pre-line text-[15px] leading-[1.75] transition-colors ${compact ? "line-clamp-2" : "line-clamp-5 lg:line-clamp-4"} ${read ? "text-ink-4" : "text-ink"}`}>
           <IntentLink to={`/items/${item.id}`} onClick={open} className="after:absolute after:inset-0 after:content-['']">
             {item.summary ?? item.title}
           </IntentLink>
         </p>
       ) : (
         <>
-          <h3 className={`mt-2 line-clamp-2 text-[17px] font-bold leading-[1.55] lg:line-clamp-none lg:text-[18px] lg:font-[650] ${read ? "text-ink-4" : "text-ink"}`}>
+          <h3 className={`mt-2 line-clamp-2 text-[17px] font-bold leading-[1.55] transition-colors lg:line-clamp-none lg:text-[18px] lg:font-[650] ${read ? "text-ink-4" : "text-ink"}`}>
             <IntentLink to={`/items/${item.id}`} onClick={open} className="after:absolute after:inset-0 after:content-['']">
               {item.title}
             </IntentLink>
@@ -100,7 +100,7 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
 
       <footer className="mt-3 flex items-start justify-between gap-2 border-t border-line-soft py-1 text-[12px] text-ink-3 lg:-mx-5 lg:rounded-b-2xl lg:bg-panel-quiet lg:px-5">
         {!compact && item.reason && (
-          <details className="group/reason relative z-10 min-w-0 flex-1">
+          <details className="disclosure group/reason relative z-10 min-w-0 flex-1">
             <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-control font-medium hover:text-accent">
               为什么值得看 <IconChevronDown size={13} className="transition-transform group-open/reason:rotate-180" />
             </summary>
@@ -108,7 +108,7 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
           </details>
         )}
         <Button variant="ghost" size="xs" onClick={() => read ? markUnread(item.id) : onMarkRead ? onMarkRead(item) : markRead(item.id)} className="relative z-10 my-auto ml-auto h-9 text-xs text-ink-3 hover:bg-bg-sunk hover:text-accent sm:h-8">
-          {read && <IconCheck size={13} />}
+          <IconCheck size={13} className={`transition-opacity ${read ? "opacity-100" : "opacity-0"}`} />
           {read ? "已读 · 标为未读" : "标为已读"}
         </Button>
       </footer>

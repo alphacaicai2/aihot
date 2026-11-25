@@ -103,6 +103,8 @@
   --radius-panel: 14px;
   --radius-sheet: 16px;
 
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
 
   /* The original site's breakpoints: phones ≤ 640, the mobile shell up to 960, desktop above. */
@@ -111,6 +113,13 @@
   --breakpoint-lg: 961px;
   --breakpoint-xl: 1280px;
   --breakpoint-2xl: 1536px;
+}
+
+:root {
+  --motion-fast: 120ms;
+  --motion-standard: 180ms;
+  --motion-panel: 240ms;
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 }
 
 /* Public and admin navigation share a content edge, including the centred tablet layout. */
@@ -326,17 +335,15 @@
 }
 
 /* Where the browser can animate to an auto height, disclosures open and close smoothly. */
-@supports (interpolate-size: allow-keywords) {
-  .disclosure {
-    interpolate-size: allow-keywords;
-  }
-  .disclosure::details-content {
-    block-size: 0;
-    overflow: clip;
-    transition: block-size 220ms var(--ease-out-quart), content-visibility 220ms allow-discrete;
-  }
-  .disclosure[open]::details-content {
-    block-size: auto;
+@media (prefers-reduced-motion: no-preference) {
+  @supports (interpolate-size: allow-keywords) {
+    .disclosure { interpolate-size: allow-keywords; }
+    .disclosure::details-content {
+      block-size: 0;
+      overflow: clip;
+      transition: block-size var(--motion-standard) var(--ease-out-quart), content-visibility var(--motion-standard) allow-discrete;
+    }
+    .disclosure[open]::details-content { block-size: auto; }
   }
 }
 
@@ -357,13 +364,15 @@
   }
 }
 @utility card-hover {
-  transition: box-shadow 200ms var(--ease-out-quart), border-color 200ms, transform 200ms var(--ease-out-quart);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
   &:hover {
     box-shadow: var(--shadow-card-hover);
     border-color: var(--line-strong);
-    transform: translateY(-1px);
+
   }
 }
+
+@keyframes spin-slow { to { transform: rotate(360deg); } }
 
 @keyframes skeleton-pulse {
   0%, 100% { opacity: 1; }
@@ -375,60 +384,79 @@
   to { opacity: 1; transform: none; }
 }
 
-@keyframes spin-slow {
-  to { transform: rotate(360deg); }
-}
-
 .animate-fade-up {
-  animation: fade-up 280ms var(--ease-out-quart) both;
+  animation: fade-up var(--motion-standard) var(--ease-out-quart);
 }
 
-/* Enter/leave keyframes for components/ui/Presence.tsx; --anim-ms overrides a default length. */
-@keyframes aihot-collapse-in { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
-@keyframes aihot-collapse-out { from { grid-template-rows: 1fr; opacity: 1; } to { grid-template-rows: 0fr; opacity: 0; } }
+/* A mounted surface keeps the same transition in both directions. Starting styles only
+   apply to newly inserted surfaces. SSR content remains readable before hydration. */
+[data-presence] {
+  --closed-y: 0px;
+  --closed-scale: 1;
+  opacity: 1;
+  transition: opacity var(--motion-fast) var(--ease-out-quart);
+}
+[data-presence="notice"], [data-presence="popup"] {
+  --closed-y: -3px;
+  transition-property: opacity, translate, scale;
+}
+[data-presence="popup"] { --closed-scale: .985; }
+[data-presence="collapse"] {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--motion-standard) var(--ease-out-quart), opacity var(--motion-fast);
+}
+[data-presence][data-leaving] {
+  opacity: 0;
+  translate: 0 var(--closed-y);
+  scale: var(--closed-scale);
+  pointer-events: none;
+  transition-timing-function: var(--ease-exit);
+}
+[data-presence="collapse"][data-leaving] { grid-template-rows: 0fr; }
+@starting-style {
+  [data-presence]:not([data-initial]) { opacity: 0; translate: 0 var(--closed-y); scale: var(--closed-scale); }
+  [data-presence="collapse"]:not([data-initial]) { grid-template-rows: 0fr; }
+}
+
+/* Base UI keeps popups mounted through their exit transition. */
+[data-slot="menu-popup"], [data-slot="menu-sub-content"], [data-slot="investor-popup"] {
+  transform-origin: var(--transform-origin);
+  transition: opacity var(--motion-fast), scale var(--motion-fast) var(--ease-out-quart);
+}
+:is([data-slot="menu-popup"], [data-slot="menu-sub-content"], [data-slot="investor-popup"]):is([data-starting-style], [data-ending-style]) {
+  opacity: 0;
+  scale: .985;
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-slot="button"]:not(:disabled):not([aria-disabled="true"]):active { scale: .98; }
+}
+
 @keyframes aihot-fade-in { from { opacity: 0; } }
-@keyframes aihot-fade-out { to { opacity: 0; } }
-@keyframes aihot-drop-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
-@keyframes aihot-drop-out { to { opacity: 0; transform: translateY(-4px) scale(0.98); } }
-@keyframes aihot-notice-in { from { opacity: 0; transform: translateY(-6px); } }
-@keyframes aihot-zoom-in { from { transform: scale(0.96); } }
-@keyframes aihot-zoom-out { to { transform: scale(0.98); } }
-@keyframes aihot-sheet-in { from { transform: translateY(100%); } }
-@keyframes aihot-sheet-out { to { transform: translateY(100%); } }
-@keyframes aihot-slide-in-x { from { opacity: 0; transform: translateX(10px); } }
-@keyframes aihot-swap-in { from { opacity: 0; transform: scale(0.7); } }
-@keyframes aihot-bump { from { transform: scale(0.7); } 55% { transform: scale(1.08); } to { transform: scale(1); } }
-@keyframes aihot-pop-in { from { opacity: 0; transform: scale(0.6); } 60% { opacity: 1; transform: scale(1.05); } to { transform: scale(1); } }
+@keyframes aihot-slide-in-x { from { opacity: .7; transform: translateX(var(--month-offset, 4px)); } }
+@keyframes aihot-confirm { from { opacity: .65; scale: .94; } }
 @keyframes aihot-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
-.anim-collapse-in { animation: aihot-collapse-in var(--anim-ms, 240ms) var(--ease-out-quart) both; }
-.anim-collapse-out { animation: aihot-collapse-out var(--anim-ms, 240ms) var(--ease-out-quart) both; }
-.anim-fade-in { animation: aihot-fade-in var(--anim-ms, 160ms) ease-out both; }
-.anim-fade-out { animation: aihot-fade-out var(--anim-ms, 160ms) ease-in both; }
-.anim-drop-in { animation: aihot-drop-in 140ms var(--ease-out-quart) both; }
-.anim-drop-out { animation: aihot-drop-out 140ms ease-in both; }
-.anim-notice-in { animation: aihot-notice-in 200ms var(--ease-out-quart) both; }
-.anim-zoom-in { animation: aihot-zoom-in 180ms var(--ease-out-quart) both; }
-.anim-zoom-out, .anim-fade-out > .lightbox-img { animation: aihot-zoom-out 160ms ease-in both; }
-.anim-sheet-in { animation: aihot-sheet-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-.anim-sheet-out, .anim-fade-out > .poster-sheet { animation: aihot-sheet-out 220ms cubic-bezier(0.4, 0, 1, 1) both; }
-.anim-slide-in-x { animation: aihot-slide-in-x 160ms var(--ease-out-quart) both; }
-.anim-swap-in { animation: aihot-swap-in 120ms var(--ease-out-quart) both; }
-.anim-bump { animation: aihot-bump 320ms var(--ease-out-quart) both; }
-.anim-pop-in { animation: aihot-pop-in 460ms var(--ease-out-quart) both; }
-.anim-draw { stroke-dasharray: 1; animation: aihot-draw 900ms var(--ease-out-quart) both; }
+.anim-fade-in, .lightbox-img { animation: aihot-fade-in var(--motion-fast) var(--ease-out-quart); }
+.anim-slide-in-x { animation: aihot-slide-in-x var(--motion-standard) var(--ease-out-quart); }
+.anim-swap-in, .anim-pop-in { animation: aihot-confirm var(--motion-fast) var(--ease-out-quart); }
+.anim-draw { stroke-dasharray: 1; animation: aihot-draw var(--motion-panel) var(--ease-out-quart); }
 
-/* Cross-fade between pages; the theme switch fades the whole document. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 200ms;
-  animation-timing-function: cubic-bezier(0.25, 1, 0.5, 1);
+.nav-progress {
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left;
+  scale: .9 1;
+  transition: scale 2.4s cubic-bezier(.12,.7,.2,1);
 }
+@starting-style { .nav-progress { scale: .08 1; } }
+[data-leaving] > .nav-progress { scale: 1; transition-duration: var(--motion-fast); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    transition-delay: 0s !important;
+    transition-duration: 0s !important;
     scroll-behavior: auto !important;
   }
   ::view-transition-group(*),

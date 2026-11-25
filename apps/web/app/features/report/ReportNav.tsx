@@ -56,7 +56,7 @@ function ArchiveGroup({ g, kind, current, initiallyOpen }: {
   return (
     <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="disclosure group/month border-b border-line">
       <summary className="flex h-11 items-center gap-1.5 pl-1 pr-1.5 text-[13px] text-ink transition-colors hover:text-accent">
-        <IconChevronRight size={14} className="text-ink-4 transition-transform duration-200 group-open/month:rotate-90" />
+        <IconChevronRight size={14} className="text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart group-open/month:rotate-90" />
         <span className="flex-1 font-semibold">{g.label}</span>
         <span className="num text-[11.5px] text-ink-4">{g.entries.length}</span>
       </summary>

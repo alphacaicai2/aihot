@@ -63,7 +63,7 @@ export default function TopicsPage() {
                     <span className="text-[15px] font-bold text-ink transition-colors group-hover:text-accent">{t.name}</span>
                     <span className="mt-1.5 line-clamp-2 flex-1 text-[12.5px] leading-[1.7] text-ink-3">{t.definition}</span>
                     <span className="mono mt-3 text-[11.5px] text-accent">
-                      查看 {t.total} 条精选 <span className="inline-block transition-transform duration-200 group-hover:translate-x-0.5">→</span>
+                      查看 {t.total} 条精选 <span className="inline-block transition-transform duration-(--motion-standard) ease-out-quart group-hover:translate-x-0.5">→</span>
                     </span>
                   </Link>
                 </li>

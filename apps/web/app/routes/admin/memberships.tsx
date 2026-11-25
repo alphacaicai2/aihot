@@ -21,7 +21,7 @@ export const meta: Route.MetaFunction = () => [{ title: `会员授权 · ${SITE.
 export const headers = () => ({ "Cache-Control": "private, no-store" });
 
 export default function MemberGrants({ loaderData }: Route.ComponentProps) {
-  const { run, busy } = useAdminAction();
+  const { run, busy, pending } = useAdminAction();
   const [revoking,setRevoking] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [codeEmail, setCodeEmail] = useState("");
@@ -36,7 +36,7 @@ export default function MemberGrants({ loaderData }: Route.ComponentProps) {
           if (ok) { setEmail(""); setCodeEmail(address); setIssued(null); }
         }}>
           <div className="w-full max-w-md"><label htmlFor="grant-email" className="mb-1 block text-sm font-medium text-ink-2">读者邮箱</label><Input id="grant-email" className="w-full" type="email" required maxLength={254} autoComplete="off" value={email} placeholder="reader@example.com" onChange={e => setEmail(e.target.value)} /></div>
-          <Button type="submit" tone="primary" disabled={busy || !email.trim()}>授予权限</Button>
+          <Button type="submit" tone="primary" busy={pending?.startsWith("grant-")} disabled={busy || !email.trim()}>授予权限</Button>
         </form>
       </Card>
       <Card title="邮箱确认码">
@@ -50,7 +50,7 @@ export default function MemberGrants({ loaderData }: Route.ComponentProps) {
         }}>
           <div className="w-full max-w-md"><label htmlFor="code-email" className="mb-1 block text-sm font-medium text-ink-2">已授权邮箱或管理员邮箱</label>
             <Input id="code-email" className="w-full" type="email" required maxLength={254} autoComplete="off" value={codeEmail} onChange={event => setCodeEmail(event.target.value)} /></div>
-          <Button type="submit" disabled={busy || !codeEmail.trim()}>生成确认码</Button>
+          <Button type="submit" busy={pending?.startsWith("code-")} disabled={busy || !codeEmail.trim()}>生成确认码</Button>
         </form>
         {issued && <div className="mt-3 rounded-control bg-bg-sunk p-3">
           <p role="status" className="break-all text-sm">请发送至 {issued.email}，有效期至 <Time at={issued.expiresAt} />。离开页面后无法再查看。</p>

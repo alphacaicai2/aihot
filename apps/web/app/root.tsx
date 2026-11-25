@@ -1,10 +1,11 @@
+import { onMediaChange } from "./lib/media-query";
 import { titled } from "./lib/seo";
 import { SITE } from "@aihot/industry/site";
 import {
-  isRouteErrorResponse, Link, Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, useLocation, useNavigation, useRouteError, useRouteLoaderData,
+  isRouteErrorResponse, Link, Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, useLocation, useNavigation, useNavigationType, useRouteError, useRouteLoaderData,
   type ShouldRevalidateFunction,
 } from "react-router";
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { Route } from "./+types/root";
 import "./app.css";
 import { Sidebar } from "./components/shell/Sidebar";
@@ -12,7 +13,7 @@ import { MobileTabBar } from "./components/shell/MobileTabBar";
 import { BackToTop, NavigationProgress } from "./components/shell/Chrome";
 import { RingMark } from "./components/Logo";
 import { buttonClass } from "./components/ui/Controls";
-import { THEME_BOOT_SCRIPT } from "./lib/local-state";
+import { resolvedTheme, THEME_BOOT_SCRIPT, useThemePreference } from "./lib/local-state";
 import { apiGet } from "./lib/api.server";
 import { useHydratedFlag } from "./lib/hydration";
 
@@ -69,6 +70,24 @@ export function meta({ error }: Route.MetaArgs) {
 /** Sidebar, main column and phone tab bar around a page (or an error). */
 function SiteShell({ changelogVersion, children }: { changelogVersion: string | null; children: ReactNode }) {
   const navigation = useNavigation();
+  const { pathname } = useLocation();
+  const action = useNavigationType();
+  const previousPath = useRef(pathname);
+  const main = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (previousPath.current === pathname) return;
+    previousPath.current = pathname;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const heading = main.current?.querySelector("h1");
+    if (!heading?.animate || action === "POP" || reduce.matches) return;
+    const token = getComputedStyle(heading);
+    const entry = heading.animate([{ opacity: .72, translate: "0 2px" }, { opacity: 1, translate: "none" }], {
+      duration: parseFloat(token.getPropertyValue("--motion-standard")), easing: token.getPropertyValue("--ease-out-quart").trim(),
+    });
+    const cancel = () => entry.cancel();
+    const stopReduce = onMediaChange(reduce, cancel);
+    return () => { cancel(); stopReduce(); };
+  }, [pathname, action]);
   return (
     <div className="flex min-h-dvh">
       <NavigationProgress active={navigation.state === "loading"} />
@@ -78,7 +97,7 @@ function SiteShell({ changelogVersion, children }: { changelogVersion: string | 
       <Sidebar changelogVersion={changelogVersion} />
       {/* Mobile shell (≤ 960px): one centred column, the tab bar below. Desktop: the page fills the main area
           up to the list width (--page-max-wide), centred beyond it. */}
-      <main id="main" className="min-w-0 flex-1 pb-[calc(72px+env(safe-area-inset-bottom))] lg:pb-[72px] lg:pt-6">
+      <main ref={main} id="main" tabIndex={-1} className="outline-none min-w-0 flex-1 pb-[calc(72px+env(safe-area-inset-bottom))] lg:pb-[72px] lg:pt-6">
         <div className="page-frame">{children}</div>
       </main>
       <MobileTabBar changelogVersion={changelogVersion} />
@@ -90,6 +109,13 @@ function SiteShell({ changelogVersion, children }: { changelogVersion: string | 
 export default function App() {
   const meta = useLoaderData<typeof loader>();
   useHydratedFlag();
+  const preference = useThemePreference();
+  useLayoutEffect(() => {
+    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => document.documentElement.setAttribute("data-theme", resolvedTheme());
+    apply();
+    return onMediaChange(scheme, apply);
+  }, [preference]);
   const { pathname } = useLocation();
   // The admin has its own chrome.
   if (pathname === "/admin" || pathname.startsWith("/admin/")) return <Outlet />;

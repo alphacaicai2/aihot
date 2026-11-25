@@ -6,7 +6,7 @@ import { Lightbox } from "../../components/ui/Lightbox";
 function PlayMark() {
   return (
     <span className="absolute inset-0 grid place-items-center" aria-hidden="true">
-      <span className="grid size-11 place-items-center rounded-full bg-black/55 text-white ring-1 ring-white/30 backdrop-blur-sm transition-transform duration-200 group-hover:scale-105">
+      <span className="grid size-11 place-items-center rounded-full bg-black/55 text-white ring-1 ring-white/30 backdrop-blur-sm transition-transform duration-(--motion-standard) ease-out-quart motion-safe:group-hover:scale-105">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className="ml-0.5">
           <path d="M7 4.5v15a1 1 0 001.5.87l13-7.5a1 1 0 000-1.74l-13-7.5A1 1 0 007 4.5z" />
         </svg>
@@ -39,7 +39,7 @@ export function MediaGallery({ media, postUrl }: { media: MediaView[]; postUrl: 
               decoding="async"
               alt={m.alt ?? ""}
               loading="lazy"
-              className={`block w-full object-cover transition-transform duration-300 group-hover:scale-[1.015] ${single ? "max-h-[360px]" : "h-full"}`}
+              className={`block w-full object-cover transition-transform duration-(--motion-standard) ease-out-quart motion-safe:group-hover:scale-[1.015] ${single ? "max-h-[360px]" : "h-full"}`}
               style={single && m.width && m.height ? { aspectRatio: `${m.width} / ${m.height}` } : undefined}
             />
           );

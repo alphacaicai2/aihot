@@ -42,7 +42,7 @@ export function PoolSearch({ filters, focus, initialError }: { filters: PoolResp
         </label>
         <Button type="submit" variant="primary" size="lg" disabled={searching}>{searching ? "正在搜索…" : "搜索"}</Button>
       </div>
-      <details ref={advanced} open={Boolean(initialError)} className="group">
+      <details ref={advanced} open={Boolean(initialError)} className="disclosure group">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-control text-[13px] font-semibold text-ink-2">
           高级筛选 <span className="text-xs font-normal text-ink-4">日期、公司、投资机构</span>
           <IconChevronDown size={15} className="ml-auto text-ink-3 transition-transform group-open:rotate-180" />

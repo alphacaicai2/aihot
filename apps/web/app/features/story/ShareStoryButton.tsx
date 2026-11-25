@@ -12,7 +12,7 @@ export function ShareStoryButton({ publicId, title, compact = false }: { publicI
       render={<Button variant={compact ? "ghost" : "secondary"} className={compact ? "relative z-10 size-10 p-0" : "relative z-10 shrink-0"} />}>
       <IconShare size={16} />{compact ? null : "分享事件"}
     </DialogTrigger>
-    {open && <ServerSharePanel title={title} heading="分享事件" path={`/story/${publicId}`}
-      src={`/og/stories/${encodeURIComponent(publicId)}.png`} filename={`${SITE.mcpPrefix}-story-${publicId}.png`} />}
+    <ServerSharePanel open={open} title={title} heading="分享事件" path={`/story/${publicId}`}
+      src={`/og/stories/${encodeURIComponent(publicId)}.png`} filename={`${SITE.mcpPrefix}-story-${publicId}.png`} />
   </Dialog>;
 }

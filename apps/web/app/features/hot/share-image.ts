@@ -16,9 +16,10 @@ export function wrapText(text: string, width: number, measure: (text: string) =>
   return lines;
 }
 
-export async function createHotShareImage(hot: HotResponse, url: string): Promise<Blob> {
+export async function createHotShareImage(hot: HotResponse, url: string, signal?: AbortSignal): Promise<Blob> {
   if (!hot.entries.length) throw new Error("empty ranking");
   await document.fonts.ready;
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("canvas unavailable");

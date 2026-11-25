@@ -1,9 +1,7 @@
 // Dependency-free SVG charts for the admin dashboards: multi-series lines and stacked bars, with a
 // hover readout. Colors come from the theme tokens so both themes work.
-import { motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { num } from "./format";
-import { useEntrance } from "../../lib/hydration";
 
 export interface ChartSeries {
   key: string;
@@ -38,7 +36,6 @@ function Legend({ series }: { series: Array<{ key: string; label: string; color:
 }
 
 export function LineChart({ labels, series, height = 200, format = (v: number) => num(v) }: { labels: string[]; series: ChartSeries[]; height?: number; format?: (v: number) => string }) {
-  const entrance = useEntrance();
   const [hover, setHover] = useState<number | null>(null);
   const max = useMemo(() => niceMax(Math.max(0, ...series.flatMap((s) => s.values.filter((v): v is number => v !== null)))), [series]);
   const n = labels.length;
@@ -73,7 +70,7 @@ export function LineChart({ labels, series, height = 200, format = (v: number) =
           {series.map((s) => {
             const d = s.values.map((v, i) => (v === null ? "" : `${i && s.values[i - 1] !== null ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)).join("");
             return (
-              <motion.path
+              <path
                 key={s.key}
                 d={d}
                 fill="none"
@@ -82,9 +79,6 @@ export function LineChart({ labels, series, height = 200, format = (v: number) =
                 strokeDasharray={s.dashed ? "4 4" : undefined}
                 strokeLinejoin="round"
                 strokeLinecap="round"
-                initial={entrance ? { pathLength: 0, opacity: 0 } : false}
-                animate={{ pathLength: 1, opacity: 1 }}
-                transition={{ duration: 0.7, ease: [0.25, 1, 0.5, 1] }}
               />
             );
           })}

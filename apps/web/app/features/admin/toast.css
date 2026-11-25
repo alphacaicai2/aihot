@@ -1,0 +1,19 @@
+.admin-toast {
+  position: absolute;
+  inset: auto 0 0;
+  width: max-content;
+  max-width: 100%;
+  margin-inline: auto;
+  --stack-y: calc(-1 * var(--toast-offset-y) - var(--toast-index) * 0.5rem);
+  transform: translateY(var(--stack-y));
+  transition: transform var(--motion-standard) var(--ease-out-quart), opacity var(--motion-fast) ease-out;
+}
+.admin-toast[data-starting-style], .admin-toast[data-ending-style] {
+  opacity: 0;
+  transform: translateY(calc(var(--stack-y) + 4px));
+}
+.admin-toast[data-swiping] { transition: none; }
+.admin-toast[data-limited] { visibility: hidden; }
+.admin-toast[data-ending-style][data-swipe-direction="right"] {
+  transform: translate(calc(var(--toast-swipe-movement-x) + 12px), var(--stack-y));
+}

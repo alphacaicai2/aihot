@@ -1,31 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { Presence } from "../ui/Presence";
 import { Button } from "../coss/button";
 import { IconArrowUp } from "../icons";
 
 /** A thin accent line while a navigation is in flight (shown only if it takes a moment). */
 export function NavigationProgress({ active }: { active: boolean }) {
   const [visible, setVisible] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (active) timer.current = setTimeout(() => setVisible(true), 150);
-    else {
-      if (timer.current) clearTimeout(timer.current);
+    if (!active) {
       setVisible(false);
+      return;
     }
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
+    const timer = setTimeout(() => setVisible(true), 150);
+    return () => clearTimeout(timer);
   }, [active]);
   return (
     <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] h-[2px] overflow-hidden" aria-hidden="true">
-      <div
-        className="h-full origin-left bg-accent"
-        style={{
-          transform: `scaleX(${visible ? 0.85 : active ? 0 : 1})`,
-          opacity: visible ? 1 : 0,
-          transition: visible ? "transform 2.4s cubic-bezier(0.1, 0.7, 0.2, 1), opacity 120ms" : "transform 200ms, opacity 300ms 120ms",
-        }}
-      />
+      <Presence show={visible} kind="fade">
+        <div className="h-full"><div className="nav-progress" /></div>
+      </Presence>
     </div>
   );
 }
@@ -46,8 +39,11 @@ export function BackToTop() {
       tabIndex={shown ? 0 : -1}
       aria-hidden={!shown}
       aria-label="回到顶部"
-      onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" })}
-      className={`fixed bottom-[calc(70px+env(safe-area-inset-bottom))] right-4 z-30 size-11 bg-surface text-ink-2 shadow-[var(--shadow-soft)] transition-all duration-200 hover:text-ink lg:bottom-6 lg:right-6 ${
+      onClick={() => {
+        document.getElementById("main")?.focus({ preventScroll: true });
+        window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      }}
+      className={`fixed bottom-[calc(70px+env(safe-area-inset-bottom))] right-4 z-30 size-11 bg-surface text-ink-2 shadow-[var(--shadow-soft)] transition-[opacity,translate] duration-(--motion-standard) ease-out-quart hover:text-ink lg:bottom-6 lg:right-6 ${
         shown ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"
       }`}
     >

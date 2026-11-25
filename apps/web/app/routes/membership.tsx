@@ -182,8 +182,8 @@ function EmailConfirmation({ email }: { email: string }) {
             className="rounded-control border border-line bg-bg px-3 py-2 font-mono text-ink"
           />
         </label>
-        <button className={buttonClass("secondary", "md")} disabled={busy || !code.trim()}>
-          确认邮箱
+        <button className={buttonClass("secondary", "md")} aria-busy={busy} disabled={busy || !code.trim()}>
+          {busy ? "确认中…" : "确认邮箱"}
         </button>
       </form>
       {message && (

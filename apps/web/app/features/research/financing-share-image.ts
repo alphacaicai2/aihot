@@ -18,11 +18,12 @@ export function financingPosterFields(claim: FinancingClaim) {
 }
 
 // Render from the same member-visible claim as the card, keeping each source's terms together.
-export async function createFinancingShareImage(event: FinancingResponse["events"][number]): Promise<Blob> {
+export async function createFinancingShareImage(event: FinancingResponse["events"][number], signal?: AbortSignal): Promise<Blob> {
   const source = event.reports[0];
   if (!source) throw new Error("missing financing report");
   const claim = source.claim;
   await document.fonts.ready;
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("canvas unavailable");

@@ -121,7 +121,7 @@ export default function AllPage() {
         </div>
       )}
 
-      {data && <div aria-busy={busy} className={`transition-opacity duration-200 ${busy ? "opacity-50" : ""}`}>
+      {data && <div aria-busy={busy}>
         {data.items.length === 0 ? (
           <div className="mt-2 lg:card">
             <EmptyState

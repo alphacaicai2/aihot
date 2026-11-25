@@ -58,10 +58,10 @@ export function PostCard({ post, stage, avatar, compact = false }: { post: CardP
       {hasTranslation && (
         <>
           <button type="button" onClick={() => setShowOriginal((v) => !v)} aria-expanded={showOriginal} className="mt-3 flex w-full items-center gap-1 border-t border-line pt-3 text-left text-[12px] text-ink-4 transition-colors hover:text-ink-2">
-            <IconChevronRight size={12} className={`transition-transform duration-200 ${showOriginal ? "rotate-90" : ""}`} />
+            <IconChevronRight size={12} className={`transition-transform duration-(--motion-standard) ease-out-quart ${showOriginal ? "rotate-90" : ""}`} />
             英文原文
           </button>
-          <Collapse open={showOriginal} duration={200}>
+          <Collapse open={showOriginal}>
             <div className="pt-2">
               <blockquote className="whitespace-pre-line text-[13px] leading-[1.75] text-ink-3" lang="en">
                 {post.original}

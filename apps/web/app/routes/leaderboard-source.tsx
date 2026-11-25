@@ -152,7 +152,7 @@ export default function LeaderboardSourcePage() {
       <details className="disclosure group mt-6 border-y border-line">
         <summary className="flex items-center justify-between py-4 text-[14px] font-semibold text-ink">
           评测局限与数据署名
-          <IconChevronDown size={16} className="text-ink-4 transition-transform duration-200 group-open:rotate-180" />
+          <IconChevronDown size={16} className="text-ink-4 transition-transform duration-(--motion-standard) ease-out-quart group-open:rotate-180" />
         </summary>
         <div className="space-y-2 pb-5 text-[13px] leading-relaxed text-ink-3">
           <p>{source.limits}</p>

@@ -72,9 +72,24 @@ export function restoreAnchor(anchor: ListSnapshot<unknown>["anchor"], scrollY: 
     }
     window.scrollTo({ top: scrollY, behavior: "instant" as ScrollBehavior });
   };
-  requestAnimationFrame(() => {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  function cancel() {
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    controller.abort();
+  }
+  const frame = requestAnimationFrame(() => {
     apply();
-    // Images or late layout may shift content; settle once more.
-    setTimeout(apply, 120);
+    const restoredY = window.scrollY;
+    // Correct late layout once, unless the reader or another navigation took over.
+    timer = setTimeout(() => {
+      if (window.scrollY === restoredY) apply();
+      cancel();
+    }, 120);
   });
+  for (const event of ["wheel", "pointerdown", "keydown", "touchstart"]) {
+    window.addEventListener(event, cancel, { passive: true, capture: true, signal: controller.signal });
+  }
+  return cancel;
 }

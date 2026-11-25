@@ -1,3 +1,4 @@
+import { onMediaChange } from "../../lib/media-query";
 // The about page's river. Every line is one of the site's real sources (hover names it). Lines run in
 // from the left, gather into bundles (many reports of one story), meet the 精选 gate that lets a few
 // bundles through, and the ones that pass turn teal and run into a small newspaper: the day's report.
@@ -312,7 +313,7 @@ export function SignalRiver({
     const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
     const layer = document.createElement("canvas");
     const lctx = layer.getContext("2d")!;
-    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)");
 
     let L: Layout | null = null;
     let col = readColors(probe);
@@ -325,7 +326,7 @@ export function SignalRiver({
     let frame = 0;
     let last = 0;
     // The intro starts the first time the river is seen.
-    let introAt = still ? -Infinity : 0;
+    let introAt = reduce.matches ? -Infinity : 0;
     // On screen now (the observer keeps it current after), so the intro plays where it is seen.
     const box = wrap.getBoundingClientRect();
     let visible = box.bottom > 0 && box.top < window.innerHeight;
@@ -455,10 +456,10 @@ export function SignalRiver({
     };
 
     const schedule = () => {
-      if (!frame && !still && visible && !document.hidden && !disposed) frame = requestAnimationFrame(tick);
+      if (!frame && !reduce.matches && visible && !document.hidden && !disposed) frame = requestAnimationFrame(tick);
     };
     const redraw = () => {
-      if (still || !frame) draw(performance.now());
+      if (reduce.matches || !frame) draw(performance.now());
     };
     redrawRef.current = redraw;
 
@@ -542,13 +543,25 @@ export function SignalRiver({
       schedule();
     };
 
+    const onMotion = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      last = 0;
+      introAt = -Infinity;
+      pulses = [];
+      flashAt = -Infinity;
+      redraw();
+      schedule();
+    };
+
     build();
     draw(performance.now());
     schedule();
     resize.observe(wrap);
     seen.observe(wrap);
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
-    scheme.addEventListener("change", recolour);
+    const stopScheme = onMediaChange(scheme, recolour);
+    const stopReduce = onMediaChange(reduce, onMotion);
     document.addEventListener("visibilitychange", onVisibility);
     wrap.addEventListener("pointermove", onMove);
     wrap.addEventListener("pointerleave", onLeave);
@@ -559,7 +572,8 @@ export function SignalRiver({
       resize.disconnect();
       seen.disconnect();
       theme.disconnect();
-      scheme.removeEventListener("change", recolour);
+      stopScheme();
+      stopReduce();
       document.removeEventListener("visibilitychange", onVisibility);
       wrap.removeEventListener("pointermove", onMove);
       wrap.removeEventListener("pointerleave", onLeave);

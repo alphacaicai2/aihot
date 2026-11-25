@@ -202,7 +202,7 @@ export default function HotPage() {
           <span className="ml-auto inline-flex items-center gap-0.5">
             <span className="group-open/method:hidden">了解榜单</span>
             <span className="hidden group-open/method:inline">收起</span>
-            <IconChevronDown size={13} className="transition-transform duration-200 group-open/method:rotate-180" />
+            <IconChevronDown size={13} className="transition-transform duration-(--motion-standard) ease-out-quart group-open/method:rotate-180" />
           </span>
         </summary>
         <div className="max-w-[760px] space-y-2 pb-2 pl-[21px] pt-2 leading-[1.75] text-ink-3">

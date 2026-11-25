@@ -12,6 +12,7 @@ import { SelectedBadge } from "../components/ui/Badge";
 import { ScoreLabel } from "../components/ui/Score";
 import { PillTabs } from "../components/ui/Tabs";
 import { ArticleLayout, RailSection } from "../components/ui/Page";
+import { Presence } from "../components/ui/Presence";
 import { Menu, MenuItem } from "../components/ui/Menu";
 import { StarButton } from "../features/feed/parts";
 import { GroupSources } from "../features/feed/ReadingGroup";
@@ -63,15 +64,18 @@ function ReadingProgress() {
       if (!frame) frame = requestAnimationFrame(update);
     };
     update();
+    const resize = new ResizeObserver(schedule);
+    resize.observe(document.body);
     window.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", schedule);
     return () => {
+      resize.disconnect();
       cancelAnimationFrame(frame);
       window.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
     };
   }, []);
-  return <div ref={ref} aria-hidden="true" className="fixed inset-x-0 top-0 z-50 h-[2px] origin-left scale-x-0 bg-accent transition-transform duration-150 ease-out" />;
+  return <div ref={ref} aria-hidden="true" className="fixed inset-x-0 top-0 z-50 h-[2px] origin-left bg-accent" style={{ transform: "scaleX(0)" }} />;
 }
 
 function hostOf(url: string): string {
@@ -91,7 +95,7 @@ export default function ItemPage() {
   const [posterOpen, setPosterOpen] = useState(false);
   const [nativeShare, setNativeShare] = useState(false);
   useEffect(() => setNativeShare(typeof navigator.share === "function"), []);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ text: string } | null>(null);
   useEffect(() => markRead(item.id), [item.id]);
   useEffect(() => {
     if (!toast) return;
@@ -105,8 +109,8 @@ export default function ItemPage() {
   };
   const share = async () => {
     const r = await shareLink(item.title, new URL("/items/" + item.id, window.location.origin).href);
-    if (r === "manual") setToast("请从浏览器地址栏复制当前文章链接");
-    if (r === "copied") setToast("链接已复制");
+    if (r === "manual") setToast({ text: "请从浏览器地址栏复制当前文章链接" });
+    if (r === "copied") setToast({ text: "已复制链接" });
   };
 
   const bodyHtml = lang === "zh" ? (item.body?.zh ?? item.body?.original) : (item.body?.original ?? item.body?.zh);
@@ -138,8 +142,8 @@ export default function ItemPage() {
             close();
             try {
               await navigator.clipboard.writeText(new URL("/items/" + item.id, window.location.origin).href);
-              setToast("链接已复制");
-            } catch { setToast("请从浏览器地址栏复制当前文章链接"); }
+              setToast({ text: "已复制链接" });
+            } catch { setToast({ text: "请从浏览器地址栏复制当前文章链接" }); }
           }}>复制链接</MenuItem>}
           {item.markdownAvailable && (
             <MenuItem icon={<IconDownload size={15} />} href={`/items/${item.id}/markdown`} download onSelect={close}>
@@ -374,14 +378,14 @@ export default function ItemPage() {
 
       {posterRequested && (
         <Suspense fallback={null}>
-          <PosterSheet id={item.id} title={item.title} open={posterOpen} onClose={closePoster} />
+          <PosterSheet key={item.id} id={item.id} title={item.title} open={posterOpen} onClose={closePoster} />
         </Suspense>
       )}
-      {toast && (
-        <div role="status" className="fixed bottom-[calc(80px+env(safe-area-inset-bottom))] left-1/2 z-50 -translate-x-1/2 rounded-full bg-ink px-4 py-2 text-[13px] text-bg shadow-[var(--shadow-pop)] lg:bottom-8">
-          {toast}
+      <Presence show={!!toast} kind="notice">
+        <div role="status" className="fixed bottom-[calc(80px+env(safe-area-inset-bottom))] inset-x-3 z-50 mx-auto w-fit rounded-full bg-ink px-4 py-2 text-[13px] text-bg shadow-[var(--shadow-pop)] lg:bottom-8">
+          {toast?.text}
         </div>
-      )}
+      </Presence>
     </div>
   );
 }

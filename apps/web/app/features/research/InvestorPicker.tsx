@@ -49,7 +49,7 @@ export function InvestorPicker({ initial, initialExact }: { initial: string; ini
       </Autocomplete.InputGroup>
       <Autocomplete.Portal>
         <Autocomplete.Positioner align="start" sideOffset={5} className="z-50 w-(--anchor-width) max-w-(--available-width)">
-          <Autocomplete.Popup className="max-h-[min(19rem,var(--available-height))] overflow-y-auto overscroll-contain rounded-lg border border-line bg-surface p-1 text-ink shadow-lg">
+          <Autocomplete.Popup data-slot="investor-popup" className="max-h-[min(19rem,var(--available-height))] overflow-y-auto overscroll-contain rounded-lg border border-line bg-surface p-1 text-ink shadow-lg">
             <Autocomplete.List>
               {(item: InvestorOption) => <Autocomplete.Item key={item.name} value={item}
                 className="flex min-h-12 cursor-pointer flex-col justify-center gap-0.5 rounded-md px-3 py-2 text-sm data-highlighted:bg-accent-soft data-highlighted:text-accent">

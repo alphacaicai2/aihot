@@ -3,7 +3,6 @@
 // "new items" prompt: readers refresh for the latest head (feedback #1199).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigation } from "react-router";
-import { Collapse } from "../../components/ui/Presence";
 import type { TimelineCard, TimelineFilters, TimelineResponse } from "@aihot/contracts/site";
 import { FeedItem } from "./FeedItem";
 import { IconChevronDown } from "../../components/icons";
@@ -74,7 +73,7 @@ export function DayHeader({ day, today, count, collapsed, onToggle }: { day: str
             aria-label={collapsed ? `展开${date}` : `收起${date}`}
             className="grid size-6 place-items-center justify-self-center rounded-full text-ink-4 transition-colors hover:bg-bg-sunk hover:text-ink"
           >
-            <IconChevronDown size={14} className={`transition-transform duration-200 ${collapsed ? "-rotate-90" : ""}`} />
+            <IconChevronDown size={14} className={`transition-transform duration-(--motion-standard) ease-out-quart ${collapsed ? "-rotate-90" : ""}`} />
           </button>
         ) : (
           <span />
@@ -97,19 +96,18 @@ export function DayHeader({ day, today, count, collapsed, onToggle }: { day: str
  * One dated slot: the time, the rail (desktop) and the item. As on the original timeline, the rail is a
  * 1px line from this node's centre to the next one's, so the day reads as one continuous thread.
  */
-export function TimelineSlot({ at, children, fresh = false, delay = 0, dataKey }: { at: string; children: React.ReactNode; fresh?: boolean; delay?: number; dataKey?: string }) {
+export function TimelineSlot({ at, children, dataKey }: { at: string; children: React.ReactNode; dataKey?: string }) {
   return (
     <li
       data-card-key={dataKey}
-      className={`group/slot grid grid-cols-[48px_minmax(0,1fr)] border-b border-line-soft py-3.5 last:border-b-0 lg:grid-cols-[64px_22px_minmax(0,1fr)] lg:border-b-0 lg:py-0 lg:pb-3 lg:last:pb-0 ${fresh ? "animate-fade-up" : ""}`}
-      style={fresh ? { animationDelay: `${delay}ms` } : undefined}
+      className="group/slot grid grid-cols-[48px_minmax(0,1fr)] border-b border-line-soft py-3.5 last:border-b-0 lg:grid-cols-[64px_22px_minmax(0,1fr)] lg:border-b-0 lg:py-0 lg:pb-3 lg:last:pb-0"
     >
       <time dateTime={at} className="mono pt-[2px] text-[13px] leading-[18px] text-ink-4 lg:pt-[17px] lg:text-[12.5px] lg:font-semibold lg:leading-6 lg:text-ink-3">
         {beijingTime(at)}
       </time>
       <span aria-hidden="true" className="relative hidden lg:block">
         <span className="absolute -bottom-[41px] left-[10.5px] top-[29px] w-px bg-line-strong group-last/slot:hidden" />
-        <span className="absolute left-[7.5px] top-[25.5px] size-[7px] rounded-full bg-accent shadow-[0_0_0_4px_var(--bg)] transition-transform duration-300 group-hover/slot:scale-[1.15]" />
+        <span className="absolute left-[7.5px] top-[25.5px] size-[7px] rounded-full bg-accent shadow-[0_0_0_4px_var(--bg)] transition-transform duration-(--motion-standard) ease-out-quart group-hover/slot:scale-[1.15]" />
       </span>
       {children}
     </li>
@@ -133,10 +131,11 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
     }
     return fromResponse(initial);
   });
-  const restoredRef = useRef(false);
+  // Strict Mode may replay the layout effect after markHydrated(). A reader's reload must
+  // keep its fresh first page on both passes, while history returns may restore on either.
+  const freshReloadKey = useRef(!isHydrated() && isReload() ? historyKey : null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  const [freshKeys, setFreshKeys] = useState<Set<string>>(() => new Set());
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -153,32 +152,20 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       pageRequest.current?.abort();
       pageRequest.current = null;
       setLoadingMore(false);
-      const snap = readSnapshot<ListState>(historyKey);
-      if (snap && snap.data.cards.length > 0) {
-        setState(snap.data);
-        restoreAnchor(snap.anchor, snap.scrollY);
-      } else {
-        setState(fromResponse(initial));
-      }
+      setLoadError(false);
+      setState(fromResponse(initial));
     }
-  }, [filterKey, initial, historyKey]);
+  }, [filterKey, initial]);
 
   useLayoutEffect(() => {
-    if (restoredRef.current) return;
-    restoredRef.current = true;
+    markHydrated();
+    if (freshReloadKey.current === historyKey) return;
+    freshReloadKey.current = null;
     const snap = readSnapshot<ListState>(historyKey);
-    if (!isHydrated()) {
-      markHydrated();
-      // A full load keeps the server's fresh list when the reader reloaded; after a back/forward
-      // that reloaded the document, it restores the saved list and position.
-      if (snap && snap.data.cards.length > 0 && !isReload()) {
-        setState(snap.data);
-        requestAnimationFrame(() => restoreAnchor(snap.anchor, snap.scrollY));
-      }
-      return;
-    }
-    if (snap && snap.data.cards.length > 0) restoreAnchor(snap.anchor, snap.scrollY);
-  }, [historyKey]);
+    if (!snap?.data.cards.length) return;
+    setState(snap.data);
+    return restoreAnchor(snap.anchor, snap.scrollY);
+  }, [historyKey, filterKey]);
 
   // Save the snapshot whenever we leave this history entry.
   useEffect(() => {
@@ -222,7 +209,9 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       if (res.status === 400) {
         // Cursor no longer fits: start over from the head.
         const head = await fetch(`/api/site/timeline?${key}`, { signal: controller.signal });
-        if (head.ok && current()) setState(fromResponse((await head.json()) as TimelineResponse));
+        if (!head.ok) throw new Error(String(head.status));
+        const page = (await head.json()) as TimelineResponse;
+        if (current()) setState(fromResponse(page));
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
@@ -231,7 +220,6 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       setState((prev) => {
         const seen = new Set(prev.cards.map((c) => c.key));
         const added = page.cards.filter((c) => !seen.has(c.key));
-        setFreshKeys(new Set(added.map((c) => c.key)));
         return {
           ...prev,
           cards: [...prev.cards, ...added],
@@ -278,7 +266,6 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   const toggleDay = (day: string) =>
     setState((s) => ({ ...s, collapsed: s.collapsed.includes(day) ? s.collapsed.filter((d) => d !== day) : [...s.collapsed, day] }));
 
-  let order = 0;
   return (
     <div className="relative">
       <ReadingControls />
@@ -299,19 +286,15 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         return (
           <section key={day} aria-label={day} className="lg:mb-1">
             <DayHeader day={day} today={today} count={count} collapsed={collapsed} onToggle={() => toggleDay(day)} />
-            <Collapse open={!collapsed}>
-                <ol className="lg:pt-1">
-                  {cards.map((c) => {
-                    const fresh = freshKeys.has(c.key);
-                    const delay = fresh ? Math.min(order++, 10) * 40 : 0;
-                    return (
-                      <TimelineSlot key={c.key} dataKey={c.key} at={c.anchorAt} fresh={fresh} delay={delay}>
-                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} compact={compact} />
-                      </TimelineSlot>
-                    );
-                  })}
-                </ol>
-            </Collapse>
+            {!collapsed && (
+              <ol className="lg:pt-1">
+                {cards.map((c) => (
+                  <TimelineSlot key={c.key} dataKey={c.key} at={c.anchorAt}>
+                    <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} compact={compact} />
+                  </TimelineSlot>
+                ))}
+              </ol>
+            )}
           </section>
         );
       })}
@@ -325,9 +308,9 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
 /** The foot of a paged list: loading, retry, "加载更多" after a few automatic pages, or the end. */
 export function FeedEnd({ loading, error, hasMore, manual, empty, onMore }: { loading: boolean; error: boolean; hasMore: boolean; manual: boolean; empty: boolean; onMore: () => void }) {
   return (
-    <div className="flex justify-center py-6">
+    <div className="flex min-h-20 items-center justify-center py-5">
       {loading ? (
-        <span className="inline-flex items-center gap-2 text-[12.5px] text-ink-4">
+        <span role="status" className="inline-flex items-center gap-2 text-[12.5px] text-ink-4">
           <RingMark className="size-4 text-accent" spinning /> 正在加载
         </span>
       ) : error ? (

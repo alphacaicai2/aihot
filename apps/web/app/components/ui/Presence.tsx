@@ -1,48 +1,59 @@
-// Enter and leave animations with CSS keyframes instead of an animation library (about 35 KB of
-// compressed JavaScript on every page). An element mounts with its entrance class; when it goes away
-// it stays mounted with its exit class for `duration`, then unmounts. Reduced motion is handled by the
-// global rule in app.css. Content present at the first render never animates in.
-import { cloneElement, useEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
+// Let CSS reverse an in-flight transition from the current frame. Keep the last committed
+// content until the exit finishes, including when its caller has already cleared the data.
+import { cloneElement, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from "react";
 
-type Animatable = ReactElement<{ className?: string; style?: CSSProperties }>;
+type Kind = "fade" | "popup" | "notice" | "collapse";
+type Child = ReactElement<{
+  ref?: RefObject<HTMLElement | null>;
+  inert?: boolean;
+  "data-presence"?: Kind;
+  "data-leaving"?: boolean;
+  "data-initial"?: boolean;
+}>;
 
-export function Presence({ show, children, enter, exit, duration }: {
-  show: boolean;
-  /** One element; it receives the animation class. */
-  children: Animatable;
-  enter: string;
-  exit: string;
-  /** Milliseconds the exit class plays before the element unmounts. */
-  duration: number;
-}) {
-  const [phase, setPhase] = useState<"still" | "in" | "out" | "gone">(show ? "still" : "gone");
-  const last = useRef<Animatable>(children);
-  if (show) last.current = children;
-  const mounted = useRef(false);
-  useEffect(() => {
-    if (!mounted.current) {
-      mounted.current = true;
-      return;
-    }
-    if (show) {
-      setPhase("in");
-      return;
-    }
-    setPhase((p) => (p === "gone" ? p : "out"));
-    const timer = setTimeout(() => setPhase((p) => (p === "out" ? "gone" : p)), duration);
-    return () => clearTimeout(timer);
-  }, [show, duration]);
-  if (!show && phase === "gone") return null;
+export function Presence({ show, kind, children }: { show: boolean; kind: Kind; children: Child }) {
+  const [retained, setRetained] = useState(show);
+  const initial = useRef(show);
+  const last = useRef(children);
+  const ownRef = useRef<HTMLElement>(null);
   const child = show ? children : last.current;
-  const cls = !show ? exit : phase === "in" ? enter : "";
-  return cloneElement(child, { className: `${child.props.className ?? ""} ${cls}`.trim() });
+  const ref = child.props.ref ?? ownRef;
+
+  useLayoutEffect(() => {
+    if (show) last.current = children;
+  }, [show, children]);
+
+  useLayoutEffect(() => {
+    if (show) {
+      setRetained(true);
+      return;
+    }
+    initial.current = false;
+    const node = ref.current;
+    if (!node) return;
+    const transitions = node.getAnimations?.() ?? [];
+    if (!transitions.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setRetained(false);
+      return;
+    }
+    let closing = true;
+    void Promise.allSettled(transitions.map(t => t.finished)).then(() => {
+      if (closing) setRetained(false);
+    });
+    return () => { closing = false; };
+  }, [show, ref]);
+
+  if (!show && !retained) return null;
+  return cloneElement(child, {
+    ref, "data-presence": kind, "data-leaving": !show || undefined,
+    "data-initial": initial.current || undefined, inert: !show || child.props.inert,
+  });
 }
 
-/** A block that opens to its natural height and closes to nothing (grid rows 0fr ↔ 1fr). */
-export function Collapse({ open, children, duration = 240, className = "" }: { open: boolean; children: ReactNode; duration?: number; className?: string }) {
+export function Collapse({ open, children, className = "" }: { open: boolean; children: ReactNode; className?: string }) {
   return (
-    <Presence show={open} enter="anim-collapse-in" exit="anim-collapse-out" duration={duration}>
-      <div className={`grid ${className}`} style={{ "--anim-ms": `${duration}ms` } as CSSProperties}>
+    <Presence show={open} kind="collapse">
+      <div className={`grid ${className}`}>
         <div className="min-h-0 overflow-hidden">{children}</div>
       </div>
     </Presence>

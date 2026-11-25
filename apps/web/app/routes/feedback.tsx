@@ -77,8 +77,13 @@ export default function FeedbackPage() {
   const [shot, setShot] = useState<{ file: File; url: string } | null>(null);
   const [state, setState] = useState<{ kind: "idle" | "sending" | "done" | "error"; message?: string; id?: number }>({ kind: "idle" });
   const [dragging, setDragging] = useState(false);
-  const sending = useRef(false);
+  const submitting = useRef(false);
+  const successHeading = useRef<HTMLHeadingElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (state.kind === "done") successHeading.current?.focus();
+  }, [state.kind]);
 
   useEffect(() => {
     const saved = readDraft();
@@ -96,7 +101,7 @@ export default function FeedbackPage() {
   }, [shot]);
 
   const pick = (file: File | null | undefined) => {
-    if (!file || sending.current) return;
+    if (!file || submitting.current) return;
     if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return setState({ kind: "error", message: "截图需要是 PNG、JPEG 或 WebP。" });
     if (file.size > MAX_IMAGE) return setState({ kind: "error", message: "截图原图不超过 5 MB。" });
     setShot({ file, url: URL.createObjectURL(file) });
@@ -108,15 +113,16 @@ export default function FeedbackPage() {
       const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
       if (file) pick(file);
     };
+    if (state.kind === "done") return;
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, []);
+  }, [state.kind]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (sending.current) return;
+    if (submitting.current) return;
     if (draft.content.trim().length < 2) return setState({ kind: "error", message: "请写下反馈内容。" });
-    sending.current = true;
+    submitting.current = true;
     setState({ kind: "sending" });
     try {
       const form = new FormData();
@@ -132,8 +138,10 @@ export default function FeedbackPage() {
       setDraft({ content: "", email: "", pageUrl: "" });
       setShot(null);
     } catch {
-      setState({ kind: "error", message: "网络不太顺，请稍后再提交。" });
-    } finally { sending.current = false; }
+      setState({ kind: "error", message: "网络连接中断，请重试。" });
+    } finally {
+      submitting.current = false;
+    }
   };
 
   if (state.kind === "done") {
@@ -143,7 +151,7 @@ export default function FeedbackPage() {
           <div className="anim-pop-in mx-auto flex size-14 items-center justify-center rounded-full bg-accent text-accent-contrast">
             <IconCheck size={26} />
           </div>
-          <h1 className="mt-6 text-[22px] font-semibold text-ink">收到了，谢谢你</h1>
+          <h1 ref={successHeading} tabIndex={-1} className="mt-6 text-[22px] font-semibold text-ink">反馈已收到，谢谢你</h1>
           <p className="mt-2 text-[14px] text-ink-3">
             反馈编号 <span className="mono font-semibold text-ink">#{state.id}</span>，需要回复时我们会引用这个编号。
           </p>
@@ -169,7 +177,7 @@ export default function FeedbackPage() {
         onSubmit={submit}
         onDragOver={(e) => {
           e.preventDefault();
-          setDragging(true);
+          if (!submitting.current) setDragging(true);
         }}
         onDragLeave={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
@@ -181,7 +189,7 @@ export default function FeedbackPage() {
         }}
         className={`card mt-6 overflow-hidden transition-shadow ${dragging ? "shadow-[0_0_0_3px_var(--accent-soft)] ring-1 ring-accent" : ""}`}
       >
-        <fieldset disabled={state.kind === "sending"} className="space-y-5 p-5 sm:p-6">
+        <fieldset disabled={state.kind === "sending"} className="min-w-0 space-y-5 p-5 sm:p-6">
           <div>
             <label htmlFor="fb-content" className={label}>
               想说点什么？
@@ -240,10 +248,10 @@ export default function FeedbackPage() {
                 </span>
               </button>
             )}
-            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; pick(file); }} />
           </div>
 
-          <Presence show={state.kind === "error"} enter="anim-notice-in" exit="anim-fade-out" duration={160}>
+          <Presence show={state.kind === "error"} kind="notice">
             <p role="alert" className="rounded-tile bg-hot-soft px-3.5 py-2.5 text-[13px] text-hot">
               {state.kind === "error" ? state.message : ""}
             </p>
@@ -258,8 +266,8 @@ export default function FeedbackPage() {
             </Link>
             处理。
           </p>
-          <Button type="submit" size="lg" disabled={!canSend} loading={state.kind === "sending"} className="self-start sm:self-auto">
-            发送反馈
+          <Button type="submit" size="lg" disabled={!canSend} loading={state.kind === "sending"} className="min-w-24 self-start sm:self-auto">
+            {state.kind === "sending" ? "发送中…" : "发送反馈"}
           </Button>
         </div>
       </form>

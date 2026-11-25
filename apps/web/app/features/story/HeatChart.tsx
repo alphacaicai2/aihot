@@ -124,7 +124,7 @@ export function HeatChart({ points }: { points: HeatPoint[] }) {
               </text>
             </g>
           ))}
-          <path d={area} fill="var(--note)" fillOpacity={0.1} className={entrance ? "anim-fade-in" : ""} style={entrance ? { animationDuration: "500ms", animationDelay: "300ms" } : undefined} />
+          <path d={area} fill="var(--note)" fillOpacity={0.1} className={entrance ? "anim-fade-in" : ""} />
           <path
             d={line}
             fill="none"
