@@ -83,6 +83,19 @@ export async function parseFilters(q: Record<string, string>): Promise<FilterPar
 }
 
 export function registerSite(app: FastifyInstance) {
+  app.get("/api/site/financing/event", siteHandler(async (req, reply) => {
+    const { id } = looseQuery(req);
+    if (!id || id.length > 200 || !/^(?:round:[0-9a-f-]{36}|source:[a-zA-Z0-9_-]+:[0-9a-f]{64})$/.test(id)) throw new BadRequest("invalid financing event");
+    const { events } = await loadFinancing({ eventId:id, limit:1 });
+    if (!events[0]) return sendProblem(req, reply, { status:404, code:"not_found", detail:"financing event not found" });
+    return sendJsonWithEtag(req, reply, events[0], { etagPrefix:"financing-event", cacheControl:"private, no-store" });
+  }));
+  app.get("/api/site/financing/investor", siteHandler(async (req, reply) => {
+    const { name, cursor } = looseQuery(req);
+    if (!name?.trim() || name.length > 320) throw new BadRequest("invalid investor name");
+    const history = await loadFinancing({ investor:name, investorExact:true, companiesOnly:true, cursor });
+    return sendJsonWithEtag(req, reply, history, { etagPrefix:"financing-investor", cacheControl:"private, no-store" });
+  }));
   app.get("/api/site/financing/company", siteHandler(async (req, reply) => {
     const q = looseQuery(req);
     const name = q.name?.trim();

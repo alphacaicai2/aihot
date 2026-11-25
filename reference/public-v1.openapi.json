@@ -3597,6 +3597,10 @@
                   "type": "string",
                   "format": "date-time"
                 },
+                "shareId": {
+                  "type": "string",
+                  "description": "Stable financing event reference for the member sharing page."
+                },
                 "differingClaims": {
                   "type": "boolean",
                   "description": "Different reported terms; not necessarily a factual contradiction."

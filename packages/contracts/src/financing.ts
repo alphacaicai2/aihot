@@ -18,7 +18,7 @@ export interface FinancingReport {
 }
 export interface FinancingResponse {
   historySummary?: { records: number; latestAt: string };
-  events: Array<{ id: string; latestAt: string; reports: FinancingReport[]; reportCount: number; differingClaims: boolean }>;
+  events: Array<{ id: string; shareId: string; latestAt: string; reports: FinancingReport[]; reportCount: number; differingClaims: boolean }>;
   hasMore: boolean;
   nextCursor: string | null;
 }

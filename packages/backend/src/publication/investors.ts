@@ -48,5 +48,5 @@ export async function financingInvestorNames(db: Db, now: Date, input: string, e
   const key = investorSearchKey(input);
   if (!exact && !known.has(key)) return [];
   const directory = await investorDirectory(db,now,indexed);
-  return directory.find(group => [group.name,...group.aliases].some(name => investorSearchKey(name) === key))?.originals ?? [];
+  return directory.find(group => [group.name,...group.aliases,...group.originals].some(name => investorSearchKey(name) === key))?.originals ?? [];
 }

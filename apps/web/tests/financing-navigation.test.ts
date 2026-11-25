@@ -22,3 +22,13 @@ test("直接打开卡片或仅有未知参数时，返回融资数据库首页",
   assert.equal(financingListSearch(new URLSearchParams("name=ACME&cursor=history")), "");
   assert.equal(financingListSearch(new URLSearchParams({ list: "unknown=1" })), "");
 });
+
+test("事件和机构分享地址可在登录后恢复，机构分页保留列表筛选", async () => {
+  const {financingEventPath, financingInvestorPath} = await import("../app/lib/financing-navigation.ts");
+  const {memberDestination, membershipOffer, offerDestination} = await import("@aihot/contracts/member-destination");
+  const origin = "https://example.com";
+  for (const path of [financingEventPath("round:abc"), financingInvestorPath("A+B & Co", "?company=Acme&ignored=1","+/=")]) {
+    assert.equal(memberDestination(path),path);
+    assert.equal(offerDestination(new URL(membershipOffer(path),origin).searchParams),path);
+  }
+});

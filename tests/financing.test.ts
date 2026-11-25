@@ -169,6 +169,38 @@ test("roundup deals paginate independently and company, investor and CSV filters
   assert.equal((await financing(new URLSearchParams({investor:"甲基金",investorMode:"exact"}).toString())).json().events.length, 1);
 });
 
+test("shared financing links isolate a single digest transaction and institution histories use exact identities", async () => {
+  const investorPath = "/api/site/financing/investor?" + new URLSearchParams({ name:"a16z" });
+  const deals = (await authedGet("/api/v1/financing?company=" + encodeURIComponent("镁伽"))).json().events;
+  const ref = deals[0].shareId;
+  const eventPath = "/api/site/financing/event?" + new URLSearchParams({ id:ref });
+  for (const path of [eventPath, investorPath]) assert.equal((await app.inject({method:"GET",url:path})).statusCode,401);
+  for (const indexed of [false,true]) {
+    if (indexed) await refreshFinancingIndex();
+    const detail = await authedGet(eventPath);
+    assert.equal(detail.statusCode,200);
+    assert.equal(detail.json().reports[0].claim.company,"镁伽科技");
+    assert.equal(detail.json().shareId,ref);
+    assert.doesNotMatch(detail.body,/"company":"Isomorphic Labs"/);
+    const history = await authedGet(investorPath);
+    assert.equal(history.json().historySummary.records,1);
+    assert.equal(history.json().events[0].reports[0].id,ids.get("ROUND"));
+    const partial = await authedGet("/api/site/financing/investor?name=Andreessen");
+    assert.equal(partial.json().events.length,0);
+  }
+  // Reordering the two claims must keep a previously shared link on its original transaction.
+  const article = ids.get("WEEKLY")!;
+  const [analysis] = await sql`SELECT a.id, a.output->'financingClaims' AS claims FROM publications p
+    JOIN analyses a ON a.id=p.analysis_id WHERE p.article_id=${article}`;
+  try {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json([...analysis!.claims].reverse())})
+      WHERE id=${analysis!.id}`;
+    assert.equal((await authedGet(eventPath)).json().reports[0].claim.company,"镁伽科技");
+  } finally {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(analysis!.claims)}) WHERE id=${analysis!.id}`;
+  }
+});
+
 test("company history includes reviewed names, but excludes partial names and unrelated roundup deals", async () => {
   const profile = (name: string) => authedGet("/api/site/financing/company?" + new URLSearchParams({ name }));
   assert.equal((await profile("Isomorphic")).statusCode, 404);

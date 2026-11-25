@@ -22,7 +22,7 @@ export const financingClaims = sql`CASE
   WHEN jsonb_typeof(an.output->'financing')='object' THEN jsonb_build_array(an.output->'financing')
   ELSE '[]'::jsonb END`;
 export const dealRows = sql`LATERAL (
-  SELECT coalesce(review.claim, raw.claim) AS claim, review.round_id, review.preferred,
+  SELECT coalesce(review.claim, raw.claim) AS claim, raw.claim AS original_claim, review.round_id, review.preferred,
     row_number() OVER (ORDER BY raw.seq, review.part) AS seq
   FROM jsonb_array_elements(${financingClaims}) WITH ORDINALITY AS raw(claim, seq)
   LEFT JOIN financing_claim_reviews review ON review.article_id=an.article_id

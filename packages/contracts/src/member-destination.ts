@@ -8,7 +8,7 @@ export function financingQuery(params: URLSearchParams) {
 }
 
 // Only the reader-facing membership features may be resumed after login or payment.
-const memberPaths = new Set(["/financing", "/financing/company", "/agent"]);
+const memberPaths = new Set(["/financing", "/financing/company", "/financing/investor", "/financing/event", "/agent"]);
 
 export function memberDestination(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -18,7 +18,11 @@ export function memberDestination(value: unknown): string | null {
   let selected = new URLSearchParams();
   if (match[1] === "/financing") {
     selected = financingQuery(query);
-  } else if (match[1] === "/financing/company") {
+  } else if (match[1] === "/financing/event") {
+    const id = query.get("id");
+    if (!id?.trim()) return null;
+    selected.set("id", id);
+  } else if (match[1] === "/financing/company" || match[1] === "/financing/investor") {
     const name = query.get("name");
     if (!name?.trim()) return null;
     selected.set("name", name);

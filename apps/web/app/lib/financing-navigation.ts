@@ -13,3 +13,15 @@ export function financingCompanyPath(name: string, listSearch: string, historyCu
 export function financingListSearch(companyParams: URLSearchParams) {
   return financingQuery(new URLSearchParams(companyParams.get("list") ?? "")).toString();
 }
+
+export function financingEventPath(id: string) {
+  return "/financing/event?" + new URLSearchParams({ id });
+}
+
+export function financingInvestorPath(name: string, listSearch = "", cursor?: string | null) {
+  const params = new URLSearchParams({ name });
+  const list = financingQuery(new URLSearchParams(listSearch));
+  if (list.size) params.set("list", list.toString());
+  if (cursor) params.set("cursor", cursor);
+  return "/financing/investor?" + params;
+}
