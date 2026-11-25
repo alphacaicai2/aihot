@@ -115,7 +115,7 @@ test("fresh digests backfill only uncovered source sections using the same budge
     const blockedParent=await output(blocked.analysis);
     const subject="financing-batch:"+blockedParent.financingReview.followup.batchId;
     const [receipt]=await sql`INSERT INTO receipts(logical_key,purpose,subject,service,status,request)
-      VALUES (${tag()},'financing_extract',${subject},'llm','unknown','{"promptVersion":"financing-digest-missing-v1"}') RETURNING id`;
+      VALUES (${tag()},'financing_extract',${subject},'llm','unknown','{"promptVersion":"financing-digest-missing-v2"}') RETURNING id`;
     const hits=provider.hits();
     await assert.rejects(runFinancingBatch(),ReceiptUnknownError);
     assert.equal(provider.hits(),hits);

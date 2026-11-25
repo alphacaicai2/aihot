@@ -2,7 +2,7 @@ import { z } from "zod";
 import { cardPattern, digestCoverage, financingSections, printedCard, printedRecipient, type DigestEntry } from "./financing-digests.ts";
 import type { FinancingClaim } from "@aihot/contracts/financing";
 
-export type FinancingMaterial = { id: number; text: string; previousBatch?: number; format?: "transactions" | "rounds"; digestEntries?: DigestEntry[]; replacesEmptyBatch?: number; historicalDigest?: boolean };
+export type FinancingMaterial = { repairVersion?: 2; id: number; text: string; previousBatch?: number; format?: "transactions" | "rounds"; digestEntries?: DigestEntry[]; replacesEmptyBatch?: number; historicalDigest?: boolean };
 const field = z.string().trim().min(1).max(160);
 const quote = z.string().trim().min(1).max(1600);
 const candidate = z.object({
@@ -356,7 +356,26 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
   const candidates = Array.isArray(value) ? value : [];
   const sections = financingSections(source.text,source.digestEntries);
   const cards = source.digestEntries?.some(e => e.stage) ? [...source.text.matchAll(new RegExp(cardPattern,"gu"))] : [];
-  for (const item of candidates) {
+  for (const candidate of candidates) {
+    let item = candidate;
+    if (source.repairVersion === 2 && typeof item?.company === "string" && item.company.trim()) {
+      const [heading] = source.digestEntries ?? [];
+      const company = item.company.trim();
+      const issuer = /^\s*([a-z0-9-]+\s+(?:AI|Labs|Robotics))\s*累计/iu.exec(heading?.heading ?? "");
+      if (issuer && issuer[1]!.split(/\s/u)[0]!.toLowerCase() === company.toLowerCase() &&
+          item.amountBasis === "cumulative" && heading && source.text.includes(heading.heading)) {
+        if (source.text.length <= 1600 && typeof item.evidence === "string" && sourceQuotes(source.text)(item.evidence)) {
+          item = {...item, company:issuer[1], evidence:heading.heading, passage:source.text};
+        }
+      } else if (typeof item.evidence === "string" && !sourceQuotes(item.evidence)(company)) {
+        const sentences = source.text.split(/[。！？；\n]/u).filter(line => {
+          const at = line.indexOf(company);
+          return at >= 0 && /^(?:规模达|规模为)[^。；]{1,30}的(?:种子|天使|[A-H])轮融资/iu.test(line.slice(at + company.length).trim());
+        });
+        if (sentences.length === 1) item = {...item,evidence:sentences[0]!.trim()};
+      }
+      if (typeof item.round === "string" && /估值/u.test(item.round)) item = {...item,round:null};
+    }
     const recipient = typeof item?.company === "string" ? item.company.normalize("NFKC").toLowerCase().replace(/\s/g,"") : "";
     const matches = sections.filter(s => s.company === recipient);
     // The excerpt can contain a truncated copy of the full source section.
@@ -421,7 +440,7 @@ export function validateTransactions(source: FinancingMaterial, value: unknown) 
       const { claim } = result;
       const investorEvidence = section && !rounds ? sectionInvestors(section.text,claim,item.investors,literal || "") : result.investorEvidence;
       if (section && !rounds) claim.investors = investorEvidence.map(p=>p.name);
-      if (rounds && entry.aggregate) {
+      if ((rounds && entry.aggregate) || (source.repairVersion === 2 && claim.amountBasis === "cumulative" && !claim.round)) {
         claim.amountBasis = "cumulative";
         claim.recordType = "aggregate_disclosure";
       }

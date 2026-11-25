@@ -163,8 +163,9 @@ export async function runFinancingBatch() {
     // Existing in-flight batches must keep their original prompt and receipt identity.
     const protocol = financingBatchProtocol(batch.material[0]);
     const { multi } = protocol;
-    const version = repair ? "financing-digest-missing-v1" : protocol.version;
-    const system = repair ? protocol.system + "\nEach ID is one omitted section of a digest. Return only the identified transactions in that section. If missingRounds is provided, return only the missing named rounds, retaining their verbatim source labels. Omit background transactions and the neighboring card boundary." : protocol.system;
+    const enhanced = batch.material[0]?.repairVersion === 2;
+    const version = repair && enhanced ? "financing-digest-missing-v2" : repair ? "financing-digest-missing-v1" : protocol.version;
+    const system = repair ? protocol.system + "\nEach ID is one omitted section of a digest. Return only the identified transactions in that section. If missingRounds is provided, return only the missing named rounds, retaining their verbatim source labels. Omit background transactions and the neighboring card boundary." + (enhanced ? " The evidence itself must literally name the recipient: if the opening sentence does not, quote the later sentence that does. For cumulative disclosures quote the headline if it explicitly names the recipient and total; use amountBasis cumulative and rounds: []. Include newly issued equity subscribed by a named investor (not secondary stock sales), confirmed loans identified as debt in round, and current financing talks with their ongoing status. Distinguish valuation from proceeds." : "") : protocol.system;
     const [stored] = await sql<{id:number; content:string}[]>`
       SELECT id, response->'choices'->0->'message'->>'content' AS content FROM receipts
       WHERE purpose='financing_extract' AND subject=${subject} AND request->>'promptVersion'=${version}
@@ -191,7 +192,7 @@ export async function runFinancingBatch() {
     }
     const res = recovered && stored ? {data:recovered, receiptId:stored.id} : await chatJson({
       model: await modelFor("financing"), fallback: false, purpose:"financing_extract", subject,
-      promptVersion: version, system, user: JSON.stringify(repair ? batch.material.map(({repair: _, ...input}) => input) : batch.material),
+      promptVersion: version, system, user: JSON.stringify(repair ? batch.material.map(({repair: _, repairVersion: _version, ...input}) => input) : batch.material),
       schema: FinancingBatchAnswer, ...(repair && {attemptTag:subject}), reuseAcrossModels: true, maxTokens: multi ? 12000 : 5000, temperature: 0, timeoutMs: 120000,
     });
     const byId = new Map<number, unknown>();

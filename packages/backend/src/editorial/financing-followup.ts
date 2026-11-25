@@ -61,6 +61,10 @@ function belongs(entry: DigestEntry, text: string, claim: FinancingClaim) {
   if (!name || !compact(claim.evidence).includes(name)) return false;
   // The first mention may attribute the news; a later mention in the same sentence
   // can identify the issuer ("据甲公司消息，甲公司已完成…").
+  // Investor-led headlines may identify the recipient only in the body.
+  const evidence = compact(claim.evidence);
+  const afterIssuer = evidence.split(name).slice(1);
+  if (afterIssuer.some(t => /^(?:的股权发行中投资|规模达[^。；]{1,30}的(?:种子|天使|[a-h])轮融资)/iu.test(t))) return true;
   const issuerVerb = /^(?:\([^()]{1,80}\))?[，,]?(?:(?:正式|已|宣布|官宣|近日|近期|日前|成功|最近|新近|连续|先后|于近期|于近日)[，,]?)*(?:完成(?!了?对)|达成|获得|取得|筹集|募集|获投|已融资|签署(?:首轮|本轮|新一轮)?股权融资协议|hasraised|secured)/iu;
   for (let at = intro.indexOf(name); at >= 0; at = intro.indexOf(name,at + name.length)) {
     if (issuerVerb.test(intro.slice(at + name.length))) return true;
@@ -105,7 +109,7 @@ export function missingDigestSections(original: Original, entries: DigestEntry[]
     missing.push(missingRounds.length ? {...entry,rounds:missingRounds} : entry);
     if (!text || material.length >= maxSections) continue;
     // Negative section IDs cannot collide with real analysis IDs in the queue.
-    material.push({id:-(i+1),format:"rounds",digestEntries:[entry],...(missingRounds.length && {missingRounds}),text});
+    material.push({repairVersion:2,id:-(i+1),format:"rounds",digestEntries:[entry],...(missingRounds.length && {missingRounds}),text});
   }
   // Give every selected section room even when earlier passages in the full body
   // are very long. Short entries release their unused space to the next ones.
