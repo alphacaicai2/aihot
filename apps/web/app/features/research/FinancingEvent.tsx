@@ -7,12 +7,7 @@ import { Badge } from "../../components/ui/Badge";
 import { IconChevronDown, IconExternal } from "../../components/icons";
 import { financingCompanyPath, financingInvestorPath, financingListSearch } from "../../lib/financing-navigation";
 
-const statusLabel = { planned: "计划中", ongoing: "进行中", announced: "已宣布", closed: "已完成", unknown: "状态未明确" };
-const basisLabel = { round: "本轮金额", cumulative: "累计金额", target: "目标金额", unknown: "金额口径未明确" };
-
-function amount(claim: FinancingClaim) {
-  return [claim.amountText, claim.currency].filter(Boolean).join(" ");
-}
+import { amount, basisLabel, statusLabel } from "./financing-share-image";
 
 function Recipient({ claim }: { claim: FinancingClaim }) {
   const { pathname, search } = useLocation();
@@ -98,7 +93,7 @@ export function FinancingEvent({ event, history = false, expanded = false }: { e
           <ul className="divide-y divide-line">{event.reports.map(report => <Report key={report.id} report={report} />)}</ul>
         </div>
       </details>
-      <ShareFinancingEvent id={event.shareId} title={[claim.company,claim.round].filter(Boolean).join(" ")} />
+      <ShareFinancingEvent event={event} />
     </article>
   );
 }
