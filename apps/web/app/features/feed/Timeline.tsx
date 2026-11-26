@@ -1,7 +1,7 @@
 // The day-grouped feed (精选 home, topics): a time rail with cards on desktop, dated rows under grey
 // day bars on phones. Keeps its place across back navigation and loads further pages. There is no
 // "new items" prompt: readers refresh for the latest head (feedback #1199).
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigation } from "react-router";
 import type { TimelineCard, TimelineFilters, TimelineResponse } from "@aihot/contracts/site";
 import { FeedItem } from "./FeedItem";
@@ -114,7 +114,7 @@ export function TimelineSlot({ at, children, dataKey }: { at: string; children: 
   );
 }
 
-export function Timeline({ initial, filters }: { initial: TimelineResponse; filters: TimelineFilters }) {
+export function Timeline({ initial, filters, afterLead }: { initial: TimelineResponse; filters: TimelineFilters; afterLead?: ReactNode }) {
   const location = useLocation();
   const navigation = useNavigation();
   const readSet = useReadSet();
@@ -263,6 +263,8 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
     return out;
   }, [state.cards, unreadOnly, readSet]);
 
+  const firstVisibleDay = afterLead && days.find(({ day }) => !state.collapsed.includes(day))?.day;
+
   const toggleDay = (day: string) =>
     setState((s) => ({ ...s, collapsed: s.collapsed.includes(day) ? s.collapsed.filter((d) => d !== day) : [...s.collapsed, day] }));
 
@@ -280,6 +282,8 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         </div>
       )}
 
+      {!days.length && afterLead}
+
       {days.map(({ day, cards }) => {
         const collapsed = state.collapsed.includes(day);
         const count = unreadOnly ? cards.length : state.dayCounts[day] ?? cards.length;
@@ -288,10 +292,13 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
             <DayHeader day={day} today={today} count={count} collapsed={collapsed} onToggle={() => toggleDay(day)} />
             {!collapsed && (
               <ol className="lg:pt-1">
-                {cards.map((c) => (
-                  <TimelineSlot key={c.key} dataKey={c.key} at={c.anchorAt}>
-                    <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} compact={compact} />
-                  </TimelineSlot>
+                {cards.map((c, index) => (
+                  <Fragment key={c.key}>
+                    <TimelineSlot dataKey={c.key} at={c.anchorAt}>
+                      <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} onMarkRead={unreadOnly ? undo.mark : undefined} compact={compact} />
+                    </TimelineSlot>
+                    {index === 0 && day === firstVisibleDay && <li className="py-2 lg:mb-3 lg:ml-[86px]">{afterLead}</li>}
+                  </Fragment>
                 ))}
               </ol>
             )}

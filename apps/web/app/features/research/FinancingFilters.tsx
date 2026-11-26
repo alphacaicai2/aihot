@@ -29,6 +29,17 @@ export function FinancingFilters({ params, initialError }: { params: URLSearchPa
     setError(null);
   };
 
+  const applyRange = (form: HTMLFormElement, start: string, end: string) => {
+    setRange(start, end);
+    const values = new FormData(form);
+    values.set("from", start);
+    values.set("to", end);
+    for (const [key, value] of [...values]) if (!String(value).trim()) values.delete(key);
+    void submit(values, { method: "get" });
+  };
+  const today = beijingDate(Date.now());
+  const presetDays = [7,30].find(days => to === today && from === addDays(today, 1 - days));
+
   return (
     <Form method="get" aria-label="融资筛选" className="card min-w-0 self-start px-4 lg:px-5"
       onSubmit={(e) => {
@@ -56,21 +67,19 @@ export function FinancingFilters({ params, initialError }: { params: URLSearchPa
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-control text-[13px] font-semibold">
               日期范围
               <span className="flex items-center gap-1 text-xs font-normal text-ink-3">
-                {from || to ? "自定义" : "不限"} <IconChevronDown size={14} className="transition-transform group-open:rotate-180" />
+                {presetDays ? `近 ${presetDays} 天` : from || to ? "自定义" : "不限"} <IconChevronDown size={14} className="transition-transform group-open:rotate-180" />
               </span>
             </summary>
             <div className="pb-3">
               <div className="mb-2 flex flex-wrap gap-1">
-                {[7, 30].map(days => <button key={days} type="button" className="min-h-9 rounded-full bg-accent-soft px-3 text-xs font-medium text-accent hover:underline"
+                {[7, 30].map(days => <button key={days} type="button" aria-pressed={presetDays === days}
+                  className="min-h-9 rounded-full px-3 text-xs font-medium text-ink-3 hover:text-accent aria-pressed:bg-accent-soft aria-pressed:text-accent"
                   onClick={event => {
-                    const today = beijingDate(Date.now()), start = addDays(today, 1 - days);
-                    setRange(start, today);
-                    const values = new FormData(event.currentTarget.form!);
-                    values.set("from", start);
-                    values.set("to", today);
-                    void submit(values, {method:"get"});
+                    const end = beijingDate(Date.now());
+                    applyRange(event.currentTarget.form!, addDays(end, 1 - days), end);
                   }}>近 {days} 天</button>)}
-                {(from || to) && <button type="button" className="min-h-9 rounded-full px-2 text-xs text-ink-3 hover:text-accent" onClick={() => setRange("", "")}>不限日期</button>}
+                <button type="button" aria-pressed={!from && !to} className="min-h-9 rounded-full px-3 text-xs font-medium text-ink-3 hover:text-accent aria-pressed:bg-accent-soft aria-pressed:text-accent"
+                  onClick={event => applyRange(event.currentTarget.form!, "", "")}>不限日期</button>
               </div>
               <div className="grid grid-cols-2 gap-2 min-[961px]:grid-cols-1">
                 <label className={label}>开始日期<Input nativeInput size="lg" type="date" className={field} name="from" value={from} aria-describedby="fin-dates" onChange={e => setRange(e.target.value, to)} /></label>

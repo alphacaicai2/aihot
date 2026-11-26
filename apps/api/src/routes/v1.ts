@@ -1,5 +1,5 @@
 // Public API v1 (long-term). Field shapes follow reference/public-v1.openapi.json 2.0.0 (the paths stay /api/v1).
-import { loadFinancing, financingCsv } from "@aihot/backend/publication/financing";
+import { FinancingExportBusy, loadFinancing, exportFinancingCsv } from "@aihot/backend/publication/financing";
 import { FEATURES } from "@aihot/industry/features";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { V1_CACHE_CONTROL } from "@aihot/contracts/http-policy";
@@ -10,7 +10,8 @@ import { selectedChanges, selectedSnapshot, SnapshotRequiredError, v1Items } fro
 import { resolveStory, v1HotTopics, v1Story } from "@aihot/backend/publication/stories";
 import { v1Dailies, v1Daily } from "@aihot/backend/publication/reports";
 import { codexResetsRecent, codexResetsSnapshot } from "@aihot/backend/monitor/read";
-import { isValidDate } from "@aihot/contracts/time";
+import { createHash } from "node:crypto";
+import { beijingDate, isValidDate } from "@aihot/contracts/time";
 import { applyPublicHeaders, QueryError, sendJsonWithEtag, sendProblem, strictQuery } from "../http/respond.ts";
 
 type Handler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
@@ -77,11 +78,52 @@ export function registerV1(app: FastifyInstance) {
   }));
 
   app.get("/api/v1/financing", publicHandler(async (req, reply) => {
-    const q = strictQuery(req, ["from", "to", "company", "investor", "investorMode", "limit", "cursor", "format"]);
+    const q = strictQuery(req, ["from", "to", "company", "investor", "investorMode", "limit", "cursor", "format", "scope"]);
     for (const key of ["company", "investor"] as const) if (q[key] && q[key]!.length > (key === "investor" ? 160 : 120)) throw new QueryError(`${key} is too long.`);
     const format = enumParam(q.format, "format", ["json", "csv"] as const, "json");
-    const result = await loadFinancing({ from: q.from, to: q.to, company: q.company?.trim(), investor: q.investor?.trim(), investorExact: enumParam(q.investorMode, "investorMode", ["contains", "exact"] as const, "contains") === "exact", cursor: q.cursor, limit: intParam(q.limit, "limit", 1, 100, 40) });
-    if (format === "csv") return reply.header("Cache-Control", "no-store").header("Content-Disposition", 'attachment; filename="financing.csv"').type("text/csv; charset=utf-8").send(financingCsv(result));
+    const scope = enumParam(q.scope, "scope", ["page", "all"] as const, "page");
+    if (q.cursor !== undefined && !q.cursor.trim()) throw new InvalidCursorError("empty financing cursor");
+    if (q.scope && format !== "csv") throw new QueryError("scope requires CSV format.");
+    if (scope === "all" && q.cursor !== undefined) throw new QueryError("An all-results export must start without a cursor.");
+    const query = { from: q.from, to: q.to, company: q.company?.trim(), investor: q.investor?.trim(), investorExact: enumParam(q.investorMode, "investorMode", ["contains", "exact"] as const, "contains") === "exact", cursor: q.cursor, limit: intParam(q.limit, "limit", 1, 100, 40) };
+    if (format === "csv") {
+      const today = beijingDate(Date.now());
+      const id = createHash("sha256").update(JSON.stringify(query)).digest("hex").slice(0, 8);
+      const labels = [query.company, query.investor]
+        .filter(Boolean).map(value => [...value!].slice(0, 20).join("").replace(/[^\p{L}\p{N}_-]/gu, "-"));
+      if (query.from && query.to) labels.push(query.from + "_" + query.to);
+      const name = ["融资", ...labels, scope === "all" ? "全部结果" : "本页", today, id].join("-") + ".csv";
+      const controller = new AbortController();
+      const abort = () => { if (!reply.raw.writableFinished) controller.abort(); };
+      reply.raw.once("close", abort);
+      try {
+        const csv = await exportFinancingCsv(query, scope === "all", controller.signal);
+        return await reply.header("Cache-Control", "private, no-store").header("Content-Disposition",
+          `attachment; filename="financing-${scope}-${today}-${id}.csv"; filename*=UTF-8''${encodeURIComponent(name)}`).type("text/csv; charset=utf-8").send(csv);
+      } catch (error) {
+        if (!(error instanceof FinancingExportBusy)) throw error;
+        const indexing = error.reason === "index";
+        const title = indexing ? "融资索引正在更新" : "导出请求较多";
+        const detail = indexing ? "更新完成后即可重新导出。" : "请稍后再试。";
+        if (req.headers.accept?.includes("text/html") && (!req.headers["sec-fetch-mode"] || req.headers["sec-fetch-mode"] === "navigate")) {
+          const filters = new URLSearchParams();
+          for (const key of ["company", "investor", "investorMode", "from", "to", "cursor"] as const) {
+            if (q[key]) filters.set(key, q[key]!);
+          }
+          const back = "/financing" + (filters.size ? "?" + filters.toString().replaceAll("&", "&amp;") : "");
+          return reply.code(503).header("Retry-After", error.retryAfter).header("Cache-Control", "private, no-store")
+            .header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'")
+            .type("text/html; charset=utf-8").send(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+              <style>:root{color-scheme:light dark}body{max-width:36rem;margin:12vh auto;padding:0 1.25rem;font:1rem/1.65 system-ui}h1{font-size:1.5rem}nav{display:flex;gap:1.5rem}a{color:LinkText}</style>
+              <main><h1>${title}</h1><p>${detail}建议 ${error.retryAfter} 秒后重试。</p><nav><a href="">重新导出</a><a href="${back}">返回筛选结果</a></nav></main></html>`);
+        }
+        return sendProblem(req, reply, { status:503, code:indexing ? "financing_index_refreshing" : "export_busy",
+          detail: title + "。" + detail, retryAfter:error.retryAfter, cacheControl:"private, no-store" });
+      } finally {
+        reply.raw.off("close", abort);
+      }
+    }
+    const result = await loadFinancing(query);
     return sendJsonWithEtag(req, reply, result, { etagPrefix: "v1-financing", cacheControl: V1_CACHE_CONTROL.items });
   }));
 

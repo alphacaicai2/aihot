@@ -8,7 +8,7 @@ import { Faces } from "../hot/Faces";
 
 const RANK_COLOR = ["text-rank-1", "text-rank-2", "text-rank-3"];
 
-function hrefOf(e: HotStripEntry): string {
+export function hotTopicPath(e: HotStripEntry): string {
   return e.storyPublicId ? `/story/${e.storyPublicId}` : e.itemId ? `/items/${e.itemId}` : "/hot";
 }
 
@@ -36,7 +36,7 @@ export function HotTopics({ entries }: { entries: HotStripEntry[] }) {
       <ol className="home-ranking">
         {entries.slice(0, 5).map((e, i) => (
           <li key={e.rank}>
-            <Link to={hrefOf(e)} className="group grid grid-cols-[1.25rem_minmax(0,1fr)] items-baseline gap-x-2 rounded-control px-1 py-3 hover:bg-bg-sunk">
+            <Link to={hotTopicPath(e)} className="group grid grid-cols-[1.25rem_minmax(0,1fr)] items-baseline gap-x-2 rounded-control px-1 py-3 hover:bg-bg-sunk">
               <span className={`mono text-[13px] font-bold leading-none ${RANK_COLOR[i] ?? "text-rank-rest"}`}>{String(e.rank).padStart(2, "0")}</span>
               <span className="line-clamp-2 break-words text-[14px] font-semibold leading-snug text-ink group-hover:text-accent">{e.title}</span>
               <span className="col-start-2 mt-1 flex flex-wrap items-center gap-2 text-[12px] text-ink-3">

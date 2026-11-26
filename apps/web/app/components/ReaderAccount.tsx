@@ -37,10 +37,10 @@ export function ReaderAccount() {
     <div className="flex min-w-0 flex-col items-end gap-1">
       {status?.email ? (
         <form method="post" action="/api/reader/logout" className="flex min-w-0 max-w-full items-center gap-2">
-          <Link to="/membership" className="max-w-[30vw] truncate text-[13px] text-ink-2 hover:text-accent hover:underline" title={status.email}>{status.email}</Link>
+          <Link to="/membership" className="max-w-[20vw] sm:max-w-[30vw] truncate text-[13px] text-ink-2 hover:text-accent hover:underline" title={status.email}>{status.email}</Link>
           <button type="submit" className={buttonClass("ghost", "sm")}>退出</button>
         </form>
-      ) : status?.enabled && <a className={buttonClass("secondary", "sm")} href="/api/reader/google">使用 Google 登录</a>}
+      ) : status?.enabled && <a className={buttonClass("secondary", "sm")} href="/api/reader/google" aria-label="使用 Google 登录"><span className="sm:hidden">登录</span><span className="hidden sm:inline">使用 Google 登录</span></a>}
       {error && <span role="alert" className="text-[12px] text-hot">{error}</span>}
     </div>
   );

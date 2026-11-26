@@ -143,9 +143,15 @@ async function handle(req: import("node:http").IncomingMessage, res: import("nod
     const headers = { ...req.headers, "x-forwarded-for": client, "x-real-ip": client };
     const upstream = httpRequest({ hostname: API.hostname, port: API.port, path: raw, method: req.method, headers }, (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
+      up.on("error", error => res.destroy(error));
       up.pipe(res);
     });
-    upstream.on("error", () => {
+    res.once("close", () => {
+      if (!res.writableFinished) upstream.destroy();
+    });
+    upstream.on("error", error => {
+      if (res.destroyed) return;
+      if (res.headersSent) { res.destroy(error); return; }
       res.statusCode = 502;
       res.end("api unavailable");
     });

@@ -10,6 +10,7 @@ import { ResearchHeader } from "../features/research/ResearchHeader";
 import { dateProblem } from "../lib/date-range";
 import { FinancingFilters } from "../features/research/FinancingFilters";
 import { FinancingEvent } from "../features/research/FinancingEvent";
+import { FinancingPager } from "../features/research/FinancingPager";
 import { financingQuery } from "../lib/financing-navigation";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -39,10 +40,11 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
   });
   const csv = new URLSearchParams(query);
   csv.set("format", "csv");
+  const csvAll = new URLSearchParams(csv);
+  csvAll.delete("cursor");
+  csvAll.set("scope", "all");
   const aggregates = results?.events.filter(e => e.reports[0]?.claim.recordType === "aggregate_disclosure").length ?? 0;
   const unresolved = results?.events.filter(e => e.reports[0]?.claim.recordType === "unresolved").length ?? 0;
-  const next = new URLSearchParams(query);
-  if (results?.nextCursor) next.set("cursor", results.nextCursor);
   return (
     <div className="pb-6">
       <ResearchHeader title="融资数据库" icon={<IconChart size={25} />}>按单笔交易收录公司融资与基金募资。可按公司、投资机构或日期筛选，展开查看报道原文。</ResearchHeader>
@@ -54,7 +56,10 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
               <h2 id="financing-results" className="text-[18px] font-bold">融资事件</h2>
               {results && <span className="num text-xs text-ink-3">本页 {results.events.length - aggregates - unresolved} 笔交易{aggregates > 0 && ` · ${aggregates} 条合计披露`}{unresolved > 0 && ` · ${unresolved} 条待核实`}</span>}
             </div>
-            {Boolean(results?.events.length) && <a className={buttonClass("secondary", "md")} href={`/api/v1/financing?${csv}`}><IconDownload size={15} />导出本页 CSV</a>}
+            {Boolean(results?.events.length) && <div className="flex flex-wrap items-center gap-2">
+              <a className={buttonClass("secondary", "md")} href={`/api/v1/financing?${csv}`}><IconDownload size={15} />导出本页 CSV</a>
+              <a className={buttonClass("secondary", "md")} href={`/api/v1/financing?${csvAll}`}>导出全部结果 CSV</a>
+            </div>}
           </div>
           {constraints.length > 0 && <nav aria-label="已应用筛选" className="mb-3 flex flex-wrap gap-1.5">{constraints.map(c =>
             <Link key={c.text} to={c.to} aria-label={`移除 ${c.text}`} className="inline-flex min-h-9 max-w-full items-center gap-1 rounded-control bg-accent-soft px-2.5 text-xs font-medium text-accent">
@@ -63,14 +68,19 @@ export default function Financing({ loaderData }: Route.ComponentProps) {
           {results?.events.length ? (
             <div className="grid gap-2.5">{results.events.map(event => <FinancingEvent key={event.id} event={event} />)}</div>
           ) : (
-            <div className="card">
+            !results?.pageReset && <div className="card">
               <EmptyState title={problem ? "请检查日期范围" : constraints.length ? "没有匹配的融资事件" : "暂时没有融资记录"}
                 action={constraints.length || problem ? <Link to="/financing" className={buttonClass("secondary")}>清除筛选</Link> : <Link to="/all" className={buttonClass("secondary")}>浏览全部动态 <IconArrowRight size={14} /></Link>}>
                 {problem || (constraints.length ? "试试公司简称、移除机构条件，或扩大日期范围。" : "有可核对的交易记录后，将按最近报道时间显示。")}
               </EmptyState>
             </div>
           )}
-          {results?.hasMore && results.nextCursor && <div className="mt-5 text-center"><Link to={`/financing?${next}`} className={buttonClass("secondary", "lg")}>下一页 <IconArrowRight size={15} /></Link></div>}
+          {results && <FinancingPager results={results} href={cursor => {
+            const page = new URLSearchParams(query);
+            if (cursor) page.set("cursor", cursor);
+            else page.delete("cursor");
+            return "/financing?" + page;
+          }} />}
         </section>
       </div>
     </div>

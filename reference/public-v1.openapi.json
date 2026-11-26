@@ -1726,7 +1726,7 @@
       "get": {
         "operationId": "financing",
         "summary": "Financing events and source claims",
-        "description": "Returns only named financing transactions with source evidence. Roundups may contribute several events. Company and investor filters match the same transaction. Multiple reports of one financing round share one event with all its public sources and their original terms. CSV contains the current page only. No model calls occur on reads.",
+        "description": "Returns only named financing transactions with source evidence. Roundups may contribute several events. Company and investor filters match the same transaction. Multiple reports of one financing round share one event with all its public sources and their original terms. A CSV download includes the current page by default, or all matching source claims from a single snapshot with scope=all. No model calls occur on reads.",
         "parameters": [
           {
             "name": "from",
@@ -1793,7 +1793,8 @@
             "name": "cursor",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           },
           {
@@ -1807,11 +1808,17 @@
               ],
               "default": "json"
             }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["page", "all"], "default": "page" },
+            "description": "CSV only. All results use the same filters and must omit cursor."
           }
         ],
         "responses": {
           "200": {
-            "description": "Public event claims, or a bounded CSV export.",
+            "description": "Member-visible event claims, or a CSV export.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1835,7 +1842,8 @@
             "$ref": "#/components/responses/MembershipRequired"
           },
           "503": {
-            "description": "Search busy; honor Retry-After"
+            "description": "Search or export capacity is busy, or the financing index is refreshing for a large source dataset. Retry after the delay in Retry-After.",
+            "headers": { "Retry-After": { "schema": { "type": "integer", "minimum": 1 } } }
           }
         }
       }
@@ -3571,6 +3579,14 @@
         "properties": {
           "hasMore": {
             "type": "boolean"
+          },
+          "previousCursor": {
+            "type": ["string", "null"],
+            "description": "Previous page for the same filters and page size."
+          },
+          "pageReset": {
+            "type": "boolean",
+            "description": "This cursor no longer has records. Remove only the cursor to restart the same query."
           },
           "nextCursor": {
             "type": [

@@ -15,7 +15,7 @@ export function ShareFinancingEvent({ event }: { event: FinancingResponse["event
     const blob = await createFinancingShareImage(event, signal);
     return new File([blob], `${title.replace(/[/\\:*?"<>|]/g, "-")}-融资.png`, { type: "image/png" });
   }
-  return <div className="flex flex-wrap items-center gap-x-3 border-t border-line-soft px-3.5 text-xs sm:px-5">
+  return <div className="flex flex-wrap items-center gap-x-3 border-t border-line-soft px-3.5 text-xs sm:px-5 lg:flex-col lg:items-start lg:border-0 lg:px-0 lg:pt-2">
     <a href={path} className="inline-flex min-h-9 items-center text-accent hover:underline">事件链接</a>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger aria-label={`分享融资事件：${title}`} className="inline-flex min-h-9 items-center gap-1 text-ink-3 hover:text-accent"><IconShare size={14} />分享</DialogTrigger>

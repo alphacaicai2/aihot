@@ -2,25 +2,22 @@ import { useEffect, useState, type FormEvent } from "react";
 import { checkoutDestinationCookie } from "@aihot/contracts/member-destination.server";
 import { checkoutDestinationKey, memberDestination, membershipOffer, offerDestination } from "@aihot/contracts/member-destination";
 import { Link, redirect, useRevalidator } from "react-router";
-import type { SiteStats } from "@aihot/contracts/site";
 import { MCP_TOOL_NAMES as T } from "@aihot/contracts/mcp";
 import { SITE, withSubject } from "@aihot/industry/site";
 import type { Route } from "./+types/membership";
 import {
   IconArrowRight,
-  IconChart,
   IconCheck,
   IconChevronDown,
-  IconDownload,
-  IconExternal,
   IconPlug,
-  IconSparkles,
 } from "../components/icons";
+import { PublicAgentPreview } from "../components/PublicAgentPreview";
+import { CodeBlock } from "../components/CodeBlock";
 import { Badge } from "../components/ui/Badge";
 import { buttonClass } from "../components/ui/Controls";
 import { Kicker } from "../components/ui/Kicker";
 import { adminGet } from "../lib/admin.server";
-import { apiGet } from "../lib/api.server";
+import { FinancingSample } from "../features/research/FinancingSample";
 import { getMembership, memberGet, privateHeaders, type Membership } from "../lib/membership.server";
 import { pageMeta, siteUrl } from "../lib/seo";
 
@@ -28,10 +25,7 @@ export const headers = () => privateHeaders;
 
 export async function loader({ request }: Route.LoaderArgs) {
   const params = new URL(request.url).searchParams;
-  const [membership, stats] = await Promise.all([
-    getMembership(request),
-    apiGet<SiteStats>("/api/site/stats", { signal: request.signal }).catch(() => null),
-  ]);
+  const membership = await getMembership(request);
   const checkout = params.get("checkout");
   const target = offerDestination(params);
   if (membership.access && target) throw redirect(target, { headers: privateHeaders });
@@ -46,7 +40,6 @@ export async function loader({ request }: Route.LoaderArgs) {
     : [null, membership];
   return {
     membership,
-    stats,
     base: siteUrl(),
     adminCsrf: adminSession?.csrf,
     readerEmail: reader.email,
@@ -65,28 +58,6 @@ export const meta: Route.MetaFunction = () =>
     image: "/og/pages/membership.png",
     noindex: true,
   });
-
-const PLAN_POINTS = [
-  "单笔交易融资库：按公司、投资机构别名与日期精准检索",
-  "公司历次融资档案与多来源口径核对，一键导出 CSV",
-  "个人只读访问令牌：接入 MCP Server（5 个工具）与 REST API v1",
-  "会员 RSS 全量与分类订阅，支持 Claude Code、Codex 与自动化脚本",
-];
-
-const AUDIENCES = [
-  {
-    title: "投资研究与行研",
-    detail: "按投资机构或公司查单笔交易与历次融资，展开直接核对各篇报道原文引句，导出 CSV 做进一步整理。",
-  },
-  {
-    title: "AI 创业与战略追踪",
-    detail: "不只看每天的新闻标题，持续跟踪关键公司拿了谁的钱、处在什么轮次与交易阶段。",
-  },
-  {
-    title: "用 Agent 消费信息的开发者",
-    detail: "一枚只读令牌打通 MCP、REST API v1 与 RSS，让 Claude Code、Codex 或内部脚本按需拉取精选、热点与日报。",
-  },
-];
 
 const COMPARISON_ROWS: Array<{ feature: string; free: string; member: string }> = [
   { feature: `每日精选、全部动态、一手发现与热点榜`, free: "完整开放", member: "完整开放" },
@@ -267,76 +238,6 @@ function ActionControls({
   );
 }
 
-function FinancingSampleCard() {
-  return (
-    <div className="card flex h-full flex-col overflow-hidden">
-      <div className="flex items-center justify-between gap-2 border-b border-line-soft px-5 py-3.5">
-        <div className="flex items-center gap-2">
-          <span className="grid size-7 place-items-center rounded-control bg-accent-soft text-accent">
-            <IconChart size={15} />
-          </span>
-          <h3 className="text-[15.5px] font-bold text-ink">融资数据库与公司历次融资</h3>
-        </div>
-        <Badge tone="neutral">展示样例</Badge>
-      </div>
-      <div className="flex flex-1 flex-col p-5">
-        <p className="text-[13.5px] leading-relaxed text-ink-3">
-          每笔交易归并多篇公开报道，保留各来源披露口径与原文引句；点击公司名查看历次融资，支持按投资机构别名筛选并导出 CSV。
-        </p>
-
-        <div className="mt-4 rounded-card border border-line bg-bg/70 p-4">
-          <div className="flex items-start gap-3">
-            <div className="hidden w-14 shrink-0 border-r border-line pr-3 text-ink-3 sm:block">
-              <span className="mono block text-[15px] font-bold text-accent">11/23</span>
-              <span className="mono text-[11px]">2026</span>
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-ink-3">
-                <span>4 篇报道</span>
-                <Badge tone="amber" className="h-[19px] px-1.5 text-[10.5px]">来源口径有差异</Badge>
-              </div>
-              <div className="mt-1 flex flex-wrap items-baseline justify-between gap-2">
-                <span className="text-[16px] font-bold text-accent underline decoration-accent/40 underline-offset-4">
-                  镁伽科技
-                </span>
-                <span className="text-[11.5px] text-ink-4">点击公司名可查历次融资</span>
-              </div>
-              <dl className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12.5px] text-ink-3">
-                <div>
-                  <dt className="inline text-ink-4">轮次 · </dt>
-                  <dd className="inline font-medium text-ink-2">E 轮</dd>
-                </div>
-                <div>
-                  <dt className="inline text-ink-4">本轮金额 · </dt>
-                  <dd className="inline font-semibold text-accent">近 2 亿美元</dd>
-                </div>
-                <div className="col-span-2">
-                  <dt className="inline text-ink-4">投资方 · </dt>
-                  <dd className="inline text-ink-2">支持机构中英文与简称别名检索</dd>
-                </div>
-              </dl>
-              <blockquote className="mt-3 border-l-2 border-accent/50 pl-3 text-[12.5px] leading-relaxed text-ink-3">
-                “每条交易记录均保留原文引句与媒体链接，多笔合计披露和待核实记录单独标明。”
-              </blockquote>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2 text-[12px] text-ink-3">
-          <span className="inline-flex items-center gap-1 rounded-control bg-bg-sunk px-2.5 py-1">
-            <IconDownload size={12} className="text-accent" />
-            导出筛选结果 CSV
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-control bg-bg-sunk px-2.5 py-1">
-            <IconExternal size={12} className="text-accent" />
-            逐条回溯报道原文
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AgentSampleCard({ base }: { base: string }) {
   const mcpUrl = `${base}/api/mcp`;
   const tools = [
@@ -347,7 +248,7 @@ function AgentSampleCard({ base }: { base: string }) {
     [T.daily, `最新与历史${withSubject("日报")}`],
   ];
   return (
-    <div className="card flex h-full flex-col overflow-hidden">
+    <div id="agent-sample" className="card flex h-full min-w-0 flex-col overflow-hidden">
       <div className="flex items-center justify-between gap-2 border-b border-line-soft px-5 py-3.5">
         <div className="flex items-center gap-2">
           <span className="grid size-7 place-items-center rounded-control bg-accent-soft text-accent">
@@ -362,10 +263,8 @@ function AgentSampleCard({ base }: { base: string }) {
           在站内生成一枚只读个人访问令牌，同一枚令牌即可接入 MCP Server、REST API v1（含全量快照与增量游标）以及全部分类 RSS。
         </p>
 
-        <pre className="mt-4 overflow-x-auto rounded-card border border-line bg-[var(--code-bg)] p-3.5 font-mono text-[12px] leading-[1.65] text-ink-2">
-          <code>{`# Claude Code 接入 MCP\nclaude mcp add --transport http \\\n  --header "Authorization: Bearer $CAOLU_AGENT_TOKEN" \\\n  ${SITE.mcpPrefix} '${mcpUrl}'\n\n# REST API 查询融资记录\ncurl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" \\\n  '${base}/api/v1/financing?investor=a16z'`}</code>
-        </pre>
-
+        <PublicAgentPreview />
+        <CodeBlock title="Codex · 读取环境变量中的令牌" code={`codex mcp add ${SITE.mcpPrefix} --url '${mcpUrl}' --bearer-token-env-var CAOLU_AGENT_TOKEN`} />
         <div className="mt-4">
           <div className="text-[11.5px] font-semibold tracking-wide text-ink-4">MCP 内置 5 个只读工具</div>
           <ul className="mt-2 grid grid-cols-1 gap-1.5 text-[12.5px] sm:grid-cols-2">
@@ -383,7 +282,7 @@ function AgentSampleCard({ base }: { base: string }) {
 }
 
 export default function MembershipPage({ loaderData }: Route.ComponentProps) {
-  const { membership, stats, base, adminCsrf, readerEmail, checkout, billing, feature, company, checkoutReturn, returnTo } = loaderData;
+  const { membership, base, adminCsrf, readerEmail, checkout, billing, feature, company, checkoutReturn, returnTo } = loaderData;
   const { access, email, admin, customer, billingReady, source } = membership;
   const { revalidate } = useRevalidator();
   const pending = checkout === "success" && !access;
@@ -422,96 +321,34 @@ export default function MembershipPage({ loaderData }: Route.ComponentProps) {
     return () => timers.forEach(window.clearTimeout);
   }, [pending, revalidate]);
 
-  const featureName = feature === "agent" ? "Agent 接入" : feature === "financing" ? "融资数据库" : null;
-  const contextPrompt =
-    !access && feature === "financing" && company
-      ? `查看「${company}」的完整历次融资记录需要读者会员权限。开通后可按时间查看轮次、金额口径、投资机构与原文引句。`
-      : !access && feature === "financing"
-        ? "融资数据库需要读者会员权限。开通后可按公司、投资机构和日期筛选单笔交易，并导出 CSV。"
-        : !access && feature === "agent"
-          ? "Agent 接入需要读者会员权限。开通后可生成个人只读访问令牌，接入 MCP、REST API v1 和会员 RSS。"
-          : null;
+  const target = returnTo ? new URL(returnTo, "https://site.invalid") : null;
+  let intent = "";
+  if (!access && feature === "financing") {
+    if (company) intent = `查看「${company}」的完整历次融资记录需要读者会员权限。`;
+    else if (target?.pathname === "/financing/investor") intent = `开通后继续查看「${target.searchParams.get("name")}」的投资组合。`;
+    else if (target?.pathname === "/financing/event") intent = "开通后返回这笔融资交易及其来源。";
+    else intent = target?.search ? "开通后返回你刚才筛选的融资记录。" : "开通后进入融资数据库。";
+  } else if (!access && feature === "agent") {
+    const tab = target?.searchParams.get("tab");
+    intent = `开通后继续配置${tab === "rss" ? " RSS 订阅" : tab === "api" ? " REST API" : " MCP 客户端"}。`;
+  }
 
   return (
-    <div className="mx-auto max-w-[980px] pb-16 pt-5 lg:pt-2">
-      {contextPrompt && (
-        <div
-          role="status"
-          className="mb-6 flex flex-wrap items-center justify-between gap-2 rounded-card border border-accent/30 bg-accent-softer px-4 py-3 text-[13.5px] text-ink-2"
-        >
-          <span className="leading-relaxed">{contextPrompt}</span>
-          <a href="#plan-card" className="shrink-0 font-semibold text-accent hover:underline">
-            立即开通 ↓
+    <div className="mx-auto max-w-[980px] pb-16 pt-4 lg:pt-2">
+      <header className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(310px,0.9fr)] lg:gap-8">
+        <div className="lg:pt-4">
+          <Kicker>读者会员 · {SITE.name}</Kicker>
+          <h1 className="mt-2 text-[26px] font-bold leading-tight tracking-tight text-ink sm:text-[34px]">
+            {access ? "你的读者会员权限已生效" : feature === "agent" ? "把精选与日报接入 Agent" : feature === "financing" ? "追踪公司与投资机构的融资记录" : "查融资记录，用 Agent 读资讯"}
+          </h1>
+          <p className="mt-2 max-w-[36em] text-sm leading-relaxed text-ink-3">
+            {intent && <strong className="mr-1 font-medium text-ink">{intent}</strong>}
+            按公司、机构和日期查融资，核对报道并导出 CSV。用个人令牌通过 MCP、REST API 或 RSS 读取资讯。
+          </p>
+          <a href={feature === "agent" ? "#agent-sample" : "#financing-sample"} className="mt-2 inline-flex min-h-8 items-center gap-1 text-sm font-medium text-accent hover:underline">
+            {feature === "agent" ? "查看接入示例" : "试用公开融资样例"} <IconArrowRight size={13} />
           </a>
         </div>
-      )}
-
-      <header className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(310px,0.95fr)] lg:gap-8">
-        <div>
-          <Kicker>
-            <span className="inline-flex items-center gap-1.5">
-              <IconSparkles size={13} />
-              读者会员 · {SITE.name}
-            </span>
-          </Kicker>
-          <h1 className="mt-4 text-[30px] font-black leading-[1.2] tracking-[-0.025em] text-ink [text-wrap:balance] sm:text-[38px] lg:text-[42px]">
-            {access ? (
-              "你的读者会员权限已生效"
-            ) : (
-              <>
-                从每天看 {SITE.subject} 资讯，
-                <br />
-                <span className="text-accent">到持续追踪融资与接入 Agent。</span>
-              </>
-            )}
-          </h1>
-          <p className="mt-4 max-w-[38em] text-[15px] leading-[1.85] text-ink-3">
-            {access
-              ? "你已可以查询并导出融资数据库、追踪公司历次融资档案，并管理个人 Agent 访问令牌。"
-              : `每日精选、热点榜与${withSubject("日报")}继续免费开放阅读。订阅读者会员后，解锁单笔交易融资数据库、公司历次融资档案与 CSV 导出，以及 MCP / REST API / RSS 个人令牌接入。`}
-          </p>
-
-          {stats && (
-            <dl className="mt-6 grid grid-cols-3 gap-3 border-y border-line py-4">
-              <div>
-                <dt className="text-[12px] text-ink-4">持续监控</dt>
-                <dd className="num mt-0.5 text-[22px] font-bold tracking-tight text-ink sm:text-[26px]">
-                  {stats.sources.toLocaleString("en-US")}
-                  <span className="ml-1 text-[12px] font-normal text-ink-3">个信源</span>
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[12px] text-ink-4">累计精选</dt>
-                <dd className="num mt-0.5 text-[22px] font-bold tracking-tight text-ink sm:text-[26px]">
-                  {stats.selected.toLocaleString("en-US")}
-                  <span className="ml-1 text-[12px] font-normal text-ink-3">条归档</span>
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[12px] text-ink-4">持续出刊</dt>
-                <dd className="num mt-0.5 text-[22px] font-bold tracking-tight text-ink sm:text-[26px]">
-                  {stats.dailies.toLocaleString("en-US")}
-                  <span className="ml-1 text-[12px] font-normal text-ink-3">期日报</span>
-                </dd>
-              </div>
-            </dl>
-          )}
-
-          {!access && (
-            <div className="mt-6 space-y-3">
-              <div className="text-[12px] font-semibold tracking-wide text-ink-4">谁最常用读者会员</div>
-              <ul className="grid gap-2.5">
-                {AUDIENCES.map((item) => (
-                  <li key={item.title} className="rounded-control border border-line-soft bg-surface/80 px-3.5 py-2.5">
-                    <div className="text-[13.5px] font-semibold text-ink">{item.title}</div>
-                    <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">{item.detail}</p>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-
         <section id="plan-card" aria-label="会员方案" className="card overflow-hidden">
           <div className="border-b border-line-soft p-5 sm:p-6">
             <div className="flex items-center justify-between gap-2">
@@ -553,17 +390,6 @@ export default function MembershipPage({ loaderData }: Route.ComponentProps) {
               </form>
             )}
           </div>
-
-          <ul className="space-y-2.5 p-5 text-[13.5px] leading-relaxed text-ink-2 sm:p-6">
-            {PLAN_POINTS.map((point) => (
-              <li key={point} className="flex items-start gap-2.5">
-                <span className="mt-0.5 grid size-4.5 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
-                  <IconCheck size={12} />
-                </span>
-                <span>{point}</span>
-              </li>
-            ))}
-          </ul>
 
           <div className="space-y-3 border-t border-line-soft bg-bg-sunk/50 px-5 py-4 sm:px-6">
             {billing === "unavailable" && (
@@ -607,13 +433,6 @@ export default function MembershipPage({ loaderData }: Route.ComponentProps) {
                 </Link>
               </div>
             )}
-            {!access && !featureName && (
-              <div className="pt-0.5">
-                <a href="#samples" className="text-[12.5px] font-medium text-ink-3 hover:text-accent">
-                  先看融资库与 Agent 真实样例 ↓
-                </a>
-              </div>
-            )}
           </div>
         </section>
       </header>
@@ -624,11 +443,11 @@ export default function MembershipPage({ loaderData }: Route.ComponentProps) {
         <div className="mb-5">
           <Kicker>会员能得到什么</Kicker>
           <h2 id="samples-heading" className="mt-2 text-[22px] font-bold tracking-tight text-ink sm:text-[26px]">
-            两项核心能力，直接接进你的研究与工作流
+            试用融资样例，查看 Agent 接入方式
           </h2>
         </div>
         <div className="grid gap-5 lg:grid-cols-2">
-          <FinancingSampleCard />
+          <FinancingSample />
           <AgentSampleCard base={base} />
         </div>
       </section>

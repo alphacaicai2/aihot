@@ -6,6 +6,7 @@ import { FEATURES } from "@aihot/industry/features";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { MCP_TOOL_NAMES as T } from "@aihot/contracts/mcp";
 import { listPath, pageMeta, siteUrl } from "../lib/seo";
+import { ClientSetup, TokenEnvironment } from "../components/ClientSetup";
 import { AgentToken } from "../components/AgentToken";
 import { requireMembership } from "../lib/membership.server";
 import { CodeBlock, CopyButton } from "../components/CodeBlock";
@@ -77,17 +78,10 @@ function Mono({ children }: { children: ReactNode }) {
 
 function McpTab({ base }: { base: string }) {
   const url = `${base}/api/mcp`;
-  const name = SITE.mcpPrefix;
   return (
     <>
-      <h2 className="text-[20px] font-bold text-ink">加一个地址，Agent 直接调用五个工具</h2>
-      <p className="mt-2 text-[14.5px] text-ink-3">适合支持远程 MCP 的 Agent 与开发工具。连接方式选择 Streamable HTTP，并在请求头中使用个人访问令牌。</p>
-      <div className="mt-6 flex items-center gap-2 rounded-card border border-line bg-surface p-3">
-        <code className="min-w-0 flex-1 truncate font-mono text-[13px] text-ink">{url}</code>
-        <CopyButton text={url} className="!text-ink-3" />
-      </div>
-      <CodeBlock title="通用 MCP 配置" lang="json" code={JSON.stringify({ mcpServers: { [name]: { type: "http", url, headers: { Authorization: "Bearer <个人访问令牌>" } } } }, null, 2)} />
-      <CodeBlock lang="bash" code={`# 先将个人访问令牌设置为 CAOLU_AGENT_TOKEN 环境变量\n# Claude Code\nclaude mcp add --transport http --header "Authorization: Bearer $CAOLU_AGENT_TOKEN" ${name} '${url}'\n# Codex\ncodex mcp add ${name} --url '${url}' --bearer-token-env-var CAOLU_AGENT_TOKEN`} />
+      <h2 className="text-[20px] font-bold text-ink">连接 MCP 客户端</h2>
+      <ClientSetup url={url} />
       <Section title="连上后应看到这五个工具">
         <Bullets items={[
           <><Mono>{T.latest}</Mono>：过去 24 小时或最近 7 天的精选／全部资讯</>,
@@ -121,7 +115,8 @@ function RssTab({ base }: { base: string }) {
     <>
       <h2 className="text-[20px] font-bold text-ink">在阅读器中添加订阅</h2>
       <p className="mt-2 text-[14.5px] text-ink-3">使用支持自定义 HTTP 请求头的 RSS 阅读器或自动化工具。添加下方订阅地址，并设置 Authorization 请求头。</p>
-      <CodeBlock title="RSS 鉴权示例" lang="bash" code={`curl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/feed.xml'`} />
+      <TokenEnvironment />
+      <CodeBlock title="RSS 鉴权示例（bash / zsh）" lang="bash" code={`curl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/feed.xml'`} />
       <div className="mt-6 space-y-3">
         {feeds.map(([name, desc, path]) => {
           const url = `${base}${path}`;
@@ -171,7 +166,8 @@ function ApiTab({ base }: { base: string }) {
     <>
       <h2 className="text-[20px] font-bold text-ink">通过访问令牌查询 REST API</h2>
       <p className="mt-2 text-[14.5px] text-ink-3">将个人访问令牌设置为 CAOLU_AGENT_TOKEN 环境变量。临时查最近内容用 items；长期维护全部精选用一次快照加增量游标。字段与错误码以 <a href="/openapi-v1.json" className="text-accent hover:underline">OpenAPI 3.1</a> 为准。</p>
-      <CodeBlock title="第一个请求" lang="bash" code={`curl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/api/v1/items?mode=selected&window=24h&limit=20'`} />
+      <TokenEnvironment />
+      <CodeBlock title="第一个请求（bash / zsh）" lang="bash" code={`curl -H "Authorization: Bearer $CAOLU_AGENT_TOKEN" '${base}/api/v1/items?mode=selected&window=24h&limit=20'`} />
       <div className="overflow-x-auto rounded-card border border-line bg-surface">
         <table className="w-full min-w-[560px] text-left text-[13.5px]">
           <thead className="bg-bg-sunk text-ink-3"><tr><th className="px-3 py-2 font-medium">方法</th><th className="px-3 py-2 font-medium">路径</th><th className="px-3 py-2 font-medium">说明</th></tr></thead>
@@ -255,7 +251,7 @@ export default function AgentPage() {
           <span className={`${pill} mono`}>MCP {MCP_VERSION}</span>
           <span className={`${pill} gap-1.5 ${healthy ? "text-ok" : "text-hot"}`}>
             <span className={`size-1.5 rounded-full ${healthy ? "bg-ok" : "bg-hot"}`} />
-            {healthy ? "服务正常" : "服务异常"}
+            {healthy ? "服务健康检查正常" : "服务健康检查异常"}
           </span>
         </div>
       </header>

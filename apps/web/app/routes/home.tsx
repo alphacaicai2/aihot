@@ -4,14 +4,14 @@ import type { TimelineResponse } from "@aihot/contracts/site";
 import { isCategoryKey, isChannelKey } from "@aihot/contracts/taxonomy";
 import { loadOr404, queryString, releaseBoundCache } from "../lib/api.server";
 import { listPath, organizationLd, pageMeta } from "../lib/seo";
-import { IconArrowRight, IconChart, IconClock, IconDoc, IconList, IconPlug } from "../components/icons";
+import { IconArrowRight, IconChart, IconChevronDown, IconClock, IconDoc, IconList, IconPlug } from "../components/icons";
 import { Card } from "../components/coss/card";
 import { Badge } from "../components/ui/Badge";
 import { Wordmark } from "../components/Logo";
 import { MembershipCallout } from "../components/MembershipCallout";
 import { ReaderAccount } from "../components/ReaderAccount";
 import { Timeline } from "../features/feed/Timeline";
-import { HotTopics } from "../features/feed/HotTopics";
+import { HotTopics, hotTopicPath } from "../features/feed/HotTopics";
 import { CategoryTabs, SearchField, SearchIconLink } from "../features/feed/Filters";
 import { beijingDate, beijingWeekday, monthDayTime } from "../lib/format";
 
@@ -78,14 +78,15 @@ export default function Home() {
   const [year, month, date] = day.split("-");
   const count = data.dayCounts[day] ?? 0;
   const latest = data.cards[0]?.anchorAt;
+  const hottest = data.hot?.[0];
   const scoped = !!(filters.category || filters.tag || filters.channel !== "all");
   return (
     <div className="reader-home pb-6">
       <div className="flex min-h-12 items-center justify-between gap-2 lg:mb-2.5 lg:min-h-8 lg:justify-end">
-        <span className="lg:hidden"><Wordmark size={19} className="shrink-0 text-ink" /></span>
+        <span className="min-w-0 truncate whitespace-nowrap lg:hidden"><Wordmark size={19} className="shrink-0 text-ink" /></span>
         <div className="flex min-w-0 items-center gap-1.5 lg:gap-3">
           <Link to="/membership" prefetch="intent" className="inline-flex min-h-9 shrink-0 items-center rounded-control px-2 text-[13px] font-medium text-accent hover:bg-accent-soft">
-            读者会员
+            <span className="sm:hidden">会员</span><span className="hidden sm:inline">读者会员</span>
           </Link>
           <ReaderAccount />
           <span className="lg:hidden"><SearchIconLink filters={{category:filters.category,channel:filters.channel === "all" ? null : filters.channel,tag:filters.tag}} /></span>
@@ -110,16 +111,25 @@ export default function Home() {
         <div className="relative hidden lg:block"><SearchField variant="track" keep={{ category: filters.category, channel: filters.channel === "all" ? null : filters.channel, tag: filters.tag }} /></div>
       </header>
 
-      <MembershipCallout />
-
       <div className="home-columns">
         <aside aria-label="热点与栏目" className="home-aside">
           {data.hot && <HotTopics entries={data.hot} />}
-          <SectionIndex />
+          <div className="hidden min-[1180px]:block"><SectionIndex /></div>
         </aside>
         <div className="min-w-0">
+          <div className="mb-2 flex min-w-0 flex-wrap items-start gap-2 border-b border-line-soft min-[1180px]:hidden">
+            <div className="flex min-w-0 flex-1 items-center gap-2 text-[13px]">
+              <Link to="/hot" className="inline-flex min-h-11 shrink-0 items-center font-semibold text-hot hover:underline">热点榜</Link>
+              {hottest && <Link to={hotTopicPath(hottest)}
+                className="block min-w-0 truncate py-3 hover:text-accent">{hottest.title}</Link>}
+            </div>
+            <details className="home-section-menu">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1 text-[13px] font-medium">栏目 <IconChevronDown size={14} /></summary>
+              <SectionIndex />
+            </details>
+          </div>
           <CategoryTabs base="/" category={filters.category} channel={filters.channel} layoutId="home-category" className="mb-3" />
-          <Timeline initial={data} filters={data.filters} />
+          <Timeline initial={data} filters={data.filters} afterLead={scoped ? undefined : <MembershipCallout />} />
         </div>
       </div>
     </div>

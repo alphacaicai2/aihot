@@ -8,7 +8,9 @@ import { upsertMaterial } from "@aihot/backend/content/materials";
 import { analyzeArticle } from "@aihot/backend/editorial/analyze";
 import { runFinancingBatch } from "@aihot/backend/editorial/financing-sweep";
 import { refreshFinancingIndex, financingIndexReady } from "@aihot/backend/publication/financing-index";
-import { loadFinancing } from "@aihot/backend/publication/financing";
+import { text as streamText } from "node:stream/consumers";
+import { setTimeout as delay } from "node:timers/promises";
+import { exportFinancingCsv, loadFinancing } from "@aihot/backend/publication/financing";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { composeDaily } from "@aihot/backend/reports/compose";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -184,6 +186,7 @@ test("shared financing links isolate a single digest transaction and institution
     assert.doesNotMatch(detail.body,/"company":"Isomorphic Labs"/);
     const history = await authedGet(investorPath);
     assert.equal(history.json().historySummary.records,1);
+    assert.equal(history.json().historySummary.companies,1);
     assert.equal(history.json().events[0].reports[0].id,ids.get("ROUND"));
     const partial = await authedGet("/api/site/financing/investor?name=Andreessen");
     assert.equal(partial.json().events.length,0);
@@ -251,6 +254,10 @@ test("indexed financing pages retain live filter, cursor, and timed visibility s
     "/api/site/financing/investors"].map(encodeURI);
   const first = await authedGet(urls[0]);
   urls.push(urls[0] + "&cursor=" + first.json().nextCursor);
+  const second = (await authedGet(urls.at(-1)!)).json();
+  const previousUrl = urls[0] + "&cursor=" + second.previousCursor;
+  assert.deepEqual((await authedGet(previousUrl)).json(), first.json());
+  urls.push(previousUrl);
   const live = await Promise.all(urls.map(async url => (await authedGet(url)).json()));
   await refreshFinancingIndex();
   assert.deepEqual(await Promise.all(urls.map(async url => (await authedGet(url)).json())), live);
@@ -346,4 +353,184 @@ test("two reviewed mentions in one article keep both quotes and count as one rep
     assert.equal(csv.split("\r\n").length,3);
     assert.ok(csv.includes("记录类型"));
   } finally { await sql`DELETE FROM financing_claim_reviews WHERE article_id=${article}`; }
+});
+
+
+test("all-results CSV follows the entire filtered snapshot and retains each source claim once", async () => {
+  const article = ids.get("WEEKLY")!;
+  const [original] = await sql`SELECT a.id, a.output->'financingClaims' AS claims FROM publications p
+    JOIN analyses a ON a.id=p.analysis_id WHERE p.article_id=${article}`;
+  const claims = Array.from({length:103}, (_, i) => ({...original!.claims[0], company:"跨页导出测试" + i, evidence:"原文证据 " + i}));
+  try {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(claims)}) WHERE id=${original!.id}`;
+    const base = "/api/v1/financing?" + new URLSearchParams({company:"跨页导出测试",limit:"40"});
+    const exportAll = base + "&format=csv&scope=all";
+    const live = await authedGet(exportAll);
+    await refreshFinancingIndex();
+    const result = await authedGet(exportAll);
+    assert.equal(live.body, result.body);
+    assert.equal(result.statusCode,200);
+    assert.equal(result.headers["cache-control"],"private, no-store");
+    assert.match(decodeURIComponent(String(result.headers["content-disposition"])), /跨页导出测试-全部结果/);
+    const lines = result.body.split("\r\n");
+    assert.equal(lines.length,104);
+    const byPage: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const path: string = base + (cursor ? "&cursor=" + cursor : "");
+      const page = await authedGet(path + "&format=csv");
+      byPage.push(...page.body.split("\r\n").slice(1));
+      cursor = (await authedGet(path)).json().nextCursor;
+    } while (cursor);
+    assert.deepEqual(lines.slice(1),byPage);
+    assert.equal(new Set(byPage).size,103);
+    const dateExport = await authedGet(exportAll + "&from=2026-11-20&to=2026-11-26");
+    assert.equal(dateExport.statusCode,200);
+    assert.match(decodeURIComponent(String(dateExport.headers["content-disposition"])), /2026-11-20_2026-11-26-全部结果/);
+    assert.equal((await authedGet(exportAll + "&cursor=bad")).statusCode,400);
+    for (const scope of ["page","all"]) assert.equal((await authedGet(base + "&format=csv&scope=" + scope + "&cursor=")).statusCode,400);
+    assert.equal((await app.inject(exportAll)).statusCode,401);
+  } finally {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(original!.claims)}) WHERE id=${original!.id}`;
+  }
+});
+
+
+test("investor company counts cover older pages, normalize company names, and respect reviewed aliases", async () => {
+  const [analysis] = await sql`SELECT a.id, a.output->'financingClaims' AS claims FROM publications p
+    JOIN analyses a ON p.analysis_id=a.id WHERE p.article_id=${ids.get("WEEKLY")!}`;
+  const names = ["融资计数甲", "Count  Labs", "ＣＯＵＮＴ LABS", "融资计数甲别名", "融资计数乙"];
+  const claims = names.map((company,i) => ({...analysis!.claims[0],company,round:"第" + i + "轮",investors:["计数机构"],evidence:company + "融资" + i}));
+  try {
+    await sql`INSERT INTO research_entities(name,aliases,reviewed_by) VALUES ('融资计数甲',ARRAY['融资计数甲别名'],'test')`;
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(claims)}) WHERE id=${analysis!.id}`;
+    for (const indexed of [false,true]) {
+      if (indexed) await refreshFinancingIndex();
+      const first = await loadFinancing({investor:"计数机构", investorExact:true, companiesOnly:true, limit:2});
+      const second = await loadFinancing({investor:"计数机构", investorExact:true, companiesOnly:true, limit:2,cursor:first.nextCursor});
+      assert.equal(first.events.length,2);
+      assert.equal(first.historySummary?.records,5);
+      assert.equal(first.historySummary?.companies,3);
+      assert.deepEqual(second.historySummary,first.historySummary);
+    }
+  } finally {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(analysis!.claims)}) WHERE id=${analysis!.id}`;
+    await sql`DELETE FROM research_entities WHERE name='融资计数甲'`;
+  }
+});
+
+test("slow full exports preserve snapshots, enforce a separate limit, and release capacity on cancellation", async () => {
+  const [analysis] = await sql`SELECT a.id, a.output->'financingClaims' AS claims FROM publications p
+    JOIN analyses a ON p.analysis_id=a.id WHERE p.article_id=${ids.get("WEEKLY")!}`;
+  const claims = Array.from({length:103}, (_, i) => ({ ...analysis!.claims[0], company:"慢速导出" + i, evidence:"原文".repeat(450) + i }));
+  const first = new AbortController(), second = new AbortController();
+  const query = {company:"慢速导出"};
+  try {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(claims)}) WHERE id=${analysis!.id}`;
+    await refreshFinancingIndex();
+    const [a,b] = await Promise.all([exportFinancingCsv(query, true, first.signal), exportFinancingCsv(query, true, second.signal)]);
+    assert.ok(typeof a !== "string" && typeof b !== "string");
+    assert.ok(a.writableNeedDrain && b.writableNeedDrain, "both consumers are paused on the first batch");
+    const saturated = await authedGet("/api/v1/financing?format=csv&scope=all");
+    assert.equal((await authedGet("/api/v1/financing?format=csv&scope=page&limit=2")).statusCode, 200);
+    assert.equal(saturated.statusCode,503);
+    assert.ok(saturated.headers["retry-after"]);
+    assert.equal((await loadFinancing({...query,limit:1})).events.length,1);
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(analysis!.claims)}) WHERE id=${analysis!.id}`;
+    second.abort();
+    const csv = await streamText(a);
+    assert.equal(csv.split("\r\n").length,104);
+    assert.equal((await loadFinancing(query)).events.length,0);
+    await assert.doesNotReject(async () => {
+      for (let attempt = 0; ; attempt++) {
+        const result = await authedGet("/api/v1/financing?format=csv&scope=all");
+        if (result.statusCode === 200) return;
+        assert.ok(attempt < 50);
+        await delay(10);
+      }
+    });
+  } finally {
+    first.abort();
+    second.abort();
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(analysis!.claims)}) WHERE id=${analysis!.id}`;
+  }
+});
+
+test("disconnect interrupts the active PostgreSQL export query before it can acquire a blocked lock", async () => {
+  const controller = new AbortController();
+  await sql.begin(async tx => {
+    await tx`LOCK financing_index_state IN ACCESS EXCLUSIVE MODE`;
+    const rejected = Promise.all([false,true].map(all => assert.rejects(exportFinancingCsv({}, all, controller.signal),
+      (error: {code?: string}) => error.code === "57014")));
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const [found] = await sql`SELECT count(*) AS waiting FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'
+          AND query LIKE '%FROM financing_index_state%'`;
+        if (found!.waiting === 2) break;
+        assert.ok(attempt < 100, "export query is waiting for the deliberate lock");
+        await delay(10);
+      }
+    } finally { controller.abort(); }
+    await rejected;
+  });
+});
+
+test("withdrawal from the last cursor page preserves real profile totals and the first-page recovery", async () => {
+  const [analysis] = await sql`SELECT a.id, a.output->'financingClaims' AS claims FROM publications p
+    JOIN analyses a ON p.analysis_id=a.id WHERE p.article_id=${ids.get("WEEKLY")!}`;
+  const name = "撤下分页测试", investor = "撤下分页机构";
+  const claims = Array.from({length:41}, (_, i) => ({...analysis!.claims[0], company:name, round:"测试轮次" + i, investors:[investor], evidence:"撤下分页证据 " + i}));
+  const paths = ["/api/site/financing/company?" + new URLSearchParams({name}),
+    "/api/site/financing/investor?" + new URLSearchParams({name:investor}), "/api/v1/financing?" + new URLSearchParams({company:name})];
+  try {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(claims)}) WHERE id=${analysis!.id}`;
+    await refreshFinancingIndex();
+    const cursors = await Promise.all(paths.map(async path => (await authedGet(path)).json().nextCursor));
+    assert.ok(cursors.every(Boolean));
+    const last = (await authedGet(paths[0] + "&cursor=" + cursors[0])).json().events[0].reports[0].claim.evidence;
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(claims.map(c => c.evidence === last ? {...c,company:"重新归属的公司",investors:[]} : c))}) WHERE id=${analysis!.id}`;
+    for (const indexed of [false,true]) {
+      if (indexed) await refreshFinancingIndex();
+      for (const [i,path] of paths.entries()) {
+        const response = await authedGet(path + "&cursor=" + cursors[i]);
+        assert.equal(response.statusCode,200);
+        const page = response.json();
+        assert.deepEqual(page.events,[]);
+        assert.equal(page.pageReset,true);
+        if (i < 2) assert.equal(page.historySummary.records,40);
+        if (i === 1) assert.equal(page.historySummary.companies,1);
+      }
+    }
+  } finally { await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(analysis!.claims)}) WHERE id=${analysis!.id}`; }
+});
+
+test("oversize live exports offer an explicit retry and preserve the browser's filters until the index is ready", async () => {
+  const [analysis] = await sql`SELECT a.id, a.output->'financingClaims' AS claims FROM publications p
+    JOIN analyses a ON p.analysis_id=a.id WHERE p.article_id=${ids.get("WEEKLY")!}`;
+  const claims = Array.from({length:2001}, (_, i) => ({...analysis!.claims[0],company:"有界导出" + i,evidence:"原文证据 " + i}));
+  const base = "/api/v1/financing?company=" + encodeURIComponent("有界导出");
+  try {
+    await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(claims)}) WHERE id=${analysis!.id}`;
+    const url = base + "&scope=all&format=csv";
+    const early = await authedGet(url);
+    assert.equal(early.statusCode,503);
+    assert.equal(early.json().code,"financing_index_refreshing");
+    assert.equal(early.headers["retry-after"],"60");
+    const browser = await app.inject({url, headers:{ ...member.headers, accept:"text/html", "sec-fetch-mode":"navigate" }});
+    assert.equal(browser.statusCode,503);
+    assert.match(String(browser.headers["content-type"]),/text\/html/);
+    assert.match(browser.body,/返回筛选结果/);
+    assert.match(browser.body,/重新导出/);
+    assert.ok(browser.body.includes("/financing?company=" + encodeURIComponent("有界导出")));
+    const page = await authedGet(base + "&limit=1&format=csv");
+    assert.equal(page.statusCode,503);
+    assert.equal(page.json().code,"financing_index_refreshing");
+    assert.equal(page.headers["retry-after"],"60");
+    assert.equal((await authedGet(base + "&limit=1")).statusCode,200);
+    await refreshFinancingIndex();
+    assert.equal((await authedGet(base + "&limit=1&format=csv")).statusCode,200);
+    const indexed = await authedGet(url);
+    assert.equal(indexed.statusCode,200);
+    assert.equal(indexed.body.split("\r\n").length,2002);
+  } finally { await sql`UPDATE analyses SET output=jsonb_set(output,'{financingClaims}',${sql.json(analysis!.claims)}) WHERE id=${analysis!.id}`; }
 });

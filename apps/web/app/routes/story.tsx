@@ -5,7 +5,8 @@ import type { Route } from "./+types/story";
 import type { StoryDetail, StoryReportView } from "@aihot/contracts/site";
 import { data as routeData } from "react-router";
 import { breadcrumbLd, pageMeta, titled } from "../lib/seo";
-import { beijingDate, beijingTime, monthDayTime, relativeTime, shortSourceName } from "../lib/format";
+import { beijingDate, beijingTime, monthDayTime, relativeTime } from "../lib/format";
+import { FactSources, StoryOverview } from "../features/story/StoryOverview";
 import { HeatChart } from "../features/story/HeatChart";
 import { ShareStoryButton } from "../features/story/ShareStoryButton";
 import { Badge, SelectedBadge } from "../components/ui/Badge";
@@ -179,14 +180,6 @@ export default function StoryPage() {
     }
     return out;
   }, [story.timeline, filter, order]);
-  const newest = story.timeline.reduce<StoryReportView | null>((a, b) => (!a || Date.parse(b.publishedAt) > Date.parse(a.publishedAt) ? b : a), null);
-  const overview = story.digest
-    ? { label: "AI 综述", text: story.digest, note: story.digestUpdatedAt ? `AI 根据报道生成 · ${relativeTime(story.digestUpdatedAt)}更新` : "AI 根据报道生成" }
-    : story.summary
-      ? { label: "事实说明", text: story.summary, note: null }
-      : story.excerpt
-        ? { label: "报道摘要", text: story.excerpt.text, note: `摘自 ${story.excerpt.sourceName}` }
-        : null;
   const showOfficial = () => {
     setFilter("official");
     goSection("reports");
@@ -245,35 +238,8 @@ export default function StoryPage() {
       <div className="mt-5 grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:mt-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-6 2xl:grid-cols-[minmax(0,1fr)_340px]">
         {/* On phones the main column dissolves so the rail's cards can sit between its sections. */}
         <div className="contents lg:flex lg:min-w-0 lg:flex-col lg:gap-6">
-          <Panel id={SECTIONS.overview} title="先了解这件事" right={overview?.label} className="order-1">
-            {overview ? (
-              <>
-                <p className="whitespace-pre-line text-[15px] leading-[1.85] text-ink-2">{overview.text}</p>
-                {overview.note && (
-                  <p className="mt-2 text-[12px] text-ink-4" suppressHydrationWarning>
-                    {overview.note}
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className="text-[13.5px] text-ink-4">还没有综述，先看下面的报道时间线。</p>
-            )}
-            {story.latest && (
-              <div className="-mx-5 mt-5 border-t border-line-soft px-5 pt-4 lg:-mx-6 lg:px-6">
-                <div className="flex items-center gap-2.5 text-[12px]">
-                  <span className="font-semibold text-ink">最新进展</span>
-                  {story.latestAt && <span className="num text-ink-4">{monthDayTime(story.latestAt)}</span>}
-                </div>
-                {newest ? (
-                  <Link to={`/items/${newest.id}`} className="group mt-1.5 inline text-[14px] leading-[1.7] text-ink-2 transition-colors hover:text-accent">
-                    {story.latest}
-                    <IconChevronRight size={14} className="ml-0.5 inline -translate-y-px text-ink-4 transition-transform group-hover:translate-x-0.5" />
-                  </Link>
-                ) : (
-                  <p className="mt-1.5 text-[14px] leading-[1.7] text-ink-2">{story.latest}</p>
-                )}
-              </div>
-            )}
+          <Panel id={SECTIONS.overview} title="先了解这件事" className="order-1">
+            <StoryOverview key={story.publicId} story={story} />
           </Panel>
 
           {story.developments.length > 1 && (
@@ -285,12 +251,8 @@ export default function StoryPage() {
                     <div className="num text-[12px] text-ink-4">
                       {monthDayTime(d.firstReportAt)} · {d.reportCount} 篇报道
                     </div>
-                    <Link to={`/items/${d.representative.id}`} className="mt-0.5 block text-[15px] font-semibold leading-snug text-ink transition-colors hover:text-accent">
-                      {d.title}
-                    </Link>
-                    <div className="mt-0.5 truncate text-[12.5px] text-ink-4">
-                      {shortSourceName(d.representative.source.name)}：{d.representative.title}
-                    </div>
+                    <h3 className="mt-0.5 text-[15px] font-semibold leading-snug text-ink">{d.title}</h3>
+                    <FactSources fact={d} timeline={story.timeline} />
                   </li>
                 ))}
               </ol>

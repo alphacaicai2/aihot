@@ -85,6 +85,22 @@
 }
 .home-ranking li { min-width: 0; scroll-snap-align: start; }
 
+.home-section-menu[open] { flex: 1 1 100%; }
+.home-section-menu[open] .home-index { margin-bottom: 8px; }
+.home-section-menu[open] summary { justify-content: flex-end; }
+.home-section-menu[open] summary svg { transform: rotate(180deg); }
+@media (max-width: 1179px) {
+  .home-aside { display: none; }
+  .home-columns { padding-top: 4px; }
+}
+@media (max-width: 639px) {
+  .reader-home [data-card-key]:first-child h3 { -webkit-line-clamp: 3; }
+  .home-masthead { gap: 12px; padding: 12px 14px; }
+  .home-dateline { padding-right: 12px; }
+  .home-calendar { gap: 2px; }
+  .home-calendar strong { font-size: 29px; }
+  .home-update { margin-top: 3px; column-gap: 8px; }
+}
 @media (max-width: 359px) {
   .home-index-icon { display: none; }
 }

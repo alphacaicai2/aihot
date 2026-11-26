@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AgentProbe } from "./AgentProbe";
 import { CopyButton } from "./CodeBlock";
 import { Button } from "./ui/Controls";
 
@@ -79,6 +80,7 @@ export function AgentToken({ issued }: { issued: boolean }) {
         <Button ref={mainButton} variant={hasToken ? "secondary" : "primary"} disabled={!!busy} onClick={e => confirm === "POST" ? cancel() : request("POST", e.currentTarget)}>{busy === "POST" ? "正在生成…" : hasToken ? "重新生成令牌" : "生成访问令牌"}</Button>
         {hasToken && <Button variant="ghost" disabled={!!busy} onClick={e => confirm === "DELETE" ? cancel() : request("DELETE", e.currentTarget)}>{busy === "DELETE" ? "正在撤销…" : "撤销令牌"}</Button>}
       </div>
+      {hasToken && !confirm && !busy && <AgentProbe key={token ? "new" : "saved"} freshToken={token} />}
       {confirm && <div role="group" aria-labelledby="token-confirm" className="mt-3 rounded-control border border-line p-3" onKeyDown={e => { if (e.key === "Escape") cancel(); }}>
         <p id="token-confirm" className="text-sm">{confirm === "DELETE" ? "撤销后，正在使用这枚令牌的客户端将无法访问。" : "生成新令牌后，旧令牌立即失效，需要在客户端中替换。"}</p>
         <div className="mt-2 flex gap-2">

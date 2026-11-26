@@ -32,3 +32,24 @@ test("事件和机构分享地址可在登录后恢复，机构分页保留列�
     assert.equal(offerDestination(new URL(membershipOffer(path),origin).searchParams),path);
   }
 });
+
+
+test("机构档案进入公司时保留原数据库查询和机构所在页，登录返回也保留", async () => {
+  const { memberDestination } = await import("@aihot/contracts/member-destination");
+  const query = new URLSearchParams({company:"A+B", investor:"乙", from:"2026-10-01", to:"2026-10-31",cursor:"list+/="});
+  const to = financingCompanyPath("Acme", query.toString(), "history", {name:"甲 & 乙",cursor:"investor+/="});
+  assert.equal(memberDestination(to),to);
+  const company = new URL(to, "https://local.invalid").searchParams;
+  assert.equal(company.get("viaInvestor"),"甲 & 乙");
+  assert.equal(company.get("viaCursor"),"investor+/=");
+  assert.equal(financingListSearch(company),query.toString());
+});
+
+test("带尾斜杠的融资列表和档案沿用同一路由与会员返回条件", async () => {
+  const {memberPathname, memberDestination} = await import("@aihot/contracts/member-destination");
+  for (const path of ["/financing","/financing/company","/financing/investor"]) {
+    assert.equal(memberPathname(path + "/"),path);
+    assert.equal(memberDestination(path + "/?name=甲&company=甲"), memberDestination(path + "?name=甲&company=甲"));
+  }
+  assert.equal(memberDestination("//example.com/financing/?company=甲"),null);
+});

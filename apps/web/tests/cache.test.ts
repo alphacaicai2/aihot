@@ -19,6 +19,7 @@ const apiCookies: Array<string | undefined> = [];
 const api = createServer((req, res) => {
   const url = new URL(req.url!, "http://api.local");
   apiCookies.push(req.headers.cookie);
+  if (url.pathname === "/api/site/pending-download") return;
   res.setHeader("Content-Type", "application/json");
   if (url.pathname === "/api/site/meta") {
     const respond = () => res.end(JSON.stringify({ changelogVersion: "2026-09-28T12:00" }));
@@ -42,9 +43,10 @@ const api = createServer((req, res) => {
     const cookie = req.headers.cookie ?? "";
     const isAdmin = cookie.includes("admin_session=member");
     const isReader = cookie.includes("reader_session=member");
+    const isUnpaid = cookie.includes("reader_session=unpaid");
     return res.end(JSON.stringify({
-      email: isAdmin ? "admin@example.test" : isReader ? "reader@example.test" : null,
-      emailConfirmed: isAdmin || isReader,
+      email: isAdmin ? "admin@example.test" : isReader || isUnpaid ? "reader@example.test" : null,
+      emailConfirmed: isAdmin || isReader || isUnpaid,
       access: isAdmin || isReader,
       admin: isAdmin,
       source: isAdmin ? "admin" : isReader ? "subscription" : null,
@@ -261,13 +263,24 @@ test("a visitor cannot name its own address to the api without a trusted proxy i
   assert.deepEqual(await res.json(), { forwarded: "127.0.0.1", real: "127.0.0.1" });
 });
 
+test("closing a proxied download before response headers aborts the upstream request", async () => {
+  const incoming = once(api, "request", {signal:AbortSignal.timeout(2000)});
+  const controller = new AbortController();
+  const request = fetch(origin + "/api/site/pending-download", {signal:controller.signal});
+  const [, response] = await incoming;
+  const closed = once(response, "close", {signal:AbortSignal.timeout(2000)});
+  controller.abort();
+  await assert.rejects(request, {name:"AbortError"});
+  await closed;
+});
+
 test("homepage links to membership without breaking public caching", async () => {
   const res = await fetch(origin + "/");
   assert.equal(res.status, 200);
   assert.match(res.headers.get("Cache-Control")!, /^public,/);
   const html = await res.text();
   assert.match(html, /href="\/membership"/);
-  assert.match(html, /查看会员权益/);
+  assert.match(html, /读者会员/);
 });
 
 test("membership gates private HTML and single-fetch data and forwards financing session cookies", async () => {
@@ -317,6 +330,20 @@ test("membership gates private HTML and single-fetch data and forwards financing
   const loginHref = companyPage.match(/href="([^"]*api\/reader\/google[^"]*)"/)![1];
   assert.equal(new URL(loginHref.replaceAll("&amp;", "&"), origin).searchParams.get("return"), company);
 
+  const signedIn = { cookie: "reader_session=unpaid" };
+  for (const [entry, target] of [[offer, company], [agentOffer, "/agent?tab=rss"]] as const) {
+    const protectedRoute = await fetch(origin + target, { headers: signedIn, redirect: "manual" });
+    assert.equal(protectedRoute.headers.get("location"), entry.pathname + entry.search);
+    const offerBody = await (await fetch(entry, { headers: signedIn })).text();
+    assert.match(offerBody, /订阅会员 · US\$5/);
+    assert.doesNotMatch(offerBody, /使用 Google 登录/);
+    const action = offerBody.match(/action="([^"]*api\/reader\/billing\/checkout[^"]*)"/)![1];
+    assert.equal(new URL(action.replaceAll("&amp;", "&"), origin).searchParams.get("return"), target);
+    const canceled = new URL(entry);
+    canceled.searchParams.set("checkout", "canceled");
+    assert.match(await (await fetch(canceled, { headers: signedIn })).text(), /已退出结账/);
+  }
+
   const comeback = await fetch(origin + "/membership?checkout=success", {
     headers: { cookie: headers.cookie + "; caolu_checkout_return=" + encodeURIComponent(company) },
   });
@@ -338,5 +365,12 @@ test("membership gates private HTML and single-fetch data and forwards financing
   assert.match(body, /US\$5/);
   assert.match(body, /免费阅读与读者会员的区别/);
   assert.match(body, /展示样例/);
+  const sample = body.match(/href="data:text\/csv;charset=utf-8,([^"]+)"/);
+  assert.ok(sample, "the public offer includes its own downloadable example");
+  const lines = decodeURIComponent(sample[1]!).trim().split("\r\n");
+  assert.equal(lines.length, 3);
+  assert.match(lines[1]!, /"Anthropic","2025-09-02","F 轮","130"/);
+  assert.match(lines[2]!, /"Anthropic","2025-03-03","E 轮","35"/);
+  assert.ok(lines.slice(1).every(row => row.includes("https://www.anthropic.com/news/")));
   assert.doesNotMatch(body, /reader@example.test|action="\/api\/(?:auth|reader)\/logout"|test-admin-csrf/);
 });

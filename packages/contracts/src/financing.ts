@@ -17,10 +17,12 @@ export interface FinancingReport {
   additionalClaims?: FinancingClaim[];
 }
 export interface FinancingResponse {
-  historySummary?: { records: number; latestAt: string };
+  historySummary?: { records: number; latestAt: string; companies?: number };
   events: Array<{ id: string; shareId: string; latestAt: string; reports: FinancingReport[]; reportCount: number; differingClaims: boolean }>;
   hasMore: boolean;
   nextCursor: string | null;
+  previousCursor?: string | null;
+  pageReset?: boolean;
 }
 
 export interface InvestorOption {

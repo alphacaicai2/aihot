@@ -101,7 +101,7 @@ export function registerSite(app: FastifyInstance) {
     const name = q.name?.trim();
     if (!name || name.length > 160) throw new BadRequest("invalid company name");
     const history = await loadFinancing({ companyHistory: name, cursor: q.cursor });
-    if (!history.events.length) return sendProblem(req, reply, { status: 404, code: "not_found", detail: "company history not found" });
+    if (!history.events.length && !history.pageReset) return sendProblem(req, reply, { status: 404, code: "not_found", detail: "company history not found" });
     return sendJsonWithEtag(req, reply, history, { etagPrefix: "financing-company", cacheControl: "public, max-age=60" });
   }));
   app.get("/api/site/financing/investors", siteHandler(async (req, reply) =>

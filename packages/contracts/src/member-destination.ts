@@ -10,19 +10,25 @@ export function financingQuery(params: URLSearchParams) {
 // Only the reader-facing membership features may be resumed after login or payment.
 const memberPaths = new Set(["/financing", "/financing/company", "/financing/investor", "/financing/event", "/agent"]);
 
+export function memberPathname(pathname: string) {
+  return pathname.replace(/\/+$/, "");
+}
+
 export function memberDestination(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = /^(\/[^?#]*)(\?[^#]*)?$/.exec(value);
-  if (!match || !memberPaths.has(match[1])) return null;
+  if (!match) return null;
+  const pathname = memberPathname(match[1]);
+  if (!memberPaths.has(pathname)) return null;
   const query = new URLSearchParams(match[2]);
   let selected = new URLSearchParams();
-  if (match[1] === "/financing") {
+  if (pathname === "/financing") {
     selected = financingQuery(query);
-  } else if (match[1] === "/financing/event") {
+  } else if (pathname === "/financing/event") {
     const id = query.get("id");
     if (!id?.trim()) return null;
     selected.set("id", id);
-  } else if (match[1] === "/financing/company" || match[1] === "/financing/investor") {
+  } else if (pathname === "/financing/company" || pathname === "/financing/investor") {
     const name = query.get("name");
     if (!name?.trim()) return null;
     selected.set("name", name);
@@ -30,11 +36,16 @@ export function memberDestination(value: unknown): string | null {
     if (list.size) selected.set("list", list.toString());
     const cursor = query.get("cursor");
     if (cursor) selected.set("cursor", cursor);
+    if (pathname === "/financing/company" && query.get("viaInvestor")?.trim()) {
+      selected.set("viaInvestor", query.get("viaInvestor")!.slice(0, 320));
+      const viaCursor = query.get("viaCursor");
+      if (viaCursor) selected.set("viaCursor", viaCursor);
+    }
   } else {
     const tab = query.get("tab");
     if (tab === "mcp" || tab === "rss" || tab === "api") selected.set("tab", tab);
   }
-  return match[1] + (selected.size ? "?" + selected : "");
+  return pathname + (selected.size ? "?" + selected : "");
 }
 
 export function membershipOffer(target: string | null, status?: ["billing" | "checkout", string]) {
