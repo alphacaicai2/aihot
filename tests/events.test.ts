@@ -10,6 +10,7 @@ import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { detachFromFact } from "@aihot/backend/admin/content";
 import { upsertMaterial } from "@aihot/backend/content/materials";
+import { composeStoryDigest } from "@aihot/backend/events/digest";
 import { groupArticle, linkRelatedStories } from "@aihot/backend/events/group";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { publishArticle } from "@aihot/backend/publication/publish";
@@ -29,6 +30,9 @@ let pairRelation: Rel | null = null;
 /** Answer every candidate of a batch prompt, not only the first. */
 let answerAll = false;
 const provider = await stub(async (_hit, req) => {
+  if (JSON.parse(req.body).messages.at(-1).content.startsWith("事件当前标题：")) {
+    return { choices: [{ finish_reason: "length", message: { content: '{"digest":"partial' } }] };
+  }
   asked.open();
   await hold.promise;
   const body = JSON.parse(req.body) as { messages: Array<{ content: string }> };
@@ -75,6 +79,18 @@ after(async () => {
   await provider.close();
   await stopBoss();
   await closeDb();
+});
+
+test("a truncated story digest publishes attributed excerpts and the same reports cost nothing on replay", async () => {
+  const sent = provider.hits();
+  assert.equal((await composeStoryDigest(storyId)).updated, true);
+  const [saved] = await sql`SELECT d.digest, r.status, r.response FROM story_digests d
+    JOIN receipts r ON r.id = d.receipt_id WHERE d.story_id = ${storyId}`;
+  assert.match(saved!.digest, /近期报道摘录[\s\S]*Test events：摘要/);
+  assert.equal(saved!.status, "completed");
+  assert.equal(saved!.response.choices[0].finish_reason, "length");
+  assert.equal((await composeStoryDigest(storyId)).updated, false);
+  assert.equal(provider.hits() - sent, 1);
 });
 
 test("a detach made while the model is deciding the report's fact stands", async () => {

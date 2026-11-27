@@ -111,6 +111,8 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   fallback?: boolean;
   /** false: the model answers in its own text format (no JSON mode); `parse` turns it into the schema's input. */
   json?: boolean;
+  /** Locally validated replacement for a response the provider marked as truncated. */
+  onTruncated?: () => z.input<S>;
   parse?: (content: string) => unknown;
 }
 
@@ -328,7 +330,11 @@ async function chatJsonOnce<S extends z.ZodType>(opts: ChatJsonOptions<S>): Prom
   const content = response.choices?.[0]?.message?.content ?? "";
   let parsed: z.infer<S>;
   try {
-    parsed = opts.schema.parse(opts.parse ? opts.parse(content) : extractJson(content));
+    if (response.choices?.[0]?.finish_reason === "length" && opts.onTruncated) {
+      parsed = opts.schema.parse(opts.onTruncated());
+    } else {
+      parsed = opts.schema.parse(opts.parse ? opts.parse(content) : extractJson(content));
+    }
   } catch (error) {
     // Unusable output: record it and let a later attempt pay for a fresh answer.
     await rejectReceivedResponse(receipt.receiptId, `unusable output: ${String(error).slice(0, 500)}`);

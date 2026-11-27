@@ -273,7 +273,7 @@ async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts): Promise<An
     return chatJson({
       model, purpose: "understand_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.understand, system: UNDERSTAND_SYSTEM,
       fallback: opts.fallback,
-      user: image ? [{ type: "text", text }, image] : text, schema: UnderstandSchema, temperature: 0.2, maxTokens: 16_384,
+      user: image ? [{ type: "text", text }, image] : text, schema: UnderstandSchema.nullable(), onTruncated: () => null, temperature: 0.2, maxTokens: 16_384,
       timeoutMs: 180_000, attemptTag: tagged(opts.attemptTag, "understand"),
     });
   };
@@ -294,6 +294,11 @@ async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts): Promise<An
     }
   }
   const d = res.data;
+  if (!d) {
+    const excerpt = collapseWhitespace(a.excerpt || a.bodyText || a.title).slice(0, 220);
+    return { kind: "verbatim", model: null, titleZh: a.title, summaryZh: excerpt, reasonZh: null,
+      tags: null, receiptIds: [res.receiptId], reused: res.reused };
+  }
   const copy = finalizeCopy(translateInputOf(a), { titleZh: d.titleZh, summaryZh: d.summaryZh });
   return {
     kind: "understand", model: res.model, titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: d.editorialJudgment.trim() || null,

@@ -23,8 +23,8 @@ const X_SOURCE = `test-analyze-x-${T}`;
 type Step = "prefilter" | "score" | "understand" | "summarize" | "structure";
 interface Req { step: Step; marker: string; system: string; user: string; body: Record<string, any> }
 const requests: Req[] = [];
-const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文"];
-const scoreAnswers: Record<string, number[]> = { CLEAR: [78, 72], RESCUE: [56, 50], LOW: [45, 40], THIN: [70, 70], SENSITIVE: [80, 80], 推文: [40, 40], BARE: [30, 34], VAGUE: [60, 62] };
+const MARKERS = ["TRUNCATED", "CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文"];
+const scoreAnswers: Record<string, number[]> = { TRUNCATED: [80, 80], CLEAR: [78, 72], RESCUE: [56, 50], LOW: [45, 40], THIN: [70, 70], SENSITIVE: [80, 80], 推文: [40, 40], BARE: [30, 34], VAGUE: [60, 62] };
 
 const stepOf = (system: string, user: string): Step =>
   system.includes("宽召回的AI相关性预筛") ? "prefilter" : system.includes("事件注意力评分器") ? "score"
@@ -44,6 +44,7 @@ const provider = await stub((_hit, req) => {
   if (step === "prefilter") return answer({ label: marker === "OFFTOPIC" || marker === "BARE" ? "BLOCK" : marker === "VAGUE" ? "UNKNOWN" : "PASS", reason: "测试" });
   if (step === "score") return answer({ attentionScore: scoreAnswers[marker]!.shift() });
   if (step === "understand") {
+    if (marker === "TRUNCATED") return { choices: [{ finish_reason: "length", message: { content: '{"summaryZh":"unfinished' } }] };
     if (marker === "SENSITIVE") return new Reply(400, { contentFilter: [{ level: 1, role: "user" }], error: { code: "1301", message: "系统检测到输入或生成内容可能包含不安全或敏感内容" } });
     return answer({ itemType: "model_release", authorRole: "principal", tags: ["模型发布", "开源", "Agent", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
   }
@@ -89,6 +90,17 @@ test("every prompt in the pack renders, and the site's name replaces AIHOT's", (
     assert.ok(text.length > 20 && !/\{\{/.test(text), file);
   }
   assert.ok(PREFILTER_SYSTEM.startsWith(`为${SITE.name}做宽召回的AI相关性预筛`));
+});
+
+test("truncated understanding completes selection with the original title and excerpt", async () => {
+  const id = await article("TRUNCATED", { excerpt: "原始报道摘录" });
+  await analyzeArticle(id);
+  const saved = await row(id);
+  assert.equal(saved.selected, true);
+  assert.match(saved.title_zh, /^TRUNCATED model release/);
+  const [receipt] = await sql`SELECT status, response FROM receipts WHERE purpose='understand_article' AND subject=${`article:${id}@1`}`;
+  assert.equal(receipt!.status, "completed");
+  assert.equal(receipt!.response.choices[0].finish_reason, "length");
 });
 
 test("a selected item: prefilter, two scores, the content understanding and the structure", async () => {

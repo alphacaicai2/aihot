@@ -22,7 +22,7 @@ const primary = http.createServer((req, res) => {
     const send = () => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(status !== 200 ? { error: { code: status === 400 ? "1301" : "overloaded" } }
-        : { choices: [{ message: { content: mode === "invalid" ? "not JSON" : '{"ok":true}' } }], usage: { prompt_tokens: 5, completion_tokens: 5 } }));
+        : { choices: [{ finish_reason: mode === "length" ? "length" : "stop", message: { content: mode === "length" || mode === "invalid" ? "not JSON" : '{"ok":true}' } }], usage: { prompt_tokens: 5, completion_tokens: 5 } }));
     };
     if (mode === "delay") setTimeout(send, 150); else send();
   });
@@ -58,6 +58,19 @@ after(async () => {
   await fallback.close();
   await new Promise<void>(resolve => primary.close(() => resolve()));
   await closeDb();
+});
+
+test("truncated output uses the local result and reuses its receipt without another request", async () => {
+  mode = "length";
+  const subject = `digest-length-${tag()}`;
+  const sent = primaryHits;
+  const fb = fallback.hits();
+  const options = { onTruncated: () => ({ ok: false }) };
+  const first = await ask(subject, options);
+  assert.deepEqual(first.data, { ok: false });
+  assert.equal((await ask(subject, options)).receiptId, first.receiptId);
+  assert.equal(primaryHits - sent, 1);
+  assert.equal(fallback.hits(), fb);
 });
 
 test("socket loss keeps the original unknown receipt and permanently reuses the fallback", async () => {
